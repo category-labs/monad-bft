@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::transaction::Recovered;
+use alloy_consensus::{transaction::Recovered, Transaction};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, TxHash, U256};
 use alloy_rlp::Encodable;
@@ -104,7 +104,7 @@ impl<PT: PubKey> PoolTx<PT> {
         }
 
         // TODO(andr-dev): Adjust minimum dynamically using current base fee.
-        if tx.max_fee_per_gas() < alloy_primitives::U256::from(MIN_BASE_FEE) {
+        if tx.max_fee_per_gas() < u128::from(MIN_BASE_FEE) {
             return Err((tx, EthTxPoolDropReason::FeeTooLow));
         }
 
@@ -213,7 +213,7 @@ impl<PT: PubKey> PoolTx<PT> {
         self.tx.nonce()
     }
 
-    pub fn max_fee_per_gas(&self) -> alloy_primitives::U256 {
+    pub fn max_fee_per_gas(&self) -> u128 {
         self.tx.max_fee_per_gas()
     }
 
@@ -328,7 +328,7 @@ impl<PT: PubKey> PoolTx<PT> {
             return None;
         }
 
-        if self.tx.max_fee_per_gas() < alloy_primitives::U256::from(last_commit_base_fee) {
+        if self.tx.max_fee_per_gas() < u128::from(last_commit_base_fee) {
             return None;
         }
 

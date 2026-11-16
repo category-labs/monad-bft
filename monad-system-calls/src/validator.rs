@@ -23,7 +23,7 @@
 
 use std::collections::VecDeque;
 
-use alloy_consensus::transaction::Recovered;
+use alloy_consensus::{Transaction, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use monad_chain_config::{ChainConfig, revision::ChainRevision};
 use monad_consensus_types::block::ConsensusBlockHeader;
@@ -100,7 +100,7 @@ impl SystemTransactionValidator {
         }
 
         // EIP-155
-        if txn.inner().chain_id() != Some(alloy_primitives::U256::from(chain_config.chain_id())) {
+        if txn.inner().chain_id() != Some(chain_config.chain_id()) {
             return Err(SystemTransactionError::InvalidChainId);
         }
 

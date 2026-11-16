@@ -15,6 +15,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use alloy_network::ReceiptResponse;
 use alloy_primitives::Uint;
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{BlockTransactions, FilterChanges};

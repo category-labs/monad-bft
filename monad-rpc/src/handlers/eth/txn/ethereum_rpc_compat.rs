@@ -136,12 +136,12 @@ fn ethereum_raw_submission_policy_and_errors_match_master() {
 }
 
 #[test]
-fn native_chain_rejection_preserves_full_width_id_and_activation_error() {
-    let chain_id = U256::ONE << 200;
+fn native_chain_rejection_preserves_uint64_id_and_activation_error() {
+    let chain_id = u64::MAX;
     let tx = monad_transaction::TxMonad {
         chain_id,
         gas_limit: 21_000,
-        max_fee_per_gas: U256::from(200),
+        max_fee_per_gas: 200,
         ..Default::default()
     };
     let raw = tx.encode_submission(&Signature::new(U256::ONE, U256::ONE, false));
@@ -162,5 +162,26 @@ fn native_chain_rejection_preserves_full_width_id_and_activation_error() {
                 "Native transactions are enabled only on devnet"
             )
         );
+    }
+}
+
+#[test]
+fn native_oversized_quantities_use_the_method_decode_error() {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../monad-execution/category/execution/ethereum/core/test/monad_type40_vectors.json"
+    )).unwrap();
+    for vector in vectors["vectors"].as_array().unwrap() {
+        if !matches!(vector["name"].as_str(), Some("wide-fees" | "wide-chain-id")) {
+            continue;
+        }
+        let raw = alloy_primitives::hex::decode(vector["submission"].as_str().unwrap()).unwrap();
+        for decode_error in [JsonRpcError::txn_decode_error as fn() -> _, || {
+            JsonRpcError::new(ErrorCode::TransactionUnready)
+        }] {
+            assert_eq!(
+                validate_and_decode_tx(&raw, 20143, false, decode_error).unwrap_err(),
+                decode_error()
+            );
+        }
     }
 }

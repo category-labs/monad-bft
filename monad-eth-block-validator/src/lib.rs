@@ -20,7 +20,7 @@ use std::{
 
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, proofs::calculate_transaction_root, transaction::Recovered,
-    EMPTY_OMMER_ROOT_HASH,
+    Transaction, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::U256;
@@ -496,7 +496,7 @@ where
         let mut txn_fees: TxnFees = TxnFees::default();
         for eth_txn in validated_txns.iter() {
             let block_base_fee = header.base_fee;
-            if eth_txn.max_fee_per_gas() < alloy_primitives::U256::from(block_base_fee) {
+            if eth_txn.max_fee_per_gas() < u128::from(block_base_fee) {
                 debug!(
                     ?eth_txn,
                     block_base_fee, "transaction max fee less than base fee"

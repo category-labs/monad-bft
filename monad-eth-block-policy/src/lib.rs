@@ -19,7 +19,7 @@ use std::{
     ops::{Deref, Range, RangeFrom},
 };
 
-use alloy_consensus::transaction::Recovered;
+use alloy_consensus::{transaction::Recovered, Transaction};
 use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, TxHash, U256};
 use itertools::Itertools;

@@ -123,7 +123,6 @@ impl EthTxPoolDropReason {
                     "Exceeds transaction gas limit"
                 }
                 StaticValidationError::NonceExceedsMax => "Nonce exceeds maximum",
-                StaticValidationError::GasLimitOverflow => "Gas cost overflows uint256",
                 StaticValidationError::InvalidSignature => "Invalid transaction signature",
                 StaticValidationError::UnsupportedTransactionType => "Unsupported transaction type",
                 StaticValidationError::AuthorizationListEmpty => "EIP7702 authorization list empty",

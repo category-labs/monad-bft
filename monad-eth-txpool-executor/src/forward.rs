@@ -231,6 +231,7 @@ mod test {
         time::Duration,
     };
 
+    use alloy_consensus::Transaction;
     use bytes::Bytes;
     use futures::task::noop_waker_ref;
     use monad_chain_config::execution_revision::MonadExecutionRevision;

@@ -15,7 +15,9 @@
 
 use std::ops::{Div, Sub};
 
-use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy};
+use alloy_consensus::{
+    Header, SignableTransaction, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy,
+};
 use alloy_eips::eip2718::{
     EIP1559_TX_TYPE_ID, EIP2930_TX_TYPE_ID, EIP4844_TX_TYPE_ID, EIP7702_TX_TYPE_ID,
     LEGACY_TX_TYPE_ID,
@@ -939,14 +941,11 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
     };
 
     Ok(MonadFeeHistory(FeeHistory {
-        inner: alloy_rpc_types::FeeHistory {
-            base_fee_per_gas: base_fee_per_gas_history,
-            gas_used_ratio: gas_used_ratio_history,
-            base_fee_per_blob_gas: vec![0; (block_count + 1) as usize],
-            blob_gas_used_ratio: vec![0.0; (block_count) as usize],
-            oldest_block,
-            reward: None,
-        },
+        base_fee_per_gas: base_fee_per_gas_history,
+        gas_used_ratio: gas_used_ratio_history,
+        base_fee_per_blob_gas: vec![0; (block_count + 1) as usize],
+        blob_gas_used_ratio: vec![0.0; (block_count) as usize],
+        oldest_block,
         reward: rewards,
     }))
 }
@@ -957,13 +956,13 @@ fn calculate_fee_history_rewards(
     base_fee: u64,
     block_gas_used: u64,
     percentiles: Option<&Vec<f64>>,
-) -> Vec<U256> {
+) -> Vec<u128> {
     let Some(percentiles) = percentiles else {
         return vec![];
     };
 
     if transactions.is_empty() {
-        return vec![U256::ZERO; percentiles.len()];
+        return vec![0; percentiles.len()];
     }
 
     let transactions_len = transactions.len();
@@ -1308,7 +1307,7 @@ mod tests {
             block_hash: None,
             block_number: None,
             gas_used,
-            effective_gas_price: alloy_primitives::U256::ZERO,
+            effective_gas_price: 0,
             blob_gas_used: None,
             blob_gas_price: None,
             from: Default::default(),
@@ -1343,7 +1342,7 @@ mod tests {
         assert_eq!(res.0.blob_gas_used_ratio, vec![0.0]);
         assert_eq!(res.0.gas_used_ratio, vec![0.0]);
         assert_eq!(res.0.base_fee_per_gas, vec![1_000, 1_000]);
-        assert_eq!(res.0.reward, Some(vec![vec![U256::ZERO; 5]]));
+        assert_eq!(res.0.reward, Some(vec![vec![0; 5]]));
 
         // Fetch fee history for blocks that have 4 transactions.
         let mut txs = Vec::new();
@@ -1392,10 +1391,7 @@ mod tests {
         assert_eq!(res.0.oldest_block, 1000);
         assert_eq!(res.0.base_fee_per_gas, vec![2_000, 2_000]);
         assert_eq!(res.0.gas_used_ratio, vec![gas_used]);
-        assert_eq!(
-            res.0.reward,
-            Some(vec![vec![U256::from(1000), U256::from(2000)]])
-        );
+        assert_eq!(res.0.reward, Some(vec![vec![1000, 2000]]));
 
         // Fetch block history with explicit block heights
         let res = monad_eth_feeHistory(

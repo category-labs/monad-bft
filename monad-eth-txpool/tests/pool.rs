@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{transaction::Recovered, SignableTransaction, TxLegacy};
+use alloy_consensus::{transaction::Recovered, SignableTransaction, Transaction, TxLegacy};
 use alloy_primitives::{Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -2430,10 +2430,10 @@ fn native_submission_survives_pool_proposal_and_block_validation() {
 
     let signer = PrivateKeySigner::from_bytes(&S1).unwrap();
     let native = TxMonad {
-        chain_id: U256::from(MONAD_DEVNET_CHAIN_ID),
+        chain_id: MONAD_DEVNET_CHAIN_ID,
         gas_limit: GAS_LIMIT,
-        max_fee_per_gas: U256::from(BASE_FEE + 1),
-        max_priority_fee_per_gas: U256::from(1),
+        max_fee_per_gas: u128::MAX,
+        max_priority_fee_per_gas: 1,
         to: TxKind::Call(Address::repeat_byte(2)),
         access_list: Some(Default::default()),
         ..Default::default()
@@ -2507,18 +2507,21 @@ fn native_submission_survives_pool_proposal_and_block_validation() {
         }],
     );
 
-    let overflow = TxMonad {
-        max_fee_per_gas: U256::MAX,
+    let invalid_bid = TxMonad {
+        max_fee_per_gas: u128::MAX - 1,
+        max_priority_fee_per_gas: u128::MAX,
         ..native
     };
-    let signature = signer.sign_hash_sync(&overflow.signature_hash()).unwrap();
-    let overflow = TxEnvelope::Monad(overflow.into_signed(signature));
+    let signature = signer
+        .sign_hash_sync(&invalid_bid.signature_hash())
+        .unwrap();
+    let invalid_bid = TxEnvelope::Monad(invalid_bid.into_signed(signature));
     run_custom_iter_with_chain(
         make_pool(),
         make_test_block_policy(),
         None,
         [TxPoolTestEvent::InsertTxs {
-            txs: vec![(&overflow, false)],
+            txs: vec![(&invalid_bid, false)],
             expected_pool_size_change: 0,
         }],
         true,

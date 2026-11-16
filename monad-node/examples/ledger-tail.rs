@@ -20,6 +20,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use alloy_consensus::Transaction;
 use clap::{CommandFactory, FromArgMatches, Parser};
 use futures_util::{Stream, StreamExt};
 use inotify::{Inotify, WatchMask};

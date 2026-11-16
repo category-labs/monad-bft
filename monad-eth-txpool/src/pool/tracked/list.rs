@@ -18,6 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use alloy_consensus::Transaction;
 use alloy_primitives::Address;
 use indexmap::map::VacantEntry;
 use monad_chain_config::{execution_revision::MonadExecutionRevision, revision::ChainRevision};
@@ -107,7 +108,7 @@ where
                 tx.raw()
                     .effective_tip_per_gas(MIN_BASE_FEE)
                     .unwrap_or_default()
-                    .saturating_to::<u64>(),
+                    .min(u64::MAX as u128) as u64,
             );
         }
 

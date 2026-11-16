@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_primitives::U256;
+use alloy_consensus::Transaction;
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
 use monad_transaction::TxEnvelope;
 use serde::{Deserialize, Serialize};
@@ -22,11 +22,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StaticValidationError {
     InvalidChainId {
-        tx_chain_id: U256,
+        tx_chain_id: u64,
     },
     MaxPriorityOverMaxFee {
-        tx_max_priority_fee: U256,
-        tx_max_fee_per_gas: U256,
+        tx_max_priority_fee: u128,
+        tx_max_fee_per_gas: u128,
     },
     InitCodeLimitExceeded {
         tx_input_len: usize,
@@ -51,7 +51,6 @@ pub enum StaticValidationError {
     },
     InvalidSignature,
     NonceExceedsMax,
-    GasLimitOverflow,
     UnsupportedTransactionType,
     AuthorizationListEmpty,
     AuthorizationListLengthLimitExceeded,
@@ -76,13 +75,6 @@ pub fn static_validate_transaction(
         }
         if tx.nonce() == u64::MAX {
             return Err(StaticValidationError::NonceExceedsMax);
-        }
-        if tx
-            .max_fee_per_gas()
-            .checked_mul(U256::from(tx.gas_limit()))
-            .is_none()
-        {
-            return Err(StaticValidationError::GasLimitOverflow);
         }
     }
 
@@ -171,7 +163,7 @@ impl EthHomesteadForkValidation {
     fn eip_155(tx: &TxEnvelope, chain_id: u64) -> Result<(), StaticValidationError> {
         // We still allow legacy transactions without chain_id specified to pass through
         if let Some(tx_chain_id) = tx.chain_id() {
-            if tx_chain_id != U256::from(chain_id) {
+            if tx_chain_id != chain_id {
                 return Err(StaticValidationError::InvalidChainId { tx_chain_id });
             }
         }
@@ -359,10 +351,10 @@ mod test {
 
     fn native_tx() -> monad_transaction::TxMonad {
         monad_transaction::TxMonad {
-            chain_id: U256::from(monad_transaction::MONAD_DEVNET_CHAIN_ID),
+            chain_id: monad_transaction::MONAD_DEVNET_CHAIN_ID,
             gas_limit: 21_000,
-            max_fee_per_gas: U256::from(BASE_FEE),
-            max_priority_fee_per_gas: U256::from(2_000_000_000u64),
+            max_fee_per_gas: BASE_FEE.into(),
+            max_priority_fee_per_gas: 2_000_000_000,
             to: TxKind::Call(Address::repeat_byte(1)),
             ..Default::default()
         }
@@ -386,14 +378,14 @@ mod test {
         assert_eq!(validate_native(native_tx(), 20143), Ok(()));
         for chain in [143, 10143, 1, 31337] {
             let mut tx = native_tx();
-            tx.chain_id = U256::from(chain);
+            tx.chain_id = chain;
             assert_eq!(
                 validate_native(tx, chain),
                 Err(StaticValidationError::UnsupportedTransactionType)
             );
         }
         let mut tx = native_tx();
-        tx.chain_id = U256::ONE << 200;
+        tx.chain_id = u64::MAX;
         assert!(matches!(
             validate_native(tx, 20143),
             Err(StaticValidationError::InvalidChainId { .. })
@@ -401,15 +393,16 @@ mod test {
     }
 
     #[test]
-    fn native_widths_nonce_and_gas_cost_overflow_match_execution() {
+    fn native_fee_bounds_and_nonce_match_execution() {
         let mut wide = native_tx();
-        wide.max_fee_per_gas = U256::ONE << 200;
-        wide.max_priority_fee_per_gas = U256::ONE << 140;
+        wide.max_fee_per_gas = u128::MAX;
+        wide.max_priority_fee_per_gas = u128::MAX;
         assert_eq!(validate_native(wide.clone(), 20143), Ok(()));
-        wide.max_fee_per_gas = U256::MAX;
+        let signature = sign_tx(&wide.signature_hash());
+        let envelope = wide.into_signed(signature).into();
         assert_eq!(
-            validate_native(wide, 20143),
-            Err(StaticValidationError::GasLimitOverflow)
+            crate::compute_txn_max_gas_cost(&envelope, BASE_FEE),
+            alloy_primitives::U256::from(21_000) * alloy_primitives::U256::from(u128::MAX)
         );
         let mut tx = native_tx();
         tx.nonce = u64::MAX;

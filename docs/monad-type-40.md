@@ -1,12 +1,12 @@
 # Baseline native transaction development profile
 
-Snapshot: 2026-11-12; RPC compatibility fixes: 2026-11-13. Branch: `feat/monad-type-40`.
+Snapshot: 2026-11-12; RPC compatibility fixes: 2026-11-13; numeric-bound amendment: 2026-11-16. Branch: `feat/monad-type-40`.
 
 ## Matched revisions
 
 - Consensus/RPC base: `e844f6086acac664f4bd2a8ffcc99f3b5ce4b9af`.
 - Execution upstream `main`: `27ad173ddf730deadc433987770e5c886ff1255b`, merged into `feat/monad-type-40` under `monad-execution/`.
-- Execution implementation: `d2fadff7c960e655ff7d3e76ea244f4dc8346aa4`, recorded by this branch's `monad-execution` submodule pin, including nullable receipt-price compatibility.
+- Execution implementation: `6be73f870c34e4ba380dfe8ec0e6430d8022edeb`, recorded by this branch's `monad-execution` submodule pin, including the Alloy numeric-bound amendment and nullable receipt-price compatibility.
 - Viem vector source: `40e3a58c1c8c9c0326558eee8991992173059ea4`.
 - Protocol source: the supplied universal transaction draft's main injection design, SHA-256 `79ce4f8c4910a71e3a2932c1083312577e2ef99774a98ddba081bf20face1cb9`.
 
@@ -28,7 +28,7 @@ receipt = 0x40 || RLP([status, cumulativeGasUsed, logsBloom, logs, []])
 
 Required feature keys: `0x01` nonce, `0x02` gas, `0x03` CALL, `0x06` signature and `0x07` inclusion gas bid. Optional `0x04` is an access list. CALL contains exactly keys 1 destination, 2 value and 3 calldata. All maps have unique ascending single-byte keys. All RLP containers are bounded before nested decoding; integers are minimal unsigned encodings. Empty destination means contract creation.
 
-Native chain IDs, values and fee caps are uint256; nonce/gas are uint64. Admission requires the actual development chain ID without truncation. Received signatures are never normalized: recovery and validity reject high-s/invalid signatures. The maximum encoded uint64 nonce is invalid under EIP-2681, and gas × fee overflow is rejected before pool arithmetic.
+Native outer chain IDs are uint64 and fee caps are uint128; values and signature scalars remain uint256, and nonce/gas remain uint64. Admission requires the actual development chain ID without truncation. Received signatures are never normalized: recovery and validity reject high-s/invalid signatures. The maximum encoded uint64 nonce is invalid under EIP-2681, and gas × fee/balance accounting remains uint256 (a uint64 × uint128 product fits).
 
 Omitted and explicitly empty access lists execute equivalently but have different commitments. Presence survives Rust decoding, C++ decoding, storage and execution-event reconstruction. RPC returns the canonical transaction hash, not the submission hash. Internal ledger, gossip and trie objects use canonical bytes.
 
@@ -38,9 +38,9 @@ Database adapters explicitly distinguish two existing stored representations: C+
 
 ## Implementation boundaries
 
-The shared [`monad-transaction`](../monad-execution/rust/crates/monad-transaction/) crate owns native Rust transaction/receipt codecs and full-width RPC representations. Existing Ethereum variants continue to use Alloy signed payloads and encoders. The wrapper intentionally does not implement Alloy's transaction trait, whose fee methods narrow to uint128. Both workspaces use the shared source through a path dependency; no Alloy fork is required.
+The shared [`monad-transaction`](../monad-execution/rust/crates/monad-transaction/) crate owns native Rust transaction/receipt codecs and aliases for Alloy's generic RPC representations. Existing Ethereum variants continue to use Alloy signed payloads and encoders. The native transaction and mixed envelope implement Alloy's `Transaction` trait; `TxMonad` implements `SignableTransaction<Signature>` with the existing native signing preimage. Both workspaces use the shared source through a path dependency; no Alloy fork is required.
 
-Native envelopes now flow through RPC submission, sender recovery, pool ingress and forwarding, proposal generation, block validation, block persistence, state readers, archive adapters and RPC buffers. Fee sorting and fee-history rewards retain uint256 values. Transaction-generator readers accept mixed native/Ethereum blocks and receipts; its raw-send helper applies native submission framing. Execution dispatch uses the existing single-call EVM, sender-paid fees and normal nonce/account rules.
+Native envelopes now flow through RPC submission, sender recovery, pool ingress and forwarding, proposal generation, block validation, block persistence, state readers, archive adapters and RPC buffers. Fee sorting and fee-history rewards use uint128 values. Transaction-generator readers accept mixed native/Ethereum blocks and receipts; its raw-send helper applies native submission framing. Execution dispatch uses the existing single-call EVM, sender-paid fees and normal nonce/account rules.
 
 `eth_call` and `eth_estimateGas` preserve explicit `type: "0x40"` and use canonical bytes through the execution bridge. Transaction, block and receipt responses retain standard RPC fields. Both raw-submission methods use the three-field decoder. Node-managed signing and explicit native `eth_fillTransaction` are outside this milestone.
 
@@ -112,8 +112,8 @@ Coverage includes:
 - Exact transaction/receipt network framing, actual block-body and IPC/event decoding, and mixed Ethereum/native streams.
 - Raw TrieDB and existing archive record decoding, unchanged archive writes, metadata boundaries and rejection of extra/truncated fields.
 - Native/empty receipt log extraction, address/topic filters and mixed-block log metadata/ordering without panics.
-- Full-width RPC transaction/fee-history round trips and unchanged Ethereum effective-fee behavior.
-- Submission → pool → proposal → block-validation regression for owned/forwarded transactions, including canonical block-body round trip, wrong-chain and fee-overflow rejection.
+- Bounded RPC transaction/fee-history round trips and unchanged Ethereum effective-fee behavior.
+- Submission → pool → proposal → block-validation regression for owned/forwarded transactions, including canonical block-body round trip, wrong-chain and invalid-fee-bid rejection.
 - Native execution-event reconstruction, presence fidelity and legacy Ethereum snapshot replay.
 - C++ activation, dynamic pricing, fee/nonce bounds and existing intrinsic/calldata/access-list gas.
 
@@ -140,7 +140,7 @@ The pre-NEXT environment setting remains required. The merge introduces no chang
 
 ## Ethereum RPC compatibility review (2026-11-12)
 
-The [compatibility report](rpc-type40-compatibility.md) compares this PR with master across existing Ethereum transaction types. Regression tests cover wire representations, hashes, fee calculations, simulation request conversion and raw-submission policy. Two regressions were reproduced and are corrected on this branch: wrong-chain submissions again return `-32003`, and missing/null receipt prices default to zero while preserving valid uint256 values. The receipt fix affects Rust consumers rather than the server's emitted receipt JSON. Category-box validation on 2026-11-13 passes all 221 tests: 17 shared-crate tests, 13 wire tests and 191 RPC unit tests. Formatting passes in both Rust workspaces. The execution fix was committed first as `d2fadff7c960e655ff7d3e76ea244f4dc8346aa4`; the BFT gitlink records that commit.
+The [compatibility report](rpc-type40-compatibility.md) compares this PR with master across existing Ethereum transaction types. Regression tests cover wire representations, hashes, fee calculations, simulation request conversion and raw-submission policy. Two regressions were reproduced and are corrected on this branch: wrong-chain submissions again return `-32003`, and missing/null receipt prices default to zero while preserving valid uint256 values. The receipt fix affects Rust consumers rather than the server's emitted receipt JSON. Category-box validation on 2026-11-13 passes all 221 tests: 17 shared-crate tests, 13 wire tests and 191 RPC unit tests. Formatting passes in both Rust workspaces. The execution fix was committed first as `d2fadff7c960e655ff7d3e76ea244f4dc8346aa4`; the BFT gitlink recorded that commit before the numeric-bound amendment below.
 
 ## CI cleanup (2026-11-13)
 
@@ -149,3 +149,34 @@ Native dependency entries follow the workspace's ordering, test-only dependencie
 OpenRPC validation still runs for fork PRs. Its diff is always written to the job summary; posting a PR comment is restricted to same-repository branches because fork tokens are read-only. The schema artifact remains available. Eight routing checks cover changed/unchanged schemas, fork/same-repository PRs, and creation/update of comments.
 
 License, lockfile, dependency ordering, unused-dependency and formatting checks pass. Category-box also passes release Clippy across all targets/features with the CI deny list. Existing non-fatal warnings remain. Logs are retained in the integration checkout under `.build/type40/category-box-ci-3352/`; the integration profile records the final node commits used for its subsequent network run.
+
+## Alloy numeric-bound amendment (2026-11-16)
+
+Approved scope: native fee caps are `u128`; outer chain IDs are `u64`. This narrows the main draft's fee domain without changing in-range RLP bytes, signing digests or canonical hashes. Value, balances, accounting and signature scalars remain `U256`. Authorization-list chain IDs are unaffected; native authorization lists remain unsupported.
+
+Rust decoders reject oversized inputs. The unchanged C++ decoder still parses uint256 quantities; C++ static validation rejects the same oversized native quantities. Consequently, earlier raw-codec differential results are historical: structural decoding now intentionally differs for wide native values, while executable validity must agree. The C++ decoder, transaction/event layout, event writer and schema fingerprint are unchanged. Only the Rust event reader's three field conversions change, using checked conversion under validated-event invariants.
+
+RPC aliases now use Alloy 2.0.4's generic transaction, receipt, block and fee-history types. Native simulation checks user fee caps before gas filling; native JSON readers reject oversized `gasPrice` metadata instead of saturating it. Existing Ethereum conversion/admission behavior remains covered by differential regressions. Wrong-chain native IDs within uint64 retain `-32003`; IDs above uint64 fail decoding and use each raw method's existing decode-error category.
+
+Build this branch with its pinned execution implementation, `6be73f870c34e4ba380dfe8ec0e6430d8022edeb`, which carries the numeric-bound amendment. No deployment or data migration has been performed. Before deployment, audit historical native transactions for oversized quantities or use a fresh devnet. Viem/Rabby numeric validators and a dedicated Alloy network/provider submission adapter remain follow-ups.
+
+Validation on Linux x86-64 category-box used isolated source and build copies based on BFT `f8858f4704fb9eb562bfabcb887e149117cbaa27` and execution `d2fadff7c960e655ff7d3e76ea244f4dc8346aa4`, with this amendment applied. Commit preparation updated documentation and the execution gitlink; the implementation and regression tests match the validated source manifest. The shared devnet and demo were left running unchanged. Results:
+
+| Check | Result |
+| --- | --- |
+| Shared transaction crate, release | 19 passed |
+| Execution-event reader with `alloy,test-utils`, release | 4 passed and 1 documentation test passed; 2 existing snapshot tests remain ignored |
+| Policy, block validator, pool and block/IPC type suites, release | 180 passed |
+| Ethereum RPC wire compatibility, release | 14 passed |
+| Complete RPC unit suite, release | 193 passed |
+| Standalone C++ transaction/receipt codecs and static validation | 31 passed |
+| BFT release Clippy, all workspace targets/features, repository CI deny list | Passed; existing non-fatal warnings remain |
+| Shared transaction crate Clippy | Passed |
+| Unused dependencies (`cargo shear`) | Passed; existing test-target and unlinked-file warnings remain |
+| Rust/C++ formatting, dependency ordering, locked dependency resolution and license headers | Passed |
+
+The boundary tests retain the original SDK fixtures: in-range bytes, signing digests, sender recovery and hashes still match; wide fixtures now prove Rust rejection and C++ validation rejection. Additional regressions cover uint64/uint128 maxima and overflow, unchanged uint256 values/accounting, checked event reconstruction, native simulation before fee normalization, native RPC metadata overflow and upstream Ethereum price-reader behavior. No dependency versions changed; the node example and mock-swarm tests explicitly depend on the existing Alloy trait crate.
+
+An independent review also exercised 480 freshly signed boundary cases: 180 in-range cases matched Rust and C++ on canonical bytes, signing preimages/digests, hashes and sender recovery, while all 300 oversized cases were rejected by Rust decoding and C++ validation. RPC transaction round trips, metadata overflow rejection and effective-price/tip calculations passed. The probe and its results are retained in the validation directory's `review/` subdirectory.
+
+Logs and the tested source manifest are retained in `/home/hsellami/Projects/monad-integration/.build/type40/alloy-widths-20261116/`. This run verifies the paired source and regression suites; it does not deploy the narrower profile or establish restart/replay compatibility for old wide native transactions.

@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_network::ReceiptResponse;
 use alloy_primitives::{Address, TxHash};
 use alloy_rpc_client::ReqwestClient;
 use tokio::time::sleep;

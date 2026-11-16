@@ -20,8 +20,8 @@ use std::{
 
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, proofs::calculate_transaction_root, transaction::Recovered,
-    Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction, TxEip1559, TxEip7702, TxLegacy,
-    EMPTY_OMMER_ROOT_HASH,
+    Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction, Transaction, TxEip1559, TxEip7702,
+    TxLegacy, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::eip7702::{
     Authorization, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,

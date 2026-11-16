@@ -24,7 +24,7 @@ use serde::Serialize;
 fn transaction() -> TxEnvelope {
     Signed::new_unhashed(
         TxMonad {
-            chain_id: U256::from(20143),
+            chain_id: 20143,
             gas_limit: 21_000,
             ..Default::default()
         },

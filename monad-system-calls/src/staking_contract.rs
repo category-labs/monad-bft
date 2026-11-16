@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{TxLegacy, transaction::Recovered};
+use alloy_consensus::{Transaction, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, FixedBytes, TxKind, U256, hex};
 use alloy_sol_types::SolValue;
 use monad_eth_types::ValidatedTx;

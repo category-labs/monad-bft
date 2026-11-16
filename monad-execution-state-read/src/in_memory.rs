@@ -22,7 +22,7 @@ use std::{
     },
 };
 
-use alloy_consensus::Header;
+use alloy_consensus::{Header, Transaction};
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,

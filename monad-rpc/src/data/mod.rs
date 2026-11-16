@@ -18,7 +18,9 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{transaction::Recovered, Header as RlpHeader, ReceiptWithBloom};
+use alloy_consensus::{
+    transaction::Recovered, Header as RlpHeader, ReceiptWithBloom, Transaction as _,
+};
 use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{

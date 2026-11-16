@@ -605,7 +605,7 @@ mod tests {
                     block_hash: Some(block_hash),
                     block_number: Some(height),
                     gas_used: 21000,
-                    effective_gas_price: alloy_primitives::U256::ZERO,
+                    effective_gas_price: 0,
                     blob_gas_used: None,
                     blob_gas_price: None,
                     from: signer.address(),

@@ -19,7 +19,7 @@
 //! be used which can then be converted into SystemTransaction(s) and
 //! added to the block.
 
-use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
+use alloy_consensus::{SignableTransaction, Transaction, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, B256, U256, hex};
 use alloy_rlp::Encodable;
 use alloy_signer::SignerSync;

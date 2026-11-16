@@ -15,6 +15,7 @@
 
 use std::{pin::pin, time::Duration};
 
+use alloy_consensus::Transaction;
 use alloy_primitives::{Address, FixedBytes};
 use alloy_rpc_types::Filter;
 use monad_exec_events::BlockCommitState;
@@ -172,7 +173,7 @@ fn validate_and_decode_tx(
     }
 
     if let Some(tx_chain_id) = tx.chain_id() {
-        if tx_chain_id != alloy_primitives::U256::from(chain_id) {
+        if tx_chain_id != chain_id {
             return Err(JsonRpcError::with_message(
                 ErrorCode::TransactionRejected,
                 format!("Invalid chain ID: expected {chain_id}, got {tx_chain_id}"),
@@ -486,13 +487,13 @@ mod tests {
 
     #[test]
     fn native_submission_returns_canonical_identity_and_rejects_other_framing() {
-        use alloy_primitives::{keccak256, U256};
+        use alloy_primitives::keccak256;
         let signer = PrivateKeySigner::from_bytes(&FixedBytes::from([1u8; 32])).unwrap();
         let transaction = monad_transaction::TxMonad {
-            chain_id: U256::from(20143),
+            chain_id: 20143,
             gas_limit: 21000,
-            max_fee_per_gas: U256::from(50_000_000_000u64),
-            max_priority_fee_per_gas: U256::from(2_000_000_000u64),
+            max_fee_per_gas: 50_000_000_000,
+            max_priority_fee_per_gas: 2_000_000_000,
             to: TxKind::Call(signer.address()),
             ..Default::default()
         };

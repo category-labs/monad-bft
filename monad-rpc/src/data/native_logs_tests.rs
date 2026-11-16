@@ -117,7 +117,7 @@ fn native_receipt_log_extraction_handles_empty_receipts_and_filters() {
 fn mixed_block_log_scan_preserves_canonical_hashes_order_and_metadata() {
     let native: TxEnvelope = Signed::new_unhashed(
         TxMonad {
-            chain_id: U256::from(20143),
+            chain_id: 20143,
             gas_limit: 21_000,
             ..Default::default()
         },

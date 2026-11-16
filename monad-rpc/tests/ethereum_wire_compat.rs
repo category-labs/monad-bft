@@ -159,7 +159,7 @@ fn rpc_transactions(
         block_hash: original.block_hash,
         block_number: original.block_number,
         transaction_index: original.transaction_index,
-        effective_gas_price: effective_gas_price.map(U256::from),
+        effective_gas_price,
         block_timestamp: original.block_timestamp,
     };
     (original, current)
@@ -240,13 +240,13 @@ fn ethereum_effective_fees_match_master_at_caps_and_integer_boundaries() {
         ] {
             assert_eq!(
                 current.effective_gas_price(base_fee),
-                U256::from(original.effective_gas_price(base_fee)),
+                original.effective_gas_price(base_fee),
                 "{name}: price with base fee {base_fee:?}"
             );
             if let Some(base_fee) = base_fee {
                 assert_eq!(
                     current.effective_tip_per_gas(base_fee),
-                    original.effective_tip_per_gas(base_fee).map(U256::from),
+                    original.effective_tip_per_gas(base_fee),
                     "{name}: tip with base fee {base_fee}"
                 );
             }
@@ -375,9 +375,9 @@ fn rpc_receipts(
         block_hash: original.block_hash,
         block_number: original.block_number,
         gas_used: original.gas_used,
-        effective_gas_price: U256::from(original.effective_gas_price),
+        effective_gas_price: original.effective_gas_price,
         blob_gas_used: original.blob_gas_used,
-        blob_gas_price: original.blob_gas_price.map(U256::from),
+        blob_gas_price: original.blob_gas_price,
         from: original.from,
         to: original.to,
         contract_address: original.contract_address,
@@ -470,17 +470,7 @@ fn fee_history_json_matches_master_with_optional_and_full_width_rewards() {
             blob_gas_used_ratio: vec![0.0],
             reward: reward.clone(),
         };
-        let current = rpc::FeeHistory {
-            inner: alloy_rpc_types::FeeHistory {
-                reward: None,
-                ..original.clone()
-            },
-            reward: reward.map(|rows| {
-                rows.into_iter()
-                    .map(|row| row.into_iter().map(U256::from).collect())
-                    .collect()
-            }),
-        };
+        let current: rpc::FeeHistory = original.clone();
         let expected = serde_json::to_value(original).unwrap();
         assert_eq!(serde_json::to_value(&current).unwrap(), expected);
         let decoded: rpc::FeeHistory = serde_json::from_value(expected.clone()).unwrap();
@@ -563,9 +553,9 @@ fn receipt_reader_requires_a_type_like_master() {
 #[test]
 fn native_control_still_serializes_an_explicit_new_type() {
     let transaction: TxEnvelope = monad_transaction::TxMonad {
-        chain_id: U256::from(CHAIN_ID),
+        chain_id: CHAIN_ID,
         gas_limit: 21_000,
-        max_fee_per_gas: U256::from(200),
+        max_fee_per_gas: 200,
         ..Default::default()
     }
     .into_signed(signature())
@@ -574,4 +564,40 @@ fn native_control_still_serializes_an_explicit_new_type() {
         serde_json::to_value(transaction).unwrap()["type"],
         json!("0x40")
     );
+}
+
+#[test]
+fn ethereum_rpc_price_bounds_match_alloy() {
+    let overflow = json!(format!("{:#x}", U256::ONE << 128));
+    for (name, tx) in transactions() {
+        let (original, _) = rpc_transactions(tx, true);
+        let mut value = serde_json::to_value(original).unwrap();
+        value["gasPrice"] = overflow.clone();
+        let expected = serde_json::from_value::<alloy_rpc_types::Transaction>(value.clone());
+        let actual = serde_json::from_value::<rpc::Transaction>(value);
+        // Legacy gasPrice is a bounded signed field; dynamic gasPrice is metadata.
+        match (expected, actual) {
+            (Ok(expected), Ok(actual)) => assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(expected).unwrap(),
+                "{name}"
+            ),
+            (Err(_), Err(_)) => (),
+            _ => panic!("gasPrice reader differs from Alloy for {name}"),
+        }
+    }
+    for (original, current) in receipts(true.into()) {
+        let (original, _) = rpc_receipts(original, current, false);
+        let value = serde_json::to_value(original).unwrap();
+        for field in ["effectiveGasPrice", "gasPrice", "blobGasPrice"] {
+            let mut value = value.clone();
+            value.as_object_mut().unwrap().remove("effectiveGasPrice");
+            value[field] = overflow.clone();
+            assert!(
+                serde_json::from_value::<alloy_rpc_types::TransactionReceipt>(value.clone())
+                    .is_err()
+            );
+            assert!(serde_json::from_value::<rpc::TransactionReceipt>(value).is_err());
+        }
+    }
 }

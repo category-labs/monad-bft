@@ -18,7 +18,7 @@ use std::{
     collections::{BTreeMap, BinaryHeap, VecDeque},
 };
 
-use alloy_consensus::transaction::Recovered;
+use alloy_consensus::{transaction::Recovered, Transaction};
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::Address;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -48,7 +48,7 @@ where
     ST: CertificateSignatureRecoverable,
 {
     tx: &'a PoolTx<CertificateSignaturePubKey<ST>>,
-    effective_tip_per_gas: alloy_primitives::U256,
+    effective_tip_per_gas: u128,
 }
 
 impl<'a, ST> OrderedTx<'a, ST>

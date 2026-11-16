@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use alloy_consensus::transaction::Recovered;
+use alloy_consensus::{transaction::Recovered, Transaction};
 use alloy_rlp::Encodable;
 use itertools::Itertools;
 use monad_chain_config::{revision::MockChainRevision, MockChainConfig};

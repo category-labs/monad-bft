@@ -108,6 +108,26 @@ impl schemars::JsonSchema for CallRequest {
 }
 
 impl CallRequest {
+    /// Check the caller's native caps before gas filling can reduce them to an effective price.
+    fn validate_native_fee_bounds(&self) -> Result<(), JsonRpcError> {
+        if self.transaction_type == Some(U8::from(monad_transaction::MONAD_TX_TYPE)) {
+            let GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } = self.gas_price_details
+            else {
+                return Err(JsonRpcError::invalid_params());
+            };
+            for fee in [max_fee_per_gas, max_priority_fee_per_gas]
+                .into_iter()
+                .flatten()
+            {
+                u128::try_from(fee).map_err(|_| JsonRpcError::invalid_params())?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn max_fee_per_gas(&self) -> Option<U256> {
         match self.gas_price_details {
             GasPriceDetails::Legacy { gas_price } => Some(gas_price),
@@ -120,6 +140,7 @@ impl CallRequest {
     }
 
     pub fn fill_gas_prices(&mut self, base_fee: U256) -> Result<(), JsonRpcError> {
+        self.validate_native_fee_bounds()?;
         match self.gas_price_details {
             GasPriceDetails::Legacy { gas_price } => {
                 if gas_price < base_fee {
@@ -208,6 +229,7 @@ impl Default for GasPriceDetails {
 impl TryFrom<CallRequest> for TxEnvelope {
     type Error = JsonRpcError;
     fn try_from(call_request: CallRequest) -> Result<Self, JsonRpcError> {
+        call_request.validate_native_fee_bounds()?;
         let CallRequest {
             from: _,
             to,
@@ -254,16 +276,16 @@ impl TryFrom<CallRequest> for TxEnvelope {
             else {
                 return Err(JsonRpcError::invalid_params());
             };
-            let chain_id = U256::from(chain_id.unwrap_or_default());
-            if chain_id != U256::from(monad_transaction::MONAD_DEVNET_CHAIN_ID) || nonce == u64::MAX
-            {
+            let chain_id = chain_id.unwrap_or_default().to::<u64>();
+            if chain_id != monad_transaction::MONAD_DEVNET_CHAIN_ID || nonce == u64::MAX {
                 return Err(JsonRpcError::invalid_params());
             }
-            let max_fee_per_gas = max_fee_per_gas.unwrap_or_default();
-            let max_priority_fee_per_gas = max_priority_fee_per_gas.unwrap_or_default();
-            if max_priority_fee_per_gas > max_fee_per_gas
-                || max_fee_per_gas.checked_mul(U256::from(gas_limit)).is_none()
-            {
+            let max_fee_per_gas = u128::try_from(max_fee_per_gas.unwrap_or_default())
+                .map_err(|_| JsonRpcError::invalid_params())?;
+            let max_priority_fee_per_gas =
+                u128::try_from(max_priority_fee_per_gas.unwrap_or_default())
+                    .map_err(|_| JsonRpcError::invalid_params())?;
+            if max_priority_fee_per_gas > max_fee_per_gas {
                 return Err(JsonRpcError::invalid_params());
             }
             if to.is_none() {
@@ -1846,13 +1868,15 @@ mod tests {
 
 #[cfg(test)]
 mod native_request_tests {
+    use alloy_consensus::Transaction;
+
     use super::*;
 
     fn native_request() -> CallRequest {
         serde_json::from_value(serde_json::json!({
             "type": "0x40", "chainId": "0x4eaf", "nonce": "0x0", "gas": "0x5208",
             "to": "0x0000000000000000000000000000000000000002",
-            "maxFeePerGas": "0x100000000000000000000000000000000000000000000000000",
+            "maxFeePerGas": "0xffffffffffffffffffffffffffffffff",
             "maxPriorityFeePerGas": "0x1", "value": "0x0", "input": "0x"
         }))
         .unwrap()
@@ -1863,7 +1887,7 @@ mod native_request_tests {
         let request = native_request();
         let tx = TxEnvelope::try_from(request.clone()).unwrap();
         assert!(tx.is_monad());
-        assert_eq!(tx.max_fee_per_gas(), U256::ONE << 200);
+        assert_eq!(tx.max_fee_per_gas(), u128::MAX);
         assert!(tx.access_list().is_none());
         let mut empty = request;
         empty.access_list = Some(Default::default());
@@ -1907,6 +1931,39 @@ mod native_request_tests {
                 + 1
         ]));
         assert!(TxEnvelope::try_from(request).is_err());
+    }
+
+    #[test]
+    fn native_fee_overflow_is_rejected_before_gas_filling() {
+        for (cap, tip) in [
+            (U256::ONE << 128, U256::ONE),
+            (U256::from(u128::MAX), U256::ONE << 128),
+        ] {
+            let mut request = native_request();
+            request.gas_price_details = GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(cap),
+                max_priority_fee_per_gas: Some(tip),
+            };
+            assert_eq!(
+                TxEnvelope::try_from(request.clone()),
+                Err(JsonRpcError::invalid_params())
+            );
+            assert_eq!(
+                request.fill_gas_prices(U256::ONE),
+                Err(JsonRpcError::invalid_params())
+            );
+            assert_eq!(request.max_fee_per_gas(), Some(cap));
+        }
+        let mut request = native_request();
+        request.gas_price_details = GasPriceDetails::Eip1559 {
+            max_fee_per_gas: Some(U256::from(u128::MAX)),
+            max_priority_fee_per_gas: Some(U256::from(u128::MAX)),
+        };
+        request.value = Some(U256::MAX);
+        request.fill_gas_prices(U256::ONE).unwrap();
+        let tx = TxEnvelope::try_from(request).unwrap();
+        assert_eq!(tx.max_fee_per_gas(), u128::MAX);
+        assert_eq!(tx.value(), U256::MAX);
     }
 
     #[test]
