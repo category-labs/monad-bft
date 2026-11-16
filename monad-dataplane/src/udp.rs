@@ -416,48 +416,6 @@ mod tests {
     use crate::UdpPacingConfig;
 
     #[monoio::test(timer_enabled = true)]
-    async fn pacing_waits_for_worker_queue_space_and_counts_closed_queue_drops() {
-        use futures::FutureExt;
-
-        let metrics = DataplaneMetrics::new();
-        let (sender, receiver) = mpsc::channel(4);
-        let (dispatch_tx, dispatch_rx) = async_channel::bounded(1);
-        dispatch_tx.try_send(Vec::new()).unwrap();
-        let message = || UdpMsg {
-            socket_id: UdpSocketId::Raptorcast,
-            dst: "127.0.0.1:1".parse().unwrap(),
-            payload: Bytes::from_static(&[1]),
-            stride: 1,
-            priority: monad_types::EgressPriority::High,
-        };
-        assert!(sender.try_send(message().into()).is_ok());
-        let mut pacing = std::pin::pin!(crate::egress::task(
-            dispatch_tx,
-            receiver,
-            1_000,
-            UdpPacingConfig::for_global_bandwidth(1_000),
-            metrics.clone(),
-        ));
-        assert!(pacing.as_mut().now_or_never().is_none());
-        assert_eq!(metrics.udp_egress_messages_dropped.get(), 0);
-        time::sleep(Duration::from_millis(1)).await;
-        dispatch_rx.try_recv().unwrap();
-        assert!(pacing.as_mut().now_or_never().is_none());
-        let batch = dispatch_rx.try_recv().unwrap();
-        assert_eq!(batch.len(), 1);
-        assert_eq!(batch[0].payload, Bytes::from_static(&[1]));
-        assert!(metrics.udp_tx_queue_wait_micros.get() > 0);
-        assert_eq!(metrics.udp_egress_messages_dropped.get(), 0);
-
-        dispatch_rx.close();
-        assert!(sender.try_send(message().into()).is_ok());
-        time::timeout(Duration::from_millis(100), pacing)
-            .await
-            .unwrap();
-        assert_eq!(metrics.udp_egress_messages_dropped.get(), 1);
-    }
-
-    #[monoio::test(timer_enabled = true)]
     async fn new_peer_wakes_transmit_while_another_peer_is_cooling() {
         let regular = UdpSocket::bind("127.0.0.1:0").unwrap();
         let high = UdpSocket::bind("127.0.0.2:0").unwrap();

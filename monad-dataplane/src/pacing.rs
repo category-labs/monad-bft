@@ -532,6 +532,75 @@ mod tests {
 
     const UNLIMITED: u64 = 1_000_000_000_000;
 
+    #[test]
+    fn pacing_reply_channel_is_reused_without_stale_notifications() {
+        let (ready, mut grants) = mpsc::channel(1);
+        for bytes in [1, 64 * 1024, 17] {
+            let mut request = PacingRequest::new(bytes, ready.clone());
+            assert_eq!(request.next_payload_bytes(), bytes);
+            assert_eq!(request.next_pacing_bytes(), bytes);
+            assert!(matches!(
+                grants.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            request.grant();
+            request.grant();
+            drop(request);
+            assert_eq!(grants.try_recv(), Ok(Ok(())));
+            assert!(matches!(
+                grants.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+        }
+        drop(PacingRequest::new(1, ready.clone()));
+        assert_eq!(grants.try_recv(), Ok(Err(ErrorKind::BrokenPipe)));
+        let mut request = PacingRequest::new(1, ready);
+        request.grant();
+        assert_eq!(grants.try_recv(), Ok(Ok(())));
+    }
+
+    #[test]
+    fn rejected_and_abandoned_reservations_cancel_the_waiter() {
+        let (ready, mut grants) = mpsc::channel(1);
+        let metrics = DataplaneMetrics::new();
+        let mut queue = PacingQueue::new(rate(UNLIMITED), rate(UNLIMITED), 1, metrics.clone());
+        assert!(queue
+            .enqueue(
+                key(1),
+                EgressPriority::Regular,
+                crate::egress::PacedMessage::Tcp {
+                    addr: (key(1), 1).into(),
+                    priority: EgressPriority::Regular,
+                    request: PacingRequest::new(64 * 1024, ready.clone()),
+                }
+            )
+            .is_err());
+        assert_eq!(grants.try_recv(), Ok(Err(ErrorKind::BrokenPipe)));
+        assert_eq!(metrics.tcp_pacing_memory_limit_drops.get(), 1);
+        assert_eq!(metrics.udp_pacing_memory_limit_drops.get(), 0);
+        assert_eq!(metrics.udp_egress_messages_dropped.get(), 0);
+
+        let mut queue = PacingQueue::new(
+            rate(UNLIMITED),
+            rate(UNLIMITED),
+            1024,
+            DataplaneMetrics::new(),
+        );
+        queue
+            .enqueue(
+                key(1),
+                EgressPriority::Regular,
+                PacingRequest::new(64 * 1024, ready),
+            )
+            .unwrap();
+        assert!(matches!(
+            grants.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        drop(queue);
+        assert_eq!(grants.try_recv(), Ok(Err(ErrorKind::BrokenPipe)));
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct Item {
         id: u64,
@@ -980,37 +1049,35 @@ mod tests {
     fn memory_limit_is_per_traffic_class() {
         let mut queue =
             PacingQueue::new(rate(UNLIMITED), rate(UNLIMITED), 2, DataplaneMetrics::new());
-        queue
-            .enqueue(key(1), EgressPriority::Regular, item(1, 1))
-            .unwrap();
-        queue
-            .enqueue(key(1), EgressPriority::Regular, item(2, 1))
-            .unwrap();
-        queue
-            .enqueue(key(2), EgressPriority::High, item(3, 1))
-            .unwrap();
-        queue
-            .enqueue(key(2), EgressPriority::High, item(4, 1))
-            .unwrap();
-        let error = queue
-            .enqueue(key(2), EgressPriority::High, item(5, 1))
-            .unwrap_err();
-        assert_eq!(error, EnqueueError::MemoryLimit(item(5, 1)));
+        for (index, priority) in [
+            EgressPriority::High,
+            EgressPriority::Regular,
+            EgressPriority::Background,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let peer = key(index as u16 + 1);
+            queue.enqueue(peer, priority, item(1, 1)).unwrap();
+            queue.enqueue(peer, priority, item(2, 1)).unwrap();
+            assert_eq!(
+                queue.enqueue(peer, priority, item(3, 1)).unwrap_err(),
+                EnqueueError::MemoryLimit(item(3, 1))
+            );
+        }
         let memory_used: [usize; PRIORITY_COUNT] =
             std::array::from_fn(|class| queue.memory[class].used);
         assert_eq!(
-            memory_used,
-            [2, 2, 0],
+            memory_used, [2; PRIORITY_COUNT],
             "all traffic classes must have independent budgets"
         );
-        assert_eq!(queue.metrics.udp_pacing_queued_bytes.get(), 4);
+        assert_eq!(queue.metrics.udp_pacing_queued_bytes.get(), 6);
         assert_eq!(queue.metrics.udp_pacing_memory_limit_bytes.get(), 2);
-        assert_eq!(queue.metrics.udp_pacing_memory_limit_drops.get(), 1);
-        assert_eq!(queue.metrics.udp_egress_messages_dropped.get(), 1);
-
+        assert_eq!(queue.metrics.udp_pacing_memory_limit_drops.get(), 3);
+        assert_eq!(queue.metrics.udp_egress_messages_dropped.get(), 3);
         queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         queue
-            .enqueue(key(2), EgressPriority::High, item(5, 1))
+            .enqueue(key(1), EgressPriority::High, item(3, 1))
             .unwrap();
     }
 
