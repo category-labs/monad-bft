@@ -24,8 +24,9 @@ use crate::{
     data::{get_block_key_from_tag, DataProvider},
     handlers::{
         debug::{
-            MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
-            MonadDebugTraceTransactionParams, Tracer, TracerDescriptor, TracerObject,
+            prestate_trace_to_json, MonadDebugTraceBlockByHashParams,
+            MonadDebugTraceBlockByNumberParams, MonadDebugTraceTransactionParams, Tracer,
+            TracerDescriptor, TracerObject,
         },
         parse_ethcall_chain_id, MonadRpcResources,
     },
@@ -242,15 +243,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
         }
     };
 
-    // reject on the approximated encoded length before serialization
-    if raw_payload.len() > max_response_size {
-        return Err(JsonRpcError::max_response_size_exceeded());
-    }
-
-    let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
-        .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
-    serde_json::value::to_raw_value(&v)
-        .map_err(|e| JsonRpcError::internal_error(format!("json serialization error: {}", e)))
+    prestate_trace_to_json(&raw_payload, &params.tracer().config, max_response_size)
 }
 
 pub async fn collect_debug_trace_via_replay(

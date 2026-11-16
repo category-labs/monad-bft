@@ -23,6 +23,7 @@ use alloy_rlp::{Decodable, Encodable, RlpDecodable};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use tracing::{error, trace};
 
 use crate::{
@@ -345,6 +346,89 @@ pub struct TracerConfig {
     /// log for callTracer, ignored for prestateTracer
     #[serde(default)]
     pub with_log: bool,
+
+    /// disableCode for prestateTracer, ignored for callTracer
+    #[serde(default)]
+    pub disable_code: bool,
+
+    /// disableStorage for prestateTracer, ignored for callTracer
+    #[serde(default)]
+    pub disable_storage: bool,
+}
+
+/// Converts the CBOR payload of a prestate or state diff trace into JSON, applying the
+/// `disableCode` and `disableStorage` options.
+///
+/// The payload is either a single transaction trace or, for block traces, an array of
+/// `{"result": <trace>, "txHash": ...}` objects. A trace maps each address to its account
+/// fields, or in diff mode holds `pre` and `post` maps of that shape.
+pub fn prestate_trace_to_json(
+    raw_payload: &[u8],
+    config: &TracerConfig,
+    max_response_size: usize,
+) -> JsonRpcResult<Box<RawValue>> {
+    let filter = config.disable_code || config.disable_storage;
+
+    // reject on the approximated encoded length before serialization. When fields are
+    // filtered out, the response can be much smaller than the payload, so the limit is
+    // checked on the filtered response instead.
+    if !filter && raw_payload.len() > max_response_size {
+        return Err(JsonRpcError::max_response_size_exceeded());
+    }
+
+    let mut trace: serde_cbor::Value = serde_cbor::from_slice(raw_payload)
+        .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
+    if filter {
+        strip_prestate_fields(&mut trace, config);
+    }
+
+    let json = serde_json::value::to_raw_value(&trace)
+        .map_err(|e| JsonRpcError::internal_error(format!("json serialization error: {}", e)))?;
+    if filter && json.get().len() > max_response_size {
+        return Err(JsonRpcError::max_response_size_exceeded());
+    }
+    Ok(json)
+}
+
+fn strip_prestate_fields(trace: &mut serde_cbor::Value, config: &TracerConfig) {
+    use serde_cbor::Value;
+
+    match trace {
+        Value::Array(tx_traces) => {
+            for tx_trace in tx_traces {
+                if let Value::Map(fields) = tx_trace {
+                    if let Some(result) = fields.get_mut(&Value::Text("result".into())) {
+                        strip_prestate_fields(result, config);
+                    }
+                }
+            }
+        }
+        Value::Map(fields) if config.diff_mode => {
+            for key in ["pre", "post"] {
+                if let Some(Value::Map(accounts)) = fields.get_mut(&Value::Text(key.into())) {
+                    strip_account_fields(accounts, config);
+                }
+            }
+        }
+        Value::Map(accounts) => strip_account_fields(accounts, config),
+        _ => {}
+    }
+}
+
+fn strip_account_fields(
+    accounts: &mut std::collections::BTreeMap<serde_cbor::Value, serde_cbor::Value>,
+    config: &TracerConfig,
+) {
+    for account in accounts.values_mut() {
+        if let serde_cbor::Value::Map(fields) = account {
+            if config.disable_code {
+                fields.remove(&serde_cbor::Value::Text("code".into()));
+            }
+            if config.disable_storage {
+                fields.remove(&serde_cbor::Value::Text("storage".into()));
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Deserialize, Debug, schemars::JsonSchema)]
@@ -1688,5 +1772,136 @@ mod tests {
         let c_frame = &e_frame.calls[0];
         assert_eq!(c_frame.logs.len(), 1);
         assert_eq!(c_frame.logs[0].index.0, 2); // C0
+    }
+
+    fn prestate_cbor(value: serde_json::Value) -> Vec<u8> {
+        serde_cbor::to_vec(&value).unwrap()
+    }
+
+    fn prestate_json(
+        value: serde_json::Value,
+        config: &TracerConfig,
+        max_response_size: usize,
+    ) -> JsonRpcResult<serde_json::Value> {
+        let raw = prestate_trace_to_json(&prestate_cbor(value), config, max_response_size)?;
+        Ok(serde_json::from_str(raw.get()).unwrap())
+    }
+
+    fn sample_account() -> serde_json::Value {
+        serde_json::json!({
+            "balance": "0x1",
+            "nonce": 2,
+            "code": "0x6080",
+            "storage": {"0x01": "0x02"},
+        })
+    }
+
+    #[test]
+    fn test_tracer_config_deserializes_disable_flags() {
+        let config: TracerConfig =
+            serde_json::from_str(r#"{"disableCode":true,"disableStorage":true}"#).unwrap();
+        assert!(config.disable_code);
+        assert!(config.disable_storage);
+        assert!(!config.diff_mode);
+
+        let config: TracerConfig = serde_json::from_str("{}").unwrap();
+        assert!(!config.disable_code);
+        assert!(!config.disable_storage);
+    }
+
+    #[test]
+    fn test_prestate_disable_code() {
+        let config = TracerConfig {
+            disable_code: true,
+            ..Default::default()
+        };
+        let out = prestate_json(
+            serde_json::json!({"0xaa": sample_account()}),
+            &config,
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            serde_json::json!({"0xaa": {
+                "balance": "0x1",
+                "nonce": 2,
+                "storage": {"0x01": "0x02"},
+            }})
+        );
+    }
+
+    #[test]
+    fn test_prestate_disable_storage_diff_mode() {
+        let config = TracerConfig {
+            diff_mode: true,
+            disable_storage: true,
+            ..Default::default()
+        };
+        let out = prestate_json(
+            serde_json::json!({
+                "pre": {"0xaa": sample_account()},
+                "post": {"0xaa": sample_account()},
+            }),
+            &config,
+            usize::MAX,
+        )
+        .unwrap();
+        let account = serde_json::json!({"balance": "0x1", "nonce": 2, "code": "0x6080"});
+        assert_eq!(
+            out,
+            serde_json::json!({"pre": {"0xaa": account}, "post": {"0xaa": account}})
+        );
+    }
+
+    #[test]
+    fn test_prestate_block_array_filtered() {
+        let config = TracerConfig {
+            disable_code: true,
+            disable_storage: true,
+            ..Default::default()
+        };
+        let out = prestate_json(
+            serde_json::json!([{"result": {"0xaa": sample_account()}, "txHash": "0xbb"}]),
+            &config,
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            serde_json::json!([{
+                "result": {"0xaa": {"balance": "0x1", "nonce": 2}},
+                "txHash": "0xbb",
+            }])
+        );
+    }
+
+    #[test]
+    fn test_prestate_no_flags_is_identity() {
+        let input = serde_json::json!({"0xaa": sample_account()});
+        let out = prestate_json(input.clone(), &TracerConfig::default(), usize::MAX).unwrap();
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn test_prestate_size_limit_checked_after_filtering() {
+        let input = serde_json::json!({"0xaa": {
+            "balance": "0x1",
+            "code": format!("0x{}", "ab".repeat(1000)),
+        }});
+        let raw_len = prestate_cbor(input.clone()).len();
+        let limit = 200;
+        assert!(raw_len > limit);
+
+        // without filtering, the raw payload is rejected
+        assert!(prestate_json(input.clone(), &TracerConfig::default(), limit).is_err());
+
+        // with disableCode, the filtered response fits
+        let config = TracerConfig {
+            disable_code: true,
+            ..Default::default()
+        };
+        let out = prestate_json(input, &config, limit).unwrap();
+        assert_eq!(out, serde_json::json!({"0xaa": {"balance": "0x1"}}));
     }
 }
