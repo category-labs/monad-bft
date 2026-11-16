@@ -20,7 +20,7 @@
 //! finds this validator in
 
 use super::{
-    super::{ValidateCert, Votable},
+    super::Votable,
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
     messages::PrePrepareMsg,
 };
@@ -30,6 +30,8 @@ const POISON_OBSERVED: &str = "the poison phase installed by try_advance was obs
 /// The state of the current view
 #[derive(Clone)]
 pub(crate) enum Phase<V: Votable> {
+    /// No input registered; the instance buffers and sends nothing
+    Idle,
     NewView(NewView),
     AwaitingProposal(AwaitingProposal),
     Preparing(Preparing<V>),
@@ -91,6 +93,14 @@ impl<V: Votable> Phase<V> {
         Phase::NewView(NewView { _private: () })
     }
 
+    pub(crate) fn is_idle(&self) -> bool {
+        match self {
+            Phase::Idle => true,
+            Phase::Poisoned => unreachable!("{POISON_OBSERVED}"),
+            _ => false,
+        }
+    }
+
     pub(crate) fn is_decided(&self) -> bool {
         match self {
             Phase::Decided(_) => true,
@@ -118,7 +128,7 @@ impl<V: Votable> Phase<V> {
     /// `entries(x_v)` of the accepted proposal, if one was accepted
     pub(crate) fn entries(&self) -> Option<&V::Entries> {
         match self {
-            Phase::NewView(_) | Phase::AwaitingProposal(_) => None,
+            Phase::Idle | Phase::NewView(_) | Phase::AwaitingProposal(_) => None,
             Phase::Preparing(p) => Some(&p.entries),
             Phase::Committing(p) => Some(&p.entries),
             Phase::TimedOut(p) => p.accepted.as_ref(),
@@ -140,6 +150,7 @@ impl<V: Votable> Phase<V> {
     /// For assertion messages
     pub(crate) fn name(&self) -> &'static str {
         match self {
+            Phase::Idle => "idle",
             Phase::NewView(_) => "new view",
             Phase::AwaitingProposal(_) => "awaiting proposal",
             Phase::Preparing(_) => "preparing",
@@ -154,6 +165,7 @@ impl<V: Votable> Phase<V> {
     /// A timed-out phase times out to itself; `None` only for a decided phase
     pub(crate) fn time_out(self) -> Option<Phase<V>> {
         let accepted = match self {
+            Phase::Idle => unreachable!("an idle instance runs no transition"),
             Phase::NewView(_) | Phase::AwaitingProposal(_) => None,
             Phase::Preparing(p) => Some(p.entries),
             Phase::Committing(p) => Some(p.entries),
@@ -221,14 +233,14 @@ impl<V: Votable> Decided<V> {
 
 /// What the state machine found it can do, with the evidence that lets it
 /// `find_pending_transition` constructs these, so applying one cannot fail
-pub(crate) enum Transition<V: Votable, C: ValidateCert> {
-    Proposal(PrePrepareMsg<V, C>),
+pub(crate) enum Transition<V: Votable> {
+    Proposal(PrePrepareMsg<V>),
     PrepareQc(PrepareQc<V::Entries>),
     Decide {
         qc: FallbackCommitQc<V::Entries>,
         block: V,
     },
-    OwnProposalReady(PrePrepareMsg<V, C>),
+    OwnProposalReady(PrePrepareMsg<V>),
     AwaitProposal,
     Tc(TimeoutCertificate<V::Entries>),
     /// Timer fired, or f+1 stake already timed out. Repeats in a timed-out view

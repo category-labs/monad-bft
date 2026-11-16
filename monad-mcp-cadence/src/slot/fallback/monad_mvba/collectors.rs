@@ -20,7 +20,7 @@ use monad_mcp_common::spec::Stake as _;
 use super::{
     super::{
         super::types::{IsVote, Slot, StrongQc, ValidatorData, ValidatorIndex, VoteMsg, VotePool},
-        FallbackView, MvbaScope, ValidateCert, Votable,
+        FallbackView, MvbaScope, Votable,
     },
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate, TimeoutGroup},
     messages::{
@@ -35,8 +35,9 @@ use crate::spec::validator::ValidatorData as _;
 /// runs once
 ///
 /// Only sound for votes where every strong certificate over the scope
-/// certifies the same fact, which prepare and commit votes are (two strong
-/// quorums on different verdicts need a third of the stake to equivocate)
+/// certifies the same fact: `NotFull`, a unit verdict, and prepare, commit and
+/// `DummyVote` votes (two strong quorums on different verdicts need a third of
+/// the stake to equivocate)
 #[derive(Clone)]
 pub(crate) struct SealingVotePool<V: IsVote> {
     votes: VotePool<V>,
@@ -46,21 +47,24 @@ pub(crate) struct SealingVotePool<V: IsVote> {
 }
 
 impl<V: IsVote> SealingVotePool<V> {
-    fn new(scope: V::Scope) -> Self {
+    pub(crate) fn new(scope: V::Scope) -> Self {
         Self {
             votes: VotePool::new(scope),
             sealed: OnceCell::new(),
         }
     }
 
-    fn add_vote(&mut self, voter: ValidatorIndex, msg: VoteMsg<V>) {
+    pub(crate) fn add_vote(&mut self, voter: ValidatorIndex, msg: VoteMsg<V>) {
         if self.sealed.get().is_some() {
             return;
         }
         self.votes.add_vote(voter, msg);
     }
 
-    fn try_form_strong_qc(&self, validator_data: &ValidatorData) -> Option<&StrongQc<V>> {
+    pub(crate) fn try_form_strong_qc(
+        &self,
+        validator_data: &ValidatorData,
+    ) -> Option<&StrongQc<V>> {
         if let Some(qc) = self.sealed.get() {
             return Some(qc);
         }
@@ -69,16 +73,27 @@ impl<V: IsVote> SealingVotePool<V> {
         let qc = tally.strong_qc()?;
         Some(self.sealed.get_or_init(|| qc))
     }
+
+    /// The sealed certificate, without aggregating
+    pub(crate) fn sealed(&self) -> Option<&StrongQc<V>> {
+        self.sealed.get()
+    }
+
+    /// Installs `qc` unless a certificate is already sealed. Nothing is checked
+    /// here: the caller has verified `qc`
+    pub(crate) fn seal(&self, qc: StrongQc<V>) {
+        let _ = self.sealed.set(qc);
+    }
 }
 
 /// Everything this instance has buffered for one view
 #[derive(Clone)]
-pub(crate) struct ViewCollectors<V: Votable, C: ValidateCert> {
+pub(crate) struct ViewCollectors<V: Votable> {
     slot: Slot,
     view: FallbackView,
 
     /// The first pre-prepare seen for the view
-    pre_prepare: Option<PrePrepareMsg<V, C>>,
+    pre_prepare: Option<PrePrepareMsg<V>>,
     prepare_votes: SealingVotePool<PrepareVote<V::Entries>>,
     commit_votes: SealingVotePool<FallbackCommitVote<V::Entries>>,
     timeout_votes: VotePool<TimeoutVote>,
@@ -90,7 +105,7 @@ pub(crate) struct ViewCollectors<V: Votable, C: ValidateCert> {
     harvested_tc: Option<TimeoutCertificate<V::Entries>>,
 }
 
-impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
+impl<V: Votable> ViewCollectors<V> {
     pub(crate) fn new(slot: Slot, view: FallbackView) -> Self {
         Self {
             slot,
@@ -105,13 +120,13 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
     }
 
     /// First write wins
-    pub(crate) fn store_pre_prepare(&mut self, msg: PrePrepareMsg<V, C>) {
+    pub(crate) fn store_pre_prepare(&mut self, msg: PrePrepareMsg<V>) {
         debug_assert_eq!((msg.slot, msg.view), (self.slot, self.view));
 
         self.pre_prepare.get_or_insert(msg);
     }
 
-    pub(crate) fn pre_prepare(&self) -> Option<&PrePrepareMsg<V, C>> {
+    pub(crate) fn pre_prepare(&self) -> Option<&PrePrepareMsg<V>> {
         self.pre_prepare.as_ref()
     }
 
@@ -162,6 +177,10 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
         // last write wins: sender may update its lock when periodically timing
         // out
         self.timeout_votes.add_or_replace_vote(sender, msg.vote);
+    }
+
+    pub(crate) fn prep_qcs(&self) -> impl Iterator<Item = &PrepareQc<V::Entries>> {
+        self.prep_qcs.values()
     }
 
     /// Whether f+1 stake has timed out here

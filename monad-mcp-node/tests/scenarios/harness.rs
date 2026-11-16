@@ -26,7 +26,11 @@ use monad_mcp_cadence::spec::ProposalHeader as _;
 use monad_mcp_common::{Lane, Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, NodeOutput,
-    cadence::{Outbound, slot::chorus::FinalizationPath, types::ProposalId},
+    cadence::{
+        Outbound,
+        slot::chorus::{FinalizationPath, SlotFinalization},
+        types::ProposalId,
+    },
     common::NodeId,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
@@ -106,6 +110,10 @@ pub struct SimNode {
     first_hops: BTreeMap<Slot, (Time, Lane)>,
     // receiver-side records, when recording
     records: Option<Records>,
+    // the slots this node finalized through the fallback path
+    fallback: BTreeSet<Slot>,
+    // those of them an MVBA commit certificate decided, not the dummy vote
+    fallback_by_commit_qc: BTreeSet<Slot>,
     // hashes every message delivered to this node, with its time, in
     // delivery order
     delivery_hasher: RapidStreamHasherV3<'static>,
@@ -131,6 +139,8 @@ impl SimNode {
             paths: BTreeMap::new(),
             first_hops: BTreeMap::new(),
             records: None,
+            fallback: BTreeSet::new(),
+            fallback_by_commit_qc: BTreeSet::new(),
             delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
             chunk_bytes: ChunkBytes::default(),
             clock_offset: ClockDiff(0),
@@ -189,6 +199,12 @@ impl SimNode {
                         .collect();
                     if !invalid.is_empty() {
                         self.invalid.insert(finalized.slot, invalid);
+                    }
+                    if finalized.finalization.path() == FinalizationPath::Fallback {
+                        self.fallback.insert(finalized.slot);
+                    }
+                    if matches!(finalized.finalization, SlotFinalization::Fallback { .. }) {
+                        self.fallback_by_commit_qc.insert(finalized.slot);
                     }
                     self.finalized.insert(finalized.slot, pattern);
                     let path = finalized.finalization.path();
@@ -527,6 +543,31 @@ pub fn assert_consistent_progress(swarm: &Swarm<SimNode>, horizon: Slot) {
             assert_eq!(seen, pattern, "node {id:?} disagrees on {slot:?}");
         }
     }
+}
+
+// some node finalized a slot below the horizon, one with a lane whose
+// proposer got nothing committed, through the fallback path
+pub fn assert_fallback_path_taken(swarm: &Swarm<SimNode>, horizon: Slot) {
+    let taken = swarm.node_ids().iter().any(|id| {
+        swarm.with_node(id, |node| {
+            node.fallback.range(..horizon).any(|slot| {
+                let pattern = node.finalized[slot].as_ref();
+                pattern.into_iter().any(|pid| pid.is_none())
+            })
+        })
+    });
+    assert!(taken, "no slot finalized through the fallback path");
+
+    // the dummy vote can decide a slot on its own; some slot has to run an MVBA view
+    let by_commit_qc = swarm.node_ids().iter().any(|id| {
+        swarm.with_node(id, |node| {
+            node.fallback_by_commit_qc.range(..horizon).next().is_some()
+        })
+    });
+    assert!(
+        by_commit_qc,
+        "no slot finalized by an MVBA commit certificate"
+    );
 }
 
 // p50 RTT in ms between the testnet hosts, row = from
