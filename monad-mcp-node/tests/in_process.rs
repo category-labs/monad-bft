@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! A lone validator stepped in virtual time: txs arriving as `NodeMessage::Tx`
+//! A lone validator stepped in virtual time: txs arriving as `AppMessage::Tx`
 //! reach the ledger through proposal, DA and finalization, with no tokio and
 //! no sockets.
 
@@ -27,12 +27,12 @@ use monad_mcp_cadence::ledger::{FinalizationPath, LedgerReader, LedgerWriter, Tx
 use monad_mcp_common::{Proposal, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, FinalizedSlot, Node, NodeOutput, NodeRouter, Router,
-    cadence::{Recipients, slot::chorus::ChorusMessage},
+    cadence::slot::chorus::ChorusMessage,
     common::NodeId,
     component::{Proposing, ProposingComponent, ProposingInput, ProposingOutput},
     config::{NodeConfig, SourceKind},
     ledger::new_block,
-    network::{NodeInbound, NodeMessage},
+    network::{AppMessage, NodeAppMessage, WireInbound},
 };
 
 const GENESIS_MS: u64 = 1_000_000;
@@ -64,12 +64,12 @@ impl Harness {
     }
 }
 
-impl<R: Router> Harness<R> {
-    // what the rpc sends: a tx frame under a validator's id
+impl<R: Router<NodeAppMessage>> Harness<R> {
+    // what the rpc sends: a tx under a validator's id
     fn deliver(&mut self, tx: &Tx) {
-        let inbound = NodeInbound {
+        let inbound = WireInbound {
             sender: NodeId::dummy(0),
-            message: NodeMessage::Tx(tx.to_rlp()),
+            message: AppMessage::Tx(tx.clone()),
         };
         self.node.handle(self.now, inbound);
         self.drain();
@@ -83,7 +83,7 @@ impl<R: Router> Harness<R> {
         }
     }
 
-    // steps every timer up to `until`; a unicast to ourselves loops back
+    // steps every timer up to `until`
     fn run_until(&mut self, until: Timestamp) {
         while let Some(due) = self.node.next_due() {
             if due > until {
@@ -96,19 +96,12 @@ impl<R: Router> Harness<R> {
         self.now = self.now.max(until);
     }
 
+    // a lone validator sends nothing: the node loops its own messages back
     fn drain(&mut self) {
-        let self_id = NodeId::dummy(0);
         while let Some(output) = self.node.poll() {
             match output {
                 NodeOutput::Ledger(finalized) => self.finalized.push(finalized),
-                NodeOutput::Network(outbound) if outbound.to == Recipients::Node(self_id) => {
-                    let inbound = NodeInbound {
-                        sender: self_id,
-                        message: outbound.message,
-                    };
-                    self.node.handle(self.now, inbound);
-                }
-                NodeOutput::Network(..) => {}
+                NodeOutput::Transport(..) => {}
             }
         }
     }

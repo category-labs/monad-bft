@@ -17,34 +17,6 @@ use monad_mcp_common::spec as common_spec;
 pub use proposal::{MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader};
 pub use vote::SignatureCollection;
 
-/// Serialize to S, usually bytes.
-pub trait Serializable<S> {
-    fn serialize(&self) -> S;
-}
-
-/// All types can trivially serialize to itself
-impl<S: Clone> Serializable<S> for S {
-    fn serialize(&self) -> S {
-        self.clone()
-    }
-}
-
-/// Deserialize from S, usually bytes
-pub trait Deserializable<S: ?Sized>: Sized {
-    type ReadError: std::error::Error + Send + Sync + 'static;
-
-    fn deserialize(message: &S) -> Result<Self, Self::ReadError>;
-}
-
-/// All types can trivially deserialize to itself
-impl<S: Clone> Deserializable<S> for S {
-    type ReadError = std::io::Error;
-
-    fn deserialize(message: &S) -> Result<Self, Self::ReadError> {
-        Ok(message.clone())
-    }
-}
-
 pub mod validator {
     use monad_mcp_common::{
         containers::{ValidatorIndex, ValidatorSet},

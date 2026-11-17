@@ -16,13 +16,12 @@
 //! The cadence wire message and its byte layout.
 
 use alloy_rlp::{Decodable, Encodable};
-use bytes::Bytes;
 
 use super::{conductor::Conductor, slot::SlotConsensus, types::NodeId};
-use crate::spec::{Deserializable, Serializable};
 
 pub type Recipients = monad_mcp_common::Recipients<NodeId>;
 pub type Outbound<M> = monad_mcp_common::Outbound<M, Recipients>;
+pub type Inbound<M> = monad_mcp_common::Inbound<M, NodeId>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CadenceMessage<SM, CM> {
@@ -85,20 +84,6 @@ where
     }
 }
 
-impl<SM: Encodable, CM: Encodable> Serializable<Bytes> for CadenceMessage<SM, CM> {
-    fn serialize(&self) -> Bytes {
-        alloy_rlp::encode(self).into()
-    }
-}
-
-impl<SM: Decodable, CM: Decodable> Deserializable<Bytes> for CadenceMessage<SM, CM> {
-    type ReadError = alloy_rlp::Error;
-
-    fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {
-        alloy_rlp::decode_exact(message)
-    }
-}
-
 #[cfg(test)]
 mod rlp_tests {
     use alloy_rlp::{Decodable, Encodable};
@@ -129,11 +114,11 @@ mod rlp_tests {
         assert_roundtrip(&cap_advance);
         for message in [slot, conductor] {
             assert_roundtrip(&message);
-            let bytes: bytes::Bytes = message.serialize();
-            assert_eq!(M::deserialize(&bytes).unwrap(), message);
+            let bytes = bytes::Bytes::from(alloy_rlp::encode(&message));
+            assert_eq!(alloy_rlp::decode_exact::<M>(&bytes).unwrap(), message);
             let mut extra = bytes.to_vec();
             extra.push(0);
-            assert!(M::deserialize(&bytes::Bytes::from(extra)).is_err());
+            assert!(alloy_rlp::decode_exact::<M>(&bytes::Bytes::from(extra)).is_err());
         }
     }
 
@@ -170,14 +155,14 @@ mod rlp_tests {
         use super::super::{
             conductor::{CadenceConductor, acs::median::MedianAcs},
             slot::chorus::Chorus,
-            test_utils::{assert_roundtrip, assert_serialization_roundtrip},
+            test_utils::assert_roundtrip,
         };
         type Wire = CadenceWireMsg<Chorus, CadenceConductor<MedianAcs<SlotDeadline>>>;
 
         let slot = Slot(7);
         let message = chorus_message(slot);
         assert_roundtrip(&message);
-        assert_serialization_roundtrip(&Wire::Slot(message));
+        assert_roundtrip(&Wire::Slot(message));
 
         for nanos in [0, 127, 128, u128::MAX] {
             let message = ConductorMessage::DeadlineAgreement(DeadlineAgreementMessage {
@@ -185,13 +170,13 @@ mod rlp_tests {
                 acs_message: Timestamp::from_nanos(nanos),
             });
             assert_roundtrip(&message);
-            assert_serialization_roundtrip(&Wire::Conductor(message));
+            assert_roundtrip(&Wire::Conductor(message));
         }
 
         for cap in [0, 127, 128, u64::MAX - 1] {
             let message = ConductorMessage::<Timestamp>::CapAdvance(CapAdvance { cap: Slot(cap) });
             assert_roundtrip(&message);
-            assert_serialization_roundtrip(&Wire::Conductor(message));
+            assert_roundtrip(&Wire::Conductor(message));
         }
     }
 
@@ -208,27 +193,30 @@ mod rlp_tests {
         let slot = Slot(7);
         let message = chorus_message(slot);
         let wire = Wire::Slot(message.clone());
-        let bytes = <Wire as Serializable<bytes::Bytes>>::serialize(&wire);
+        let bytes = bytes::Bytes::from(alloy_rlp::encode(&wire));
         assert_eq!(bytes.len(), wire.length());
-        let Wire::Slot(decoded_message) = Wire::deserialize(&bytes).unwrap() else {
+        let Wire::Slot(decoded_message) = alloy_rlp::decode_exact::<Wire>(&bytes).unwrap() else {
             panic!("expected a slot message");
         };
         assert_eq!(decoded_message.slot(), slot);
         assert_eq!(decoded_message, message);
 
         for end in 0..bytes.len() {
-            assert!(Wire::deserialize(&bytes.slice(..end)).is_err());
+            assert!(alloy_rlp::decode_exact::<Wire>(&bytes.slice(..end)).is_err());
         }
         let mut extra = bytes.to_vec();
         extra.push(0x42);
-        assert!(Wire::deserialize(&bytes::Bytes::from(extra)).is_err());
+        assert!(alloy_rlp::decode_exact::<Wire>(&bytes::Bytes::from(extra)).is_err());
         // [Conductor, [DeadlineAgreement, [window]]] cannot supply a NoMessage value.
         assert!(
-            Wire::deserialize(&bytes::Bytes::from_static(&[0xc5, 2, 0xc3, 1, 0xc1, 3])).is_err()
+            alloy_rlp::decode_exact::<Wire>(&bytes::Bytes::from_static(&[
+                0xc5, 2, 0xc3, 1, 0xc1, 3
+            ]))
+            .is_err()
         );
         // The cap-advance variant carries no ACS message, so it still decodes.
         assert!(matches!(
-            Wire::deserialize(&bytes::Bytes::from_static(&[0xc5, 2, 0xc3, 2, 0xc1, 9])).unwrap(),
+            alloy_rlp::decode_exact::<Wire>(&bytes::Bytes::from_static(&[0xc5, 2, 0xc3, 2, 0xc1, 9])).unwrap(),
             Wire::Conductor(ConductorMessage::CapAdvance(CapAdvance { cap })) if cap == Slot(9)
         ));
     }
@@ -247,20 +235,22 @@ mod rlp_tests {
         let message = VoteMsg::new_signed(slot, DummyVote, &NodeId::dummy(1).keypair());
         assert_roundtrip(&message);
         let wire = Wire::Slot(message.clone());
-        let bytes = <Wire as Serializable<bytes::Bytes>>::serialize(&wire);
+        let bytes = bytes::Bytes::from(alloy_rlp::encode(&wire));
         assert_eq!(bytes.len(), wire.length());
-        let Wire::Slot(decoded_message) = Wire::deserialize(&bytes).unwrap();
+        let Wire::Slot(decoded_message) = alloy_rlp::decode_exact::<Wire>(&bytes).unwrap();
         assert_eq!(decoded_message.slot(), slot);
         assert_eq!(decoded_message, message);
 
         for end in 0..bytes.len() {
-            assert!(Wire::deserialize(&bytes.slice(..end)).is_err());
+            assert!(alloy_rlp::decode_exact::<Wire>(&bytes.slice(..end)).is_err());
         }
         let mut extra = bytes.to_vec();
         extra.push(0x42);
-        assert!(Wire::deserialize(&bytes::Bytes::from(extra)).is_err());
+        assert!(alloy_rlp::decode_exact::<Wire>(&bytes::Bytes::from(extra)).is_err());
         // The conductor tag cannot be followed by a Never value.
-        assert!(Wire::deserialize(&bytes::Bytes::from_static(&[0xc2, 2, 0xc0])).is_err());
+        assert!(
+            alloy_rlp::decode_exact::<Wire>(&bytes::Bytes::from_static(&[0xc2, 2, 0xc0])).is_err()
+        );
     }
 
     #[test]
@@ -295,7 +285,7 @@ mod rlp_tests {
                 Ok(Self)
             }
         }
-        let bytes = CadenceMessage::<Out, Out>::Slot(Out).serialize();
-        assert!(CadenceMessage::<In, In>::deserialize(&bytes).is_ok());
+        let bytes = alloy_rlp::encode(CadenceMessage::<Out, Out>::Slot(Out));
+        assert!(alloy_rlp::decode_exact::<CadenceMessage<In, In>>(&bytes).is_ok());
     }
 }

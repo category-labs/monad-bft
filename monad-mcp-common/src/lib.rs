@@ -112,10 +112,11 @@ impl<M, R, Q> Outbound<M, R, Q> {
 }
 
 // todo: name the recipients by slot and validator index
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Recipients<N> {
     Everyone,
     Node(N),
+    Nodes(Vec<N>),
 }
 
 impl<M, N, Q> Outbound<M, Recipients<N>, Q> {
@@ -133,6 +134,15 @@ impl<M, N, Q> Outbound<M, Recipients<N>, Q> {
         Q: Default,
     {
         let to = Recipients::Node(to);
+        let qos = Q::default();
+        Self { to, message, qos }
+    }
+
+    pub fn multicast(to: Vec<N>, message: M) -> Self
+    where
+        Q: Default,
+    {
+        let to = Recipients::Nodes(to);
         let qos = Q::default();
         Self { to, message, qos }
     }
@@ -187,8 +197,9 @@ impl<M, R> Outbound<M, R, Qos> {
         self
     }
 
+    // The first rule stays: the maker of a message knows when its repeats end.
     pub fn repeat_until(mut self, event: RepeatUntil) -> Self {
-        self.qos.repeat_until = Some(event);
+        self.qos.repeat_until.get_or_insert(event);
         self
     }
 }

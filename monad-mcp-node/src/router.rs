@@ -13,41 +13,43 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_mcp_cadence::{ledger::Tx, spec::Serializable as _};
-use monad_mcp_common::{Outbound, ProposalScope, Timestamp, WirePriority};
+use monad_mcp_common::{Inbound, Outbound, ProposalScope, Timestamp};
 
 use crate::{
-    cadence::{self, CadenceMessage, Recipients, SlotLifecycle, slot::chorus::ChorusMessage},
+    cadence::{CadenceMessage, SlotLifecycle, slot::chorus::ChorusMessage},
     common::NodeId,
     component::{
         CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, FinalizationInput, ProposingInput,
-        ProposingOutput, RepeaterInput, RepeaterOutput,
+        ProposingOutput,
     },
     config::NodeConfig,
-    da::{ChunkPull, DAOutput, Dissemination, ProposalScheme, read_envelope, write_envelope},
+    da::{DAOutput, ProposalScheme},
     epoch::EpochHandle,
     finalization::FinalizedSlot,
-    network::{NodeInbound, NodeMessage, NodeOutbound},
+    network::{
+        AppMessage, NetworkInput, NetworkOutput, NodeAppMessage, NodeInbound, NodeOutbound,
+        WireInbound, WireOutbound,
+    },
 };
 
 // everything the wiring takes in, named by where it comes from
-pub enum Effect {
-    Network(NodeInbound),
+pub enum Effect<W> {
+    Transport(WireInbound<W>),
+    Network(NetworkOutput<NodeAppMessage, W>),
     Cadence(CadenceOutput),
     DA(DAOutput),
     Proposing(ProposingOutput),
-    Repeater(RepeaterOutput<ChorusMessage>),
     Finalization(FinalizedSlot),
 }
 
 // everything the wiring can emit, named by where it goes
-pub enum Routed {
+pub enum Routed<W> {
     Cadence(CadenceInput),
     DA(DAInput),
     Finalization(FinalizationInput),
     Proposing(ProposingInput),
-    Repeater(RepeaterInput<ChorusMessage>),
-    Network(NodeOutbound),
+    Network(NetworkInput<NodeAppMessage, W>),
+    Transport(WireOutbound<W>),
     // todo: the ledger / execution boundary
     Ledger(FinalizedSlot),
 }
@@ -62,9 +64,9 @@ impl<T> Sink<T> for Vec<T> {
     }
 }
 
-// The wiring of effects
-pub trait Router {
-    fn route(&mut self, now: Timestamp, effect: Effect, sink: &mut impl Sink<Routed>);
+// The wiring of effects. W is the form of a message on the wire.
+pub trait Router<W> {
+    fn route(&mut self, now: Timestamp, effect: Effect<W>, sink: &mut impl Sink<Routed<W>>);
 }
 
 pub struct NodeRouter {
@@ -96,25 +98,25 @@ impl NodeRouter {
         &self.epoch_handle
     }
 
-    fn route_cadence(&mut self, output: CadenceOutput, sink: &mut impl Sink<Routed>) {
+    fn route_cadence<W>(&mut self, output: CadenceOutput, sink: &mut impl Sink<Routed<W>>) {
         match output {
-            CadenceOutput::Outbound(event) => {
-                self.route_cadence_outbound(event, sink);
+            CadenceOutput::Outbound(outbound) => {
+                let outbound = outbound.map(AppMessage::Cadence);
+                sink.send(Routed::Network(NetworkInput::Send(outbound)));
             }
 
             CadenceOutput::Lifecycle(event) => {
                 sink.send(Routed::DA(DAInput::Lifecycle(event)));
+                // the network ends its repeats on these
+                sink.send(Routed::Network(NetworkInput::Lifecycle(event)));
                 match event {
                     SlotLifecycle::Opened { slot, deadline } => {
                         let input = ProposingInput::SlotOpen(slot, deadline);
                         sink.send(Routed::Proposing(input));
                     }
-                    SlotLifecycle::Completed { slot } => {
-                        sink.send(Routed::Repeater(RepeaterInput::Completed(slot)));
-                    }
+                    SlotLifecycle::Completed { .. } => {}
                     SlotLifecycle::CapAdvance { cap } => {
                         tracing::debug!(cap = cap.0, "chain advanced");
-                        sink.send(Routed::Repeater(RepeaterInput::CapAdvance(cap)));
                         sink.send(Routed::Proposing(ProposingInput::CapAdvance(cap)));
                     }
                 }
@@ -130,11 +132,11 @@ impl NodeRouter {
                 let committed = finalization.pids().into_iter().flatten().count();
                 let path = finalization.path();
                 tracing::debug!(slot = slot.0, ?path, committed, "cadence finalized");
+
                 let positive = finalization.pids().map(|pid| pid.is_some());
                 let input = ProposingInput::Finalized(slot, positive, path);
                 sink.send(Routed::Proposing(input));
-                let certificate = finalization.certificate_message();
-                sink.send(Routed::Repeater(RepeaterInput::Finalization(certificate)));
+
                 let input = FinalizationInput::Finalized(now, slot, finalization);
                 sink.send(Routed::Finalization(input));
             }
@@ -147,46 +149,59 @@ impl NodeRouter {
         }
     }
 
-    fn route_cadence_outbound(
-        &mut self,
-        outbound: cadence::Outbound<CadenceWireMsg>,
-        sink: &mut impl Sink<Routed>,
+    fn route_inbound<W>(
+        &self,
+        now: Timestamp,
+        inbound: NodeInbound,
+        sink: &mut impl Sink<Routed<W>>,
     ) {
-        let Outbound { to, message, qos } = outbound;
-        if to == Recipients::Node(self.epoch_handle.self_id) {
-            self.loopback(message, sink);
-            return;
-        }
+        let Inbound { sender, message } = inbound;
+        match message {
+            AppMessage::Cadence(message) => {
+                // our own messages loop back through the network
+                let from_peer = sender != self.epoch_handle.self_id;
+                if self.observe_votes && from_peer {
+                    observe_vote(now, sender, &message, sink);
+                }
+                // todo: signature checks for a transport that does
+                // not authenticate the sender.
 
-        record(to, &message, sink);
-        let outbound = NodeOutbound {
-            to,
-            message: NodeMessage::Cadence(message.serialize()),
-            qos: qos.priority,
-        };
-        sink.send(Routed::Network(outbound));
-        if to == Recipients::Everyone {
-            self.loopback(message, sink);
+                // todo: verify slot number against current state
+                let input = CadenceInput::Message(Inbound { sender, message });
+                sink.send(Routed::Cadence(input));
+            }
+            AppMessage::Chunk(message) => {
+                let input = DAInput::Envelope(Inbound { sender, message });
+                sink.send(Routed::DA(input));
+            }
+            AppMessage::ChunkRequest(message) => {
+                let input = DAInput::ChunkRequest(Inbound { sender, message });
+                sink.send(Routed::DA(input));
+            }
+            AppMessage::Tx(tx) => {
+                let from = sender;
+                let proposal = ProposingInput::Tx { at: now, from, tx }; // demo(tx-timeline)
+                sink.send(Routed::Proposing(proposal));
+            }
         }
-    }
-
-    // a message we authored needs no validation
-    fn loopback(&self, message: CadenceWireMsg, sink: &mut impl Sink<Routed>) {
-        let self_id = self.epoch_handle.self_id;
-        sink.send(Routed::Cadence(CadenceInput::Message(self_id, message)));
     }
 }
 
-impl Router for NodeRouter {
-    fn route(&mut self, now: Timestamp, effect: Effect, sink: &mut impl Sink<Routed>) {
+impl<W> Router<W> for NodeRouter {
+    fn route(&mut self, now: Timestamp, effect: Effect<W>, sink: &mut impl Sink<Routed<W>>) {
         match effect {
-            Effect::Network(inbound) => {
-                route_inbound(now, inbound, self.observe_votes, sink);
+            Effect::Transport(inbound) => {
+                sink.send(Routed::Network(NetworkInput::FromWire(inbound)));
+            }
+            Effect::Network(NetworkOutput::ToWire(outbound)) => {
+                sink.send(Routed::Transport(outbound));
+            }
+            Effect::Network(NetworkOutput::Received(inbound)) => {
+                self.route_inbound(now, inbound, sink);
             }
             Effect::Cadence(output) => self.route_cadence(output, sink),
             Effect::DA(output) => route_da(now, output, sink),
             Effect::Proposing(proposal) => route_proposal(self.proposal_scheme, proposal, sink),
-            Effect::Repeater(repeat) => route_repeat(repeat, sink),
             Effect::Finalization(finalized) => sink.send(Routed::Ledger(finalized)),
         }
     }
@@ -195,11 +210,11 @@ impl Router for NodeRouter {
 // the arrival time of a peer's batch vote, at the router: in the async node
 // the time the network task handed it over, not the Cadence task's dequeue.
 // Every copy goes out, the repeater's too; proposing keeps the first.
-fn observe_vote(
+fn observe_vote<W>(
     now: Timestamp,
     from: NodeId,
     message: &CadenceWireMsg,
-    sink: &mut impl Sink<Routed>,
+    sink: &mut impl Sink<Routed<W>>,
 ) {
     let CadenceMessage::Slot(ChorusMessage::BatchVote(vote)) = message else {
         return;
@@ -213,76 +228,10 @@ fn observe_vote(
     sink.send(Routed::Proposing(input));
 }
 
-fn route_inbound(
-    now: Timestamp,
-    inbound: NodeInbound,
-    observe_votes: bool,
-    sink: &mut impl Sink<Routed>,
-) {
-    use monad_mcp_cadence::spec::Deserializable as _;
-
-    let NodeInbound { sender, message } = inbound;
-    match message {
-        NodeMessage::Cadence(bytes) => {
-            let Ok(message) = CadenceWireMsg::deserialize(&bytes) else {
-                tracing::debug!(?sender, "malformed cadence message");
-                return;
-            };
-            if observe_votes {
-                observe_vote(now, sender, &message, sink);
-            }
-            // todo: signature checks for a transport that does
-            // not authenticate the sender.
-
-            // todo: verify slot number against current state
-            sink.send(Routed::Cadence(CadenceInput::Message(sender, message)));
-        }
-
-        NodeMessage::Chunk(bytes) => {
-            let Ok(envelope) = read_envelope(bytes) else {
-                tracing::debug!(?sender, "malformed chunk packet");
-                return;
-            };
-            sink.send(Routed::DA(DAInput::Envelope(sender, envelope)));
-        }
-
-        NodeMessage::ChunkRequest(bytes) => {
-            let Ok(request) = ChunkPull::deserialize(&bytes) else {
-                tracing::debug!(?sender, "malformed chunk request");
-                return;
-            };
-            sink.send(Routed::DA(DAInput::ChunkRequest(sender, request)));
-        }
-
-        NodeMessage::Tx(bytes) => {
-            let tx = match Tx::decode_exact(&bytes) {
-                Ok(tx) => tx,
-                Err(error) => {
-                    tracing::debug!(?sender, %error, "malformed tx");
-                    return;
-                }
-            };
-            let from = sender;
-            let proposal = ProposingInput::Tx { at: now, from, tx }; // demo(tx-timeline)
-            sink.send(Routed::Proposing(proposal));
-        }
-    }
-}
-
-fn route_repeat((to, message): RepeaterOutput<ChorusMessage>, sink: &mut impl Sink<Routed>) {
-    let message: CadenceWireMsg = CadenceMessage::Slot(message);
-    let outbound = NodeOutbound {
-        to,
-        message: NodeMessage::Cadence(message.serialize()),
-        qos: WirePriority::Regular,
-    };
-    sink.send(Routed::Network(outbound));
-}
-
-fn route_proposal(
+fn route_proposal<W>(
     proposal_scheme: ProposalScheme,
     output: ProposingOutput,
-    sink: &mut impl Sink<Routed>,
+    sink: &mut impl Sink<Routed<W>>,
 ) {
     let ProposingOutput {
         proposal,
@@ -302,7 +251,7 @@ fn route_proposal(
     sink.send(Routed::DA(input));
 }
 
-fn route_da(now: Timestamp, output: DAOutput, sink: &mut impl Sink<Routed>) {
+fn route_da<W>(now: Timestamp, output: DAOutput, sink: &mut impl Sink<Routed<W>>) {
     match output {
         DAOutput::Consensus(slot, event) => {
             sink.send(Routed::Cadence(CadenceInput::DAEvent(slot, event)));
@@ -322,39 +271,24 @@ fn route_da(now: Timestamp, output: DAOutput, sink: &mut impl Sink<Routed>) {
             };
             sink.send(Routed::Finalization(input));
         }
-        DAOutput::Send(dissemination) => route_dissemination(dissemination, sink),
+        DAOutput::Send(dissemination) => {
+            let Outbound { to, message, qos } = dissemination;
+            let outbound = NodeOutbound::multicast(to, AppMessage::Chunk(message));
+            let outbound = outbound.with_qos(qos);
+            sink.send(Routed::Network(NetworkInput::Send(outbound)));
+        }
         DAOutput::Pull(Outbound { to, message, qos }) => {
-            let message = NodeMessage::ChunkRequest(message.serialize());
-            let outbound = NodeOutbound::unicast(to, message).with_qos(qos.priority);
-            sink.send(Routed::Network(outbound));
+            let outbound = NodeOutbound::unicast(to, AppMessage::ChunkRequest(message));
+            let outbound = outbound.with_qos(qos);
+            sink.send(Routed::Network(NetworkInput::Send(outbound)));
         }
     }
-}
-
-fn route_dissemination(dissemination: Dissemination, sink: &mut impl Sink<Routed>) {
-    let Dissemination { to, message, qos } = dissemination;
-    let packets = write_envelope(&message);
-    for node in to {
-        for packet in &packets {
-            let message = NodeMessage::Chunk(packet.clone());
-            let outbound = NodeOutbound::unicast(node, message).with_qos(qos.priority);
-            sink.send(Routed::Network(outbound));
-        }
-    }
-}
-
-// only slot messages are repeated
-fn record(to: Recipients, message: &CadenceWireMsg, sink: &mut impl Sink<Routed>) {
-    let CadenceMessage::Slot(message) = message else {
-        return;
-    };
-    let input = RepeaterInput::Record(to, message.clone());
-    sink.send(Routed::Repeater(input));
 }
 
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
+    use monad_mcp_cadence::ledger::Tx;
 
     use super::*;
     use crate::{
@@ -386,25 +320,21 @@ mod tests {
     }
 
     fn router_of(config: &NodeConfig) -> NodeRouter {
-        Node::new(config).unwrap().router
+        let node: Node = Node::new(config).unwrap();
+        node.router
     }
 
-    fn inbound(message: NodeMessage) -> Effect {
-        Effect::Network(NodeInbound {
-            sender: NodeId::dummy(0),
-            message,
-        })
+    fn inbound(message: NodeAppMessage) -> Effect<NodeAppMessage> {
+        let sender = NodeId::dummy(0);
+        let inbound = NodeInbound { sender, message };
+        Effect::Network(NetworkOutput::Received(inbound))
     }
 
     #[test]
-    fn a_tx_packet_goes_to_proposing_and_junk_goes_nowhere() {
+    fn a_tx_goes_to_proposing() {
         let mut router = router_of(&config(SourceKind::Mempool));
         let mut sink = Vec::new();
-        let junk = NodeMessage::Tx(Bytes::from_static(b"junk"));
-        router.route(now(), inbound(junk), &mut sink);
-        assert!(sink.is_empty());
-
-        router.route(now(), inbound(NodeMessage::Tx(tx(1).to_rlp())), &mut sink);
+        router.route(now(), inbound(AppMessage::Tx(tx(1))), &mut sink);
         // never forwarded: the rpc already chose this node
         let [Routed::Proposing(ProposingInput::Tx { at, tx, .. })] = &sink[..] else {
             panic!("one tx for proposing");

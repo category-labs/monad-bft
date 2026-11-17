@@ -21,8 +21,6 @@
 use std::collections::BTreeSet;
 
 use alloy_rlp::{Decodable, Encodable};
-use bytes::Bytes;
-use monad_mcp_cadence::spec::{Deserializable, Serializable};
 
 use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset, WireChunkId},
@@ -157,22 +155,9 @@ impl Decodable for ChunkPull {
     }
 }
 
-impl Serializable<Bytes> for ChunkPull {
-    fn serialize(&self) -> Bytes {
-        alloy_rlp::encode(self).into()
-    }
-}
-
-impl Deserializable<Bytes> for ChunkPull {
-    type ReadError = alloy_rlp::Error;
-
-    fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {
-        alloy_rlp::decode_exact(message)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use monad_mcp_cadence::spec::ProposalHeader as _;
 
     use super::{
@@ -198,16 +183,19 @@ mod tests {
         let narrowed = request(ChunksSubset::Narrowed(BTreeSet::from([2, 5, 300])));
         let header_only = request(ChunksSubset::HeaderOnly);
         for original in [all, narrowed, header_only] {
-            let bytes: Bytes = original.serialize();
+            let bytes = Bytes::from(alloy_rlp::encode(&original));
             assert_eq!(bytes.len(), original.length());
-            assert_eq!(ChunkPull::deserialize(&bytes).unwrap(), original);
+            assert_eq!(
+                alloy_rlp::decode_exact::<ChunkPull>(&bytes).unwrap(),
+                original
+            );
 
             for end in 0..bytes.len() {
-                assert!(ChunkPull::deserialize(&bytes.slice(..end)).is_err());
+                assert!(alloy_rlp::decode_exact::<ChunkPull>(&bytes.slice(..end)).is_err());
             }
             let mut extra = bytes.to_vec();
             extra.push(0);
-            assert!(ChunkPull::deserialize(&Bytes::from(extra)).is_err());
+            assert!(alloy_rlp::decode_exact::<ChunkPull>(&Bytes::from(extra)).is_err());
         }
     }
 
@@ -220,11 +208,10 @@ mod tests {
         let bad_tag = [0xc1, 7];
         assert!(ChunksSubset::decode(&mut &bad_tag[..]).is_err());
 
-        let bytes: Bytes = request(ChunksSubset::All).serialize();
-        let mut bytes = bytes.to_vec();
+        let mut bytes = alloy_rlp::encode(request(ChunksSubset::All));
         let kind_at = bytes.len() - 3;
         assert_eq!(bytes[kind_at], YOUR_CHUNKS);
         bytes[kind_at] = 9;
-        assert!(ChunkPull::deserialize(&Bytes::from(bytes)).is_err());
+        assert!(alloy_rlp::decode_exact::<ChunkPull>(&Bytes::from(bytes)).is_err());
     }
 }

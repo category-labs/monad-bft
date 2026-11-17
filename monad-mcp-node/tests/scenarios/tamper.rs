@@ -18,7 +18,11 @@
 //! components or the network.
 
 use monad_mcp_common::Timestamp;
-use monad_mcp_node::{Effect, Routed, Router, Sink};
+use monad_mcp_node::{Router, Sink, network::WireAppMessage};
+
+// the scenarios run the node over its wire form
+pub type Effect = monad_mcp_node::Effect<WireAppMessage>;
+pub type Routed = monad_mcp_node::Routed<WireAppMessage>;
 
 pub type PreRouteFilter = Box<dyn FnMut(Effect) -> Vec<Effect> + Send>;
 pub type PostRouteFilter = Box<dyn FnMut(Routed) -> Vec<Routed> + Send>;
@@ -63,7 +67,7 @@ impl<R> Tampered<R> {
     }
 }
 
-impl<R: Router> Router for Tampered<R> {
+impl<R: Router<WireAppMessage>> Router<WireAppMessage> for Tampered<R> {
     fn route(&mut self, now: Timestamp, effect: Effect, sink: &mut impl Sink<Routed>) {
         let effects = match &mut self.pre_filter {
             Some(pre_filter) => pre_filter(effect),

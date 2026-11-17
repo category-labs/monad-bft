@@ -607,7 +607,7 @@ mod rlp_tests {
                     super::{
                         conductor::{CadenceConductor, acs::median::MedianAcs},
                         message::CadenceWireMsg,
-                        test_utils::{assert_roundtrip, assert_serialization_roundtrip},
+                        test_utils::assert_roundtrip,
                     },
                     chorus,
                     types::Lanes,
@@ -682,7 +682,7 @@ mod rlp_tests {
                 _ => {}
             }
             // The outer Chorus and Cadence framing also wraps the MVBA arm.
-            assert_serialization_roundtrip(&Wire::Slot(chorus::ChorusMessage::Fallback(message)));
+            assert_roundtrip(&Wire::Slot(chorus::ChorusMessage::Fallback(message)));
         }
     }
 

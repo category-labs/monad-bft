@@ -530,8 +530,12 @@ impl Chorus {
         self.broadcast(fast_block);
     }
 
+    // A decided slot drops its messages, so a late peer finalizes from the
+    // repeats of the certificate.
     fn finalize_fast(&mut self, qc: FastCommitQc) {
-        self.broadcast(qc.clone());
+        let certificate = Outbound::broadcast(qc.clone().into());
+        let certificate = certificate.repeat_until(RepeatUntil::CapAdvanced(self.slot));
+        self.send(certificate);
         self.finalize(SlotFinalization::Fast { qc });
     }
 
@@ -563,7 +567,7 @@ impl Chorus {
         self.send(Outbound::broadcast(msg.into()));
     }
 
-    // Each message of the slot is repeated until the slot commits.
+    // A message of the slot without a rule is repeated until the slot commits.
     fn send(&mut self, outbound: Outbound<ChorusMessage>) {
         let outbound = outbound.repeat_until(RepeatUntil::Commit(self.slot));
         self.push(SlotOutput::Send(outbound));

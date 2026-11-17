@@ -16,21 +16,18 @@
 use monad_mcp_common::{Slot, SlotDeadline, Timestamp};
 
 use super::Component;
-use crate::{
-    cadence::{
-        CadenceOutput as LocalOut, CadenceRuntime, Outbound, Runtime as _, SlotLifecycle,
-        SlotManager,
-        conductor::{CadenceConductor, acs::nop::NopAcs},
-        slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
-    },
-    common::NodeId,
+use crate::cadence::{
+    CadenceOutput as LocalOut, CadenceRuntime, Inbound, Outbound, Runtime as _, SlotLifecycle,
+    SlotManager,
+    conductor::{CadenceConductor, acs::nop::NopAcs},
+    slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
 };
 
 pub type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 pub type CadenceWireMsg = crate::cadence::CadenceWireMsg<Chorus, Conductor>;
 
 pub enum CadenceInput {
-    Message(NodeId, CadenceWireMsg),
+    Message(Inbound<CadenceWireMsg>),
     DAEvent(Slot, ChorusDAEvent),
 }
 
@@ -64,7 +61,7 @@ impl Component for Cadence {
     fn handle(&mut self, now: Timestamp, input: CadenceInput) {
         self.now = now;
         match input {
-            CadenceInput::Message(sender, message) => self.runtime.receive(now, sender, message),
+            CadenceInput::Message(inbound) => self.runtime.receive(now, inbound),
             CadenceInput::DAEvent(slot, event) => self.runtime.handle_input(now, (slot, event)),
         }
     }

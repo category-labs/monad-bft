@@ -18,7 +18,7 @@ use monad_mcp_common::{Proposal, Slot, Timestamp};
 
 use super::Component;
 use crate::{
-    cadence::{SlotLifecycle, slot::chorus::ChorusDACommand},
+    cadence::{Inbound, SlotLifecycle, slot::chorus::ChorusDACommand},
     common::NodeId,
     da::{ChunkPull, DAOutput, DARuntime, ProposalEnvelope, ProposalScheme},
     epoch::NodeProposerSchedule,
@@ -27,8 +27,8 @@ use crate::{
 pub type DA = DARuntime<NodeProposerSchedule>;
 
 pub enum DAInput {
-    Envelope(NodeId, ProposalEnvelope),
-    ChunkRequest(NodeId, ChunkPull),
+    Envelope(Inbound<ProposalEnvelope>),
+    ChunkRequest(Inbound<ChunkPull>),
     Lifecycle(SlotLifecycle),
     Command(Slot, ChorusDACommand),
     // our proposal, encoded under the scheme at the time DA handles it, with
@@ -46,12 +46,14 @@ impl Component for DA {
 
     fn handle(&mut self, now: Timestamp, input: DAInput) {
         match input {
-            DAInput::Envelope(sender, envelope) => {
-                if let Err(reason) = self.ingest(&sender, envelope) {
+            DAInput::Envelope(Inbound { sender, message }) => {
+                if let Err(reason) = self.ingest(&sender, message) {
                     tracing::debug!(?reason, "rejected proposal envelope");
                 }
             }
-            DAInput::ChunkRequest(from, request) => self.handle_chunk_request(request, &from, now),
+            DAInput::ChunkRequest(Inbound { sender, message }) => {
+                self.handle_chunk_request(message, &sender, now);
+            }
             DAInput::Lifecycle(event) => self.handle_slot_lifecycle(event),
             DAInput::Command(slot, command) => self.handle_command(command, slot, now),
             DAInput::Propose {
@@ -88,7 +90,8 @@ mod tests {
     #[test]
     fn the_largest_proposal_size_limit_still_encodes() {
         let config = NodeConfig::single_node(0, Timestamp::from_millis(10_000), "unused-ledger");
-        let mut da = Node::new(&config).unwrap().parts.da;
+        let node: Node = Node::new(&config).unwrap();
+        let mut da = node.parts.da;
         let now = Timestamp::from_millis(1_000);
         let deadline = Timestamp::from_millis(10_000);
         let opened = SlotLifecycle::Opened {

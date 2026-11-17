@@ -75,7 +75,7 @@ use super::{
     super::{
         fast::EnterFallbackCert,
         types::{
-            HeaderAuth, IsVote, KeyPair, NodeId, Slot, TimestampDelta, ValidatorData,
+            HeaderAuth, IsVote, KeyPair, NodeId, RepeatUntil, Slot, TimestampDelta, ValidatorData,
             ValidatorIndex, VoteMsg,
         },
     },
@@ -751,10 +751,10 @@ where
         self.decided_qc = Some(commit_qc.clone());
         tracing::debug!(slot = ?self.context.slot, view = ?self.view(), "mvba decided");
 
-        (
-            Phase::Decided(Decided::new(commit_qc.clone(), block)),
-            vec![self.broadcast(MvbaMessage::CommitQc(commit_qc))],
-        )
+        let phase = Phase::Decided(Decided::new(commit_qc.clone(), block));
+        let certificate = Outbound::broadcast(MvbaMessage::CommitQc(commit_qc));
+        let certificate = certificate.repeat_until(RepeatUntil::CapAdvanced(self.context.slot));
+        (phase, vec![MVBAOutput::Send(certificate)])
     }
 
     /// `SyncView`

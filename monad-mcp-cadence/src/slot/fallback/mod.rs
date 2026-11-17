@@ -29,10 +29,13 @@ pub use super::fast::{
     EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, FallbackQc, FastQc,
 };
 use super::{
-    super::{message::Outbound, runtime::Runtime, timers::Timers},
+    super::{
+        message::{Inbound, Outbound},
+        runtime::Runtime,
+        timers::Timers,
+    },
     types::{
-        IsVote, Lanes, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, ValidatorData,
-        ValidatorIndex,
+        IsVote, Lanes, Slot, StrongQc, Timestamp, TimestampDelta, ValidatorData, ValidatorIndex,
     },
 };
 
@@ -260,7 +263,8 @@ where
     type LocalIn = (V, Option<A::FallbackCert>);
     type LocalOut = V;
 
-    fn receive(&mut self, now: Timestamp, sender: NodeId, message: A::Message) {
+    fn receive(&mut self, now: Timestamp, inbound: Inbound<A::Message>) {
+        let Inbound { sender, message } = inbound;
         use crate::spec::validator::ValidatorData as _;
 
         // the boundary of a standalone instance: a sender becomes a validator

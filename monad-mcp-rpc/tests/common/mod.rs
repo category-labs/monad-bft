@@ -36,7 +36,8 @@ use monad_mcp_node::{
     cadence::types::ProposerSchedule,
     common::{KeyPair, NodeId},
     config::{NodeConfig, ValidatorConfig},
-    network::{NodeMessage, decode_frame},
+    network::WireAppMessage,
+    transport::udp::decode_frame,
 };
 use monad_mcp_rpc::{RpcConfig, RpcState, api::TxView, start};
 use serde_json::Value;
@@ -258,7 +259,7 @@ pub struct Arrival {
 pub struct FakeNode {
     pub addr: SocketAddr,
     arrivals: Arc<Mutex<Vec<Arrival>>>,
-    // datagrams that were not a well-formed `NodeMessage::Tx`
+    // datagrams that were not a well-formed `WireAppMessage::Tx`
     junk: Arc<AtomicU32>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -278,7 +279,7 @@ impl FakeNode {
                         continue;
                     };
                     let decoded = decode_frame(&buffer[..len]).and_then(|(from, message)| {
-                        let NodeMessage::Tx(bytes) = message else {
+                        let WireAppMessage::Tx(bytes) = message else {
                             return None;
                         };
                         Some((from, Tx::decode_exact(&bytes).ok()?))

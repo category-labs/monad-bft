@@ -26,14 +26,14 @@ use monad_mcp_cadence::spec::ProposalHeader as _;
 use monad_mcp_common::{Lane, Lanes, Slot, Timestamp, TimestampDelta, WirePriority};
 use monad_mcp_node::{
     Component, NodeOutput,
-    cadence::{Recipients, slot::chorus::FinalizationPath, types::ProposalId},
+    cadence::{slot::chorus::FinalizationPath, types::ProposalId},
     common::NodeId,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
         RepeaterSection, ValidatorConfig,
     },
     da::{self, ProposalKeyPair, ProposalScheme},
-    network::{NodeInbound, NodeMessage, NodeOutbound},
+    network::{WireAppMessage, WireInbound, WireOutbound},
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{
@@ -78,14 +78,14 @@ pub struct ChunkBytes {
 // bytes
 #[derive(Clone)]
 pub struct SimMessage {
-    pub message: NodeMessage,
+    pub message: WireAppMessage,
     pub priority: WirePriority,
 }
 
 impl SimMessage {
     // only the first hop of a proposal sends chunks at high priority
     fn is_first_hop(&self) -> bool {
-        self.priority == WirePriority::High && matches!(self.message, NodeMessage::Chunk(_))
+        self.priority == WirePriority::High && matches!(self.message, WireAppMessage::Chunk(_))
     }
 }
 
@@ -98,10 +98,15 @@ pub struct Records {
     pub first_hop_in: BTreeMap<(Slot, Lane), (NodeId, Vec<Time>)>,
 }
 
+// the scenarios run the node over its wire form, so they hash and size the
+// bytes a real transport carries
+pub type SimInbound = WireInbound<WireAppMessage>;
+pub type SimOutput = NodeOutput<WireAppMessage>;
+
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {
     id: NodeId,
-    node: Box<dyn Component<Input = NodeInbound, Output = NodeOutput> + Send>,
+    node: Box<dyn Component<Input = SimInbound, Output = SimOutput> + Send>,
     finalized: BTreeMap<Slot, Pattern>,
     // the lanes a slot committed whose proposal resolved invalid, for the
     // slots that have any
@@ -125,7 +130,7 @@ pub struct SimNode {
 impl SimNode {
     pub fn new(
         id: NodeId,
-        node: impl Component<Input = NodeInbound, Output = NodeOutput> + Send + 'static,
+        node: impl Component<Input = SimInbound, Output = SimOutput> + Send + 'static,
     ) -> Self {
         Self {
             id,
@@ -178,7 +183,7 @@ impl SimNode {
     fn process(&mut self, ctx: &mut Ctx) {
         while let Some(output) = self.node.poll() {
             match output {
-                NodeOutput::Network(outbound) => self.transmit(outbound, ctx),
+                NodeOutput::Transport(outbound) => self.transmit(outbound, ctx),
                 NodeOutput::Ledger(finalized) => {
                     let pattern = finalized.finalization.pids();
                     // committed, but without a message
@@ -205,29 +210,21 @@ impl SimNode {
     // the node's whole outbound path: every message it sends goes through
     // here to its network stack, which models the uplink, with the message's
     // priority (see `first_hop_priority`)
-    fn transmit(&mut self, outbound: NodeOutbound, ctx: &mut Ctx) {
+    fn transmit(&mut self, outbound: WireOutbound<WireAppMessage>, ctx: &mut Ctx) {
         let net = self.net.expect("node not wired");
-        let NodeOutbound { to, message, qos } = outbound;
+        let WireOutbound { to, message, qos } = outbound;
         let priority = qos;
         let message = SimMessage { message, priority };
-        match to {
-            Recipients::Everyone => {
-                ctx.schedule(
-                    net,
-                    ctx.now(),
-                    StepLabel::source("broadcast"),
-                    move |net, ctx| net.broadcast(ctx, message),
-                );
-            }
-            Recipients::Node(to) => {
-                ctx.schedule(
-                    net,
-                    ctx.now(),
-                    StepLabel::source("unicast"),
-                    move |net, ctx| net.send(ctx, to, message),
-                );
-            }
-        }
+        ctx.schedule(
+            net,
+            ctx.now(),
+            StepLabel::source("send"),
+            move |net, ctx| {
+                for node in to {
+                    net.send(ctx, node, message.clone());
+                }
+            },
+        );
     }
 
     // one step at next_due; a due already passed fires now
@@ -293,7 +290,7 @@ impl SimNode {
             return;
         };
         match &message.message {
-            NodeMessage::Chunk(bytes) if message.is_first_hop() => {
+            WireAppMessage::Chunk(bytes) if message.is_first_hop() => {
                 let Ok(envelope) = da::read_envelope(bytes.clone()) else {
                     return;
                 };
@@ -309,16 +306,16 @@ impl SimNode {
         }
     }
 
-    fn record_delivery(&mut self, at: Time, from: NodeId, message: &NodeMessage) {
-        if let NodeMessage::Chunk(bytes) = message {
+    fn record_delivery(&mut self, at: Time, from: NodeId, message: &WireAppMessage) {
+        if let WireAppMessage::Chunk(bytes) = message {
             self.chunk_bytes.wire += bytes.len() as u64;
             self.chunk_bytes.charged += da::nominal_len(bytes) as u64;
         }
         let (kind, bytes) = match message {
-            NodeMessage::Cadence(bytes) => (0u8, bytes),
-            NodeMessage::Chunk(bytes) => (1, bytes),
-            NodeMessage::ChunkRequest(bytes) => (2, bytes),
-            NodeMessage::Tx(bytes) => (3, bytes),
+            WireAppMessage::Cadence(bytes) => (0u8, bytes),
+            WireAppMessage::Chunk(bytes) => (1, bytes),
+            WireAppMessage::ChunkRequest(bytes) => (2, bytes),
+            WireAppMessage::Tx(bytes) => (3, bytes),
         };
         let hasher = &mut self.delivery_hasher;
         hasher.write(&at.0.to_le_bytes());
@@ -346,13 +343,9 @@ impl SimClient for SimNode {
     fn receive(&mut self, sender: NodeId, message: SimMessage, ctx: &mut Ctx) {
         let _span = self.span().entered();
         self.record_delivery(ctx.now(), sender, &message.message);
-        // the node loops its own messages back itself
-        if sender == self.id {
-            return;
-        }
         self.record_inbound(ctx.now(), sender, &message);
         let message = message.message;
-        let inbound = NodeInbound { sender, message };
+        let inbound = WireInbound { sender, message };
         let now = self.local_now(ctx);
         self.node.handle(now, inbound);
         self.process(ctx);
@@ -545,12 +538,12 @@ const GBIT: u64 = 1_000_000_000;
 
 // what one message costs on the wire: the frame (sender id, kind, payload)
 // plus the IPv4 and UDP headers. a hollow chunk costs its d33 chunk.
-pub fn wire_size(message: &NodeMessage) -> usize {
+pub fn wire_size(message: &WireAppMessage) -> usize {
     let payload = match message {
-        NodeMessage::Chunk(bytes) => da::nominal_len(bytes),
-        NodeMessage::Cadence(bytes) | NodeMessage::ChunkRequest(bytes) | NodeMessage::Tx(bytes) => {
-            bytes.len()
-        }
+        WireAppMessage::Chunk(bytes) => da::nominal_len(bytes),
+        WireAppMessage::Cadence(bytes)
+        | WireAppMessage::ChunkRequest(bytes)
+        | WireAppMessage::Tx(bytes) => bytes.len(),
     };
     9 + payload + 20 + 8
 }

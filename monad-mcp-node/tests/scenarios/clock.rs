@@ -22,13 +22,13 @@ use std::{
 };
 
 use monad_mcp_common::{Slot, Timestamp};
-use monad_mcp_node::{Component, Node, NodeOutput, common::NodeId, network::NodeInbound};
+use monad_mcp_node::{Component, Node, common::NodeId};
 use monad_sim::{ClockDiff, Time};
 use monad_sim_swarm::Network;
 
 use crate::harness::{
-    SLOT_INTERVAL, SimNode, assert_consistent_progress, deadline_of_slot, node_config,
-    parallel_from_env, start_swarm, time_of,
+    SLOT_INTERVAL, SimInbound, SimNode, SimOutput, assert_consistent_progress, deadline_of_slot,
+    node_config, parallel_from_env, start_swarm, time_of,
 };
 
 const DUE: Timestamp = Timestamp::from_millis(100);
@@ -49,12 +49,12 @@ struct Probe {
 }
 
 impl Component for Probe {
-    type Input = NodeInbound;
-    type Output = NodeOutput;
+    type Input = SimInbound;
+    type Output = SimOutput;
 
-    fn handle(&mut self, _now: Timestamp, _input: NodeInbound) {}
+    fn handle(&mut self, _now: Timestamp, _input: SimInbound) {}
 
-    fn poll(&mut self) -> Option<NodeOutput> {
+    fn poll(&mut self) -> Option<SimOutput> {
         None
     }
 

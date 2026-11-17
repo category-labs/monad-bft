@@ -1826,7 +1826,7 @@ mod rlp_tests {
             super::{
                 conductor::{CadenceConductor, acs::median::MedianAcs},
                 message::CadenceWireMsg,
-                test_utils::{assert_roundtrip, assert_serialization_roundtrip},
+                test_utils::assert_roundtrip,
             },
             chorus::{Chorus, ChorusMessage},
         },
@@ -1949,7 +1949,7 @@ mod rlp_tests {
         // Check both the Chorus RLP payload and its enclosing Cadence byte serialization.
         for message in messages {
             assert_roundtrip(&message);
-            assert_serialization_roundtrip(&Wire::Slot(message));
+            assert_roundtrip(&Wire::Slot(message));
         }
     }
 

@@ -19,7 +19,7 @@ use tracing::{debug, trace};
 
 use super::{
     conductor::{Conductor, ConductorOutput},
-    message::{CadenceMessage, CadenceWireMsg, Outbound},
+    message::{CadenceMessage, CadenceWireMsg, Inbound, Outbound},
     slot::{SlotConsensus, SlotOutput},
     slot_manager::SlotManager,
     timers::Timers,
@@ -33,7 +33,7 @@ pub trait Runtime {
     type LocalIn;
     type LocalOut;
 
-    fn receive(&mut self, now: Timestamp, sender: NodeId, message: Self::Message);
+    fn receive(&mut self, now: Timestamp, inbound: Inbound<Self::Message>);
     fn poll_msg(&mut self) -> Option<Outbound<Self::Message>>;
 
     fn handle_input(&mut self, now: Timestamp, input: Self::LocalIn);
@@ -226,7 +226,8 @@ where
     type LocalIn = (Slot, S::LocalIn);
     type LocalOut = CadenceOutput<S>;
 
-    fn receive(&mut self, now: Timestamp, sender: NodeId, message: CadenceWireMsg<S, C>) {
+    fn receive(&mut self, now: Timestamp, inbound: Inbound<CadenceWireMsg<S, C>>) {
+        let Inbound { sender, message } = inbound;
         self.advance_clock(now);
         self.handle_message(sender, message);
         self.step();

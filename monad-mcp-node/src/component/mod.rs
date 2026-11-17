@@ -18,7 +18,6 @@ mod da;
 mod finalization;
 pub mod mempool;
 mod proposing;
-mod repeater;
 
 use std::future::pending;
 
@@ -39,7 +38,6 @@ pub use self::{
         MempoolProposing, Proposing, ProposingComponent, ProposingInput, ProposingOutput,
         RandomProposing,
     },
-    repeater::{Repeater, RepeaterConfig, RepeaterInput, RepeaterOutput},
 };
 use crate::clock::Clock;
 

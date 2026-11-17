@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use monad_mcp_common::Slot;
-use monad_mcp_node::{Node, Routed, common::NodeId};
+use monad_mcp_node::{Node, common::NodeId};
 use monad_sim_swarm::Network;
 
 use crate::{
@@ -24,7 +24,7 @@ use crate::{
         SLOT_INTERVAL, SimNode, assert_consistent_progress, deadline_of_slot, node_config,
         parallel_from_env, start_swarm, time_of,
     },
-    tamper::Tampered,
+    tamper::{Routed, Tampered},
 };
 
 // 8 validators, 2 of them run but never send: the other 6 keep
@@ -42,7 +42,7 @@ fn six_of_eight_finalize_beside_two_mute_nodes() {
         let node_id = NodeId::dummy(id);
         let node = Node::new(&node_config(SEED, id, VALIDATORS)).expect("config builds");
         let sim_node = if id < MUTE {
-            let node = node.map_router(|router| Tampered::from(router).tamper_post(drop_network));
+            let node = node.map_router(|router| Tampered::from(router).tamper_post(drop_transport));
             SimNode::new(node_id, node)
         } else {
             SimNode::new(node_id, node)
@@ -58,9 +58,9 @@ fn six_of_eight_finalize_beside_two_mute_nodes() {
     assert_consistent_progress(&swarm, Slot(SLOTS - 20));
 }
 
-fn drop_network(routed: Routed) -> Vec<Routed> {
+fn drop_transport(routed: Routed) -> Vec<Routed> {
     match routed {
-        Routed::Network(..) => vec![],
+        Routed::Transport(..) => vec![],
         routed => vec![routed],
     }
 }

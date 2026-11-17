@@ -23,7 +23,7 @@ pub struct NopAcs<V> {
     decision: Option<V>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoMessage {}
 
 impl<V> Acs<V> for NopAcs<V> {

@@ -33,9 +33,10 @@ use crate::{
         },
     },
     common::{KeyPair, NodeId, PubKey, Stake},
-    component::{RepeaterConfig, mempool},
+    component::mempool,
     da::{self, ProposalKeyPair, header_auth},
     epoch::{EpochHandle, NodeProposerSchedule},
+    network::RepeaterConfig,
 };
 
 #[derive(Deserialize)]

@@ -23,39 +23,41 @@ use monad_mcp_common::Timestamp;
 
 use crate::{
     RunError,
-    cadence::{SlotManager, conductor::CadenceConductor, slot::chorus::ChorusMessage},
+    cadence::{SlotManager, conductor::CadenceConductor},
     component::{
         Cadence, Component, DA, Mempool, MempoolProposing, Proposing, ProposingComponent as _,
-        RandomProposing, Repeater,
+        RandomProposing,
     },
     config::{NodeConfig, SourceKind},
     da::DARuntime,
     finalization::{FinalizationCollector, FinalizedSlot},
-    network::{NodeInbound, NodeOutbound},
+    network::{Network, NodeAppMessage, Wire, WireInbound, WireOutbound},
     router::{Effect, NodeRouter, Routed, Router, Sink},
 };
 
-pub enum NodeOutput {
-    Network(NodeOutbound),
+pub enum NodeOutput<W = NodeAppMessage> {
+    Transport(WireOutbound<W>),
     Ledger(FinalizedSlot),
 }
 
-pub struct Node<R = NodeRouter> {
+// W is the form of a message on the wire. With the default, the node's
+// own message type, the node does no ser/de.
+pub struct Node<R = NodeRouter, W = NodeAppMessage> {
     pub(crate) router: R,
-    pub(crate) parts: Parts,
-    outbox: VecDeque<NodeOutput>,
+    pub(crate) parts: Parts<W>,
+    outbox: VecDeque<NodeOutput<W>>,
 }
 
-pub(crate) struct Parts {
+pub(crate) struct Parts<W> {
     // components
     pub(crate) cadence: Cadence,
     pub(crate) da: DA,
     pub(crate) collector: FinalizationCollector,
     pub(crate) proposing: Proposing,
-    pub(crate) repeater: Option<Repeater<ChorusMessage>>,
+    pub(crate) network: Network<NodeAppMessage, W>,
 }
 
-impl Node {
+impl<W> Node<NodeRouter, W> {
     pub fn new(config: &NodeConfig) -> Result<Self, RunError> {
         config.validate()?;
         let epoch_handle = config.epoch_handle()?;
@@ -84,7 +86,7 @@ impl Node {
             }
         };
         let observe_votes = proposing.wants_vote_facts();
-        let repeater = config.repeater().map(Repeater::new);
+        let network = Network::new(&epoch_handle, config.repeater());
         let collector = FinalizationCollector::default();
 
         let parts = Parts {
@@ -92,7 +94,7 @@ impl Node {
             da,
             collector,
             proposing,
-            repeater,
+            network,
         };
         Ok(Self {
             router: NodeRouter::new(epoch_handle, config).observe_votes(observe_votes),
@@ -111,7 +113,7 @@ impl Node {
     }
 
     // the same components under a wrapped router, for scenarios
-    pub fn map_router<R>(self, wrap: impl FnOnce(NodeRouter) -> R) -> Node<R> {
+    pub fn map_router<R>(self, wrap: impl FnOnce(NodeRouter) -> R) -> Node<R, W> {
         Node {
             router: wrap(self.router),
             parts: self.parts,
@@ -120,14 +122,14 @@ impl Node {
     }
 }
 
-impl<R> Node<R> {
+impl<R, W> Node<R, W> {
     pub fn router(&self) -> &R {
         &self.router
     }
 }
 
-impl<R: Router> Node<R> {
-    fn route(&mut self, now: Timestamp, effect: Effect) {
+impl<R: Router<W>, W: Wire<NodeAppMessage>> Node<R, W> {
+    fn route(&mut self, now: Timestamp, effect: Effect<W>) {
         let mut sink = NodeSink {
             parts: &mut self.parts,
             outbox: &mut self.outbox,
@@ -144,12 +146,12 @@ impl<R: Router> Node<R> {
     }
 }
 
-impl<R: Router> Component for Node<R> {
-    type Input = NodeInbound;
-    type Output = NodeOutput;
+impl<R: Router<W>, W: Wire<NodeAppMessage>> Component for Node<R, W> {
+    type Input = WireInbound<W>;
+    type Output = NodeOutput<W>;
 
-    fn handle(&mut self, now: Timestamp, inbound: NodeInbound) {
-        self.route(now, Effect::Network(inbound));
+    fn handle(&mut self, now: Timestamp, inbound: WireInbound<W>) {
+        self.route(now, Effect::Transport(inbound));
         self.step(now);
     }
 
@@ -162,16 +164,19 @@ impl<R: Router> Component for Node<R> {
         self.step(now);
     }
 
-    fn poll(&mut self) -> Option<NodeOutput> {
+    fn poll(&mut self) -> Option<NodeOutput<W>> {
         self.outbox.pop_front()
     }
 }
 
 // Parts is the parallel-composition of its components into a larger
 // Component. However, it does not implement Component because it can
-// produce/handle external effects (network and ledger).
-impl Parts {
-    fn poll(&mut self) -> Option<Effect> {
+// produce/handle external effects (transport and ledger).
+impl<W: Wire<NodeAppMessage>> Parts<W> {
+    fn poll(&mut self) -> Option<Effect<W>> {
+        if let Some(output) = self.network.poll() {
+            return Some(Effect::Network(output));
+        }
         if let Some(output) = self.cadence.poll() {
             return Some(Effect::Cadence(output));
         }
@@ -184,21 +189,15 @@ impl Parts {
         if let Some(output) = self.proposing.poll() {
             return Some(Effect::Proposing(output));
         }
-        if let Some(repeater) = &mut self.repeater
-            && let Some(output) = repeater.poll()
-        {
-            return Some(Effect::Repeater(output));
-        }
         None
     }
 
     fn next_due(&self) -> Option<Timestamp> {
-        let repeater = self.repeater.as_ref().and_then(Repeater::next_due);
         [
             self.cadence.next_due(),
             self.da.next_due(),
             self.proposing.next_due(),
-            repeater,
+            self.network.next_due(),
         ]
         .into_iter()
         .flatten()
@@ -209,20 +208,18 @@ impl Parts {
         handle_if_due(&mut self.cadence, now);
         handle_if_due(&mut self.da, now);
         handle_if_due(&mut self.proposing, now);
-        if let Some(repeater) = &mut self.repeater {
-            handle_if_due(repeater, now);
-        }
+        handle_if_due(&mut self.network, now);
     }
 }
 
-struct NodeSink<'a> {
-    parts: &'a mut Parts,
-    outbox: &'a mut VecDeque<NodeOutput>,
+struct NodeSink<'a, W> {
+    parts: &'a mut Parts<W>,
+    outbox: &'a mut VecDeque<NodeOutput<W>>,
     now: Timestamp,
 }
 
-impl Sink<Routed> for NodeSink<'_> {
-    fn send(&mut self, routed: Routed) {
+impl<W: Wire<NodeAppMessage>> Sink<Routed<W>> for NodeSink<'_, W> {
+    fn send(&mut self, routed: Routed<W>) {
         let now = self.now;
         let parts = &mut *self.parts;
         match routed {
@@ -230,12 +227,10 @@ impl Sink<Routed> for NodeSink<'_> {
             Routed::DA(input) => parts.da.handle(now, input),
             Routed::Finalization(input) => parts.collector.handle(now, input),
             Routed::Proposing(input) => parts.proposing.handle(now, input),
-            Routed::Repeater(input) => {
-                if let Some(repeater) = &mut parts.repeater {
-                    repeater.handle(now, input);
-                }
+            Routed::Network(input) => parts.network.handle(now, input),
+            Routed::Transport(outbound) => {
+                self.outbox.push_back(NodeOutput::Transport(outbound));
             }
-            Routed::Network(outbound) => self.outbox.push_back(NodeOutput::Network(outbound)),
             Routed::Ledger(finalized) => self.outbox.push_back(NodeOutput::Ledger(finalized)),
         }
     }

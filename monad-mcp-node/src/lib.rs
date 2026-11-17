@@ -26,6 +26,7 @@ mod logging;
 pub mod network;
 mod node;
 mod router;
+pub mod transport;
 
 use std::error::Error;
 
@@ -40,7 +41,7 @@ use self::{
     clock::Clock,
     config::NodeConfig,
     ledger::{LedgerSink, Recorder},
-    network::{NetworkHandle, stub::UdpNetwork},
+    transport::{TransportHandle, udp::UdpTransport},
 };
 pub use self::{
     component::Component,
@@ -67,13 +68,13 @@ async fn run(config: NodeConfig) -> Result<(), RunError> {
     let sink = LedgerSink::spawn(&config.ledger.dir)?;
 
     let mut node = AsyncNode::spawn(node, Clock::start());
-    let (handle, transport) = NetworkHandle::pair();
-    node.set_network(handle);
+    let (handle, transport) = TransportHandle::pair();
+    node.set_transport(handle);
     let mut recorder = Recorder::new(proposers, sink);
     node.on_finalization(move |finalized| recorder.record(finalized));
 
     let mut tasks = JoinSet::new();
-    let udp = UdpNetwork::bind(config.node_id, config.network.port, config.peers()).await?;
+    let udp = UdpTransport::bind(config.node_id, config.network.port, config.peers()).await?;
     tasks.spawn(udp.run(transport).in_current_span());
 
     node.run().await;

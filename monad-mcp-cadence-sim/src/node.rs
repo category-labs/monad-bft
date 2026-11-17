@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use cadence::{Outbound, Recipients, Runtime, proposing::ProposalPlanner};
+use cadence::{Inbound, Outbound, Recipients, Runtime, proposing::ProposalPlanner};
 // choose stub cadence for implementation
 use monad_mcp_cadence::stub as cadence;
 use monad_mcp_common::{Timestamp, stub::NodeId};
@@ -274,6 +274,13 @@ where
                     net.send(ctx, to, message)
                 });
             }
+            Recipients::Nodes(nodes) => {
+                ctx.schedule(net, now, StepLabel::source("multicast"), move |net, ctx| {
+                    for to in nodes {
+                        net.send(ctx, to, message.clone());
+                    }
+                });
+            }
         }
     }
 }
@@ -297,7 +304,11 @@ where
                 // this is where the message validation would happen in a real
                 // network.
                 let now = to_timestamp(ctx.now());
-                self.runtime.receive(now, from, message);
+                let inbound = Inbound {
+                    sender: from,
+                    message,
+                };
+                self.runtime.receive(now, inbound);
                 self.process(ctx);
             }
             SimMessage::Da(announcement) => {
