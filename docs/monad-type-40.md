@@ -1,16 +1,16 @@
 # Baseline native transaction development profile
 
-Snapshot: 2026-11-12; RPC compatibility fixes: 2026-11-13; numeric-bound amendment: 2026-11-16. Branch: `feat/monad-type-40`.
+Snapshot: 2026-11-12; RPC compatibility fixes: 2026-11-13; numeric-bound amendment: 2026-11-16; Rust client crate: 2026-11-17. Branch: `feat/monad-type-40`.
 
 ## Matched revisions
 
 - Consensus/RPC base: `e844f6086acac664f4bd2a8ffcc99f3b5ce4b9af`.
 - Execution upstream `main`: `27ad173ddf730deadc433987770e5c886ff1255b`, merged into `feat/monad-type-40` under `monad-execution/`.
-- Execution implementation: `6be73f870c34e4ba380dfe8ec0e6430d8022edeb`, recorded by this branch's `monad-execution` submodule pin, including the Alloy numeric-bound amendment and nullable receipt-price compatibility.
+- Execution implementation: `cf7d565bc557e1c57eebb1e175be064b8717d3c4`, recorded by this branch's `monad-execution` submodule pin, including the Alloy client crate, numeric-bound amendment and nullable receipt-price compatibility.
 - Viem vector source: `40e3a58c1c8c9c0326558eee8991992173059ea4`.
 - Protocol source: the supplied universal transaction draft's main injection design, SHA-256 `79ce4f8c4910a71e3a2932c1083312577e2ef99774a98ddba081bf20face1cb9`.
 
-The BFT gitlink records the execution implementation including the upstream merge. Build this branch with its pinned execution submodule. Do not mix these BFT changes with an unmodified execution checkout or public prebuilt images.
+The BFT gitlink records the execution implementation including the upstream merge and client-crate additions. Build this branch with its pinned execution submodule. Do not mix these BFT changes with an unmodified execution checkout or public prebuilt images.
 
 ## Scope and commitments
 
@@ -38,7 +38,7 @@ Database adapters explicitly distinguish two existing stored representations: C+
 
 ## Implementation boundaries
 
-The shared [`monad-transaction`](../monad-execution/rust/crates/monad-transaction/) crate owns native Rust transaction/receipt codecs and aliases for Alloy's generic RPC representations. Existing Ethereum variants continue to use Alloy signed payloads and encoders. The native transaction and mixed envelope implement Alloy's `Transaction` trait; `TxMonad` implements `SignableTransaction<Signature>` with the existing native signing preimage. Both workspaces use the shared source through a path dependency; no Alloy fork is required.
+The shared [`monad-transaction`](../monad-execution/rust/crates/monad-transaction/) crate owns native Rust transaction/receipt codecs and aliases for Alloy's generic RPC representations. Existing Ethereum variants continue to use Alloy signed payloads and encoders. The native transaction and mixed envelope implement Alloy's `Transaction` trait; `TxMonad` implements `SignableTransaction<Signature>` with the existing native signing preimage. Both node workspaces use the shared source in the execution repository through the existing path dependencies; no Alloy fork is required. The companion `monad-alloy` client adapter lives in the same execution Rust workspace and remains outside the node dependency graph.
 
 Native envelopes now flow through RPC submission, sender recovery, pool ingress and forwarding, proposal generation, block validation, block persistence, state readers, archive adapters and RPC buffers. Fee sorting and fee-history rewards use uint128 values. Transaction-generator readers accept mixed native/Ethereum blocks and receipts; its raw-send helper applies native submission framing. Execution dispatch uses the existing single-call EVM, sender-paid fees and normal nonce/account rules.
 
@@ -73,7 +73,7 @@ Run from the repository root unless noted. Linux checks used x86-64 Debian, Rust
 ```sh
 cargo test -p monad-eth-block-policy -p monad-eth-block-validator -p monad-eth-txpool
 cargo test -p monad-eth-types -p monad-eth-txpool-types -p monad-eth-txpool-ipc
-cargo test --manifest-path monad-execution/rust/Cargo.toml -p monad-transaction
+cargo test --locked --manifest-path monad-execution/rust/Cargo.toml -p monad-transaction
 CC=clang-19 CXX=clang++-19 LIBCLANG_PATH=/usr/lib/llvm-19/lib \
   cargo test --manifest-path monad-execution/rust/Cargo.toml \
   -p monad-exec-events --features alloy
@@ -158,7 +158,7 @@ Rust decoders reject oversized inputs. The unchanged C++ decoder still parses ui
 
 RPC aliases now use Alloy 2.0.4's generic transaction, receipt, block and fee-history types. Native simulation checks user fee caps before gas filling; native JSON readers reject oversized `gasPrice` metadata instead of saturating it. Existing Ethereum conversion/admission behavior remains covered by differential regressions. Wrong-chain native IDs within uint64 retain `-32003`; IDs above uint64 fail decoding and use each raw method's existing decode-error category.
 
-Build this branch with its pinned execution implementation, `6be73f870c34e4ba380dfe8ec0e6430d8022edeb`, which carries the numeric-bound amendment. No deployment or data migration has been performed. Before deployment, audit historical native transactions for oversized quantities or use a fresh devnet. Viem/Rabby numeric validators and a dedicated Alloy network/provider submission adapter remain follow-ups.
+Execution commit `6be73f870c34e4ba380dfe8ec0e6430d8022edeb` introduced the numeric-bound amendment; the current submodule pin also includes the client adapter described below. No deployment or data migration has been performed. Before deployment, audit historical native transactions for oversized quantities or use a fresh devnet. Viem/Rabby numeric validators remain a follow-up.
 
 Validation on Linux x86-64 category-box used isolated source and build copies based on BFT `f8858f4704fb9eb562bfabcb887e149117cbaa27` and execution `d2fadff7c960e655ff7d3e76ea244f4dc8346aa4`, with this amendment applied. Commit preparation updated documentation and the execution gitlink; the implementation and regression tests match the validated source manifest. The shared devnet and demo were left running unchanged. Results:
 
@@ -180,3 +180,28 @@ The boundary tests retain the original SDK fixtures: in-range bytes, signing dig
 An independent review also exercised 480 freshly signed boundary cases: 180 in-range cases matched Rust and C++ on canonical bytes, signing preimages/digests, hashes and sender recovery, while all 300 oversized cases were rejected by Rust decoding and C++ validation. RPC transaction round trips, metadata overflow rejection and effective-price/tip calculations passed. The probe and its results are retained in the validation directory's `review/` subdirectory.
 
 Logs and the tested source manifest are retained in `/home/hsellami/Projects/monad-integration/.build/type40/alloy-widths-20261116/`. This run verifies the paired source and regression suites; it does not deploy the narrower profile or establish restart/replay compatibility for old wide native transactions.
+
+## Rust crate separation (2026-11-17)
+
+The execution repository owns two separate workspace crates: `rust/crates/monad-transaction` for shared protocol code and `rust/crates/monad-alloy` for client integration. BFT and execution adapters depend directly on `monad-transaction`; the client crate depends on it and upstream Alloy 2.0.4. No separate repository, external checkout or new git pin is required. BFT continues to use its existing execution submodule.
+
+The new unsigned `TypedTransaction` implements Alloy signing traits. Newly signed native envelopes normalize low-s and recompute canonical hashes; existing decoders never rewrite received signatures. The provider preserves explicit `0x40` through estimation/signing and adds empty auxiliary data only for wallet or signed-envelope submission. It checks the returned canonical hash, and synchronous receipts also require `type: 0x40`. Raw-send APIs remain literal and require `encode_submission()` bytes from callers. Ethereum envelopes retain their existing bytes.
+
+The execution workspace contains the tests, fixtures, client example and [client instructions](../monad-execution/rust/crates/monad-alloy/README.md). Its existing Rust CI covers both crates; fixture checks compare the protocol/client copies with C++'s independent Viem snapshot. Selecting just these crates does not build the C++ execution engine. Node adapters do not acquire provider or transport dependencies.
+
+Native/receipt/framing/RPC implementation files, C++ validation and codecs, execution-event adapters/layouts/schema, storage and RPC wire contracts are unchanged. The crates retain GPL-3.0-or-later. The execution gitlink includes both crates at `cf7d565bc557e1c57eebb1e175be064b8717d3c4`.
+
+Validation of the execution-owned layout passed locally with its existing Rust 1.91.1 toolchain and on Linux x86-64 category-box with the paired BFT Rust 1.97.1 toolchain:
+
+| Check | Result |
+| --- | --- |
+| Protocol and client suites | 44 passed (19 protocol, 25 client) |
+| Client documentation example | 1 passed |
+| Protocol/client Clippy, all targets, warnings denied | Passed |
+| Execution-event reader, release, `alloy,test-utils` | 4 tests and 1 documentation test passed; 2 existing snapshot tests ignored |
+| Ethereum RPC wire compatibility, release | 14 passed |
+| BFT release workspace check, all targets and features | Passed; existing non-fatal warnings remain |
+
+Formatting, rustdoc with warnings denied, fixture equality and dependency isolation also pass. BFT's manifest and lockfile are unchanged from the committed implementation. The execution lockfile retains every previously locked package version and adds the client dependency graph. Neither the execution toolchain nor C++ sources were changed.
+
+The checked sources are based on BFT `32b270cb29c41579da77d71c7f361f1af534e25b` and execution `6be73f870c34e4ba380dfe8ec0e6430d8022edeb`, plus the client implementation committed as execution `cf7d565bc557e1c57eebb1e175be064b8717d3c4`. Commit preparation changed only publication notes and the execution gitlink after validation. Logs and source manifests are retained under `/home/hsellami/Projects/monad-integration/.build/type40/execution-sdk-crates-20261117/`. Earlier full policy/pool/RPC validation is recorded above; those broader suites were not repeated for the directory correction. The shared devnet and demo were not redeployed.

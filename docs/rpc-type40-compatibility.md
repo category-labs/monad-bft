@@ -73,4 +73,10 @@ The approved profile now bounds native fee caps to uint128 and outer chain IDs t
 
 Native requests are checked before effective-price normalization, and native RPC transaction JSON rejects oversized `gasPrice` rather than inheriting Alloy's metadata saturation. Values and gas/balance arithmetic remain uint256. In-range native canonical encoding, hashes, receipt encoding and standard JSON fields are unchanged. Oversized native raw inputs use the existing method-specific decode error, including oversized chain IDs that previously reached wrong-chain validation.
 
-The earlier validation results above describe the previous wide-quantity implementation. The amended sources pass 19 shared-crate tests, 14 Ethereum wire tests and all 193 RPC unit tests on category-box. This branch pins execution `6be73f870c34e4ba380dfe8ec0e6430d8022edeb`; broader paired validation is recorded in [the development profile](monad-type-40.md#alloy-numeric-bound-amendment-2026-11-16). No deployment or SDK-bound change is included.
+The earlier validation results above describe the previous wide-quantity implementation. The amended sources pass 19 shared-crate tests, 14 Ethereum wire tests and all 193 RPC unit tests on category-box. Execution `6be73f870c34e4ba380dfe8ec0e6430d8022edeb` introduced the amendment; broader paired validation is recorded in [the development profile](monad-type-40.md#alloy-numeric-bound-amendment-2026-11-16). No deployment or Viem/Rabby bound change is included.
+
+## Rust client crate (2026-11-17)
+
+Both `monad-transaction` and the new `monad-alloy` client crate live in the execution repository's Rust workspace. Their responsibilities are separate: nodes consume only the protocol crate, while applications use the Alloy network/request/provider adapter. The shared RPC aliases and Ethereum serializers are unchanged; no RPC methods, JSON fields, native commitments or submission encodings change.
+
+BFT retains its path dependency through the existing execution submodule. See the [development profile](monad-type-40.md#rust-crate-separation-2026-11-17) for the package boundaries and validation results. No separate shared repository or additional publication dependency is introduced.
