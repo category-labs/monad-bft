@@ -45,6 +45,9 @@ pub struct EthCallHandlerConfig {
     pub provider_gas_limit_eth_simulate: u64,
     pub provider_max_calls_eth_simulate: usize,
     pub provider_max_blocks_eth_simulate: usize,
+
+    /// Chain id of the private domain whose triedb is served, if not the L1's.
+    pub private_domain_chain_id: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -66,6 +69,7 @@ impl EthCallHandler {
             config.node_cache_max_mem,
             triedb_path,
         ));
+        // TODO: `executor.set_private_domain(domain_chain_id)` once monad-execution has it.
 
         let rate_limiter = Arc::new(Semaphore::new(config.max_concurrent_permits));
 

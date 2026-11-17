@@ -87,6 +87,14 @@ use monad_chain_config::{
 };
 use monad_ethcall::ChainId;
 
+/// The L1 chain id in the low 16 bits of a private domain chain id.
+pub fn private_domain_network_chain_id(chain_id: u64) -> Option<u64> {
+    const NETWORK_CHAIN_ID_BITS: u32 = 16;
+    (chain_id >> NETWORK_CHAIN_ID_BITS != 0)
+        .then_some(chain_id & ((1 << NETWORK_CHAIN_ID_BITS) - 1))
+}
+
+/// A private domain executes with its L1's chain config.
 pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
     match chain_id {
         ETHEREUM_MAINNET_CHAIN_ID => Ok(ChainId::EthereumMainnet),
@@ -94,10 +102,15 @@ pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
         MONAD_TESTNET_CHAIN_ID => Ok(ChainId::MonadTestnet),
         MONAD_DEVNET_CHAIN_ID => Ok(ChainId::MonadDevnet),
         HIVE_CHAIN_ID => Ok(ChainId::HiveNet),
-        other => Err(JsonRpcError::eth_call_error(
-            "unsupported chain id".to_string(),
-            Some(other.to_string()),
-        )),
+        other => match private_domain_network_chain_id(other) {
+            Some(MONAD_MAINNET_CHAIN_ID) => Ok(ChainId::MonadMainnet),
+            Some(MONAD_TESTNET_CHAIN_ID) => Ok(ChainId::MonadTestnet),
+            Some(MONAD_DEVNET_CHAIN_ID) => Ok(ChainId::MonadDevnet),
+            _ => Err(JsonRpcError::eth_call_error(
+                "unsupported chain id".to_string(),
+                Some(other.to_string()),
+            )),
+        },
     }
 }
 
@@ -1024,5 +1037,24 @@ mod tests {
     #[test]
     fn parse_ethcall_chain_id_rejects_unknown_chain() {
         assert!(parse_ethcall_chain_id(42).is_err());
+    }
+
+    #[test]
+    fn parse_ethcall_chain_id_maps_private_domains_to_their_l1() {
+        assert_eq!(
+            parse_ethcall_chain_id((1 << 16) | MONAD_DEVNET_CHAIN_ID).unwrap(),
+            ChainId::MonadDevnet
+        );
+        assert_eq!(
+            parse_ethcall_chain_id((7 << 16) | MONAD_TESTNET_CHAIN_ID).unwrap(),
+            ChainId::MonadTestnet
+        );
+        assert_eq!(
+            parse_ethcall_chain_id((u64::MAX << 16) | MONAD_MAINNET_CHAIN_ID).unwrap(),
+            ChainId::MonadMainnet
+        );
+        // Only Monad networks have private domains.
+        assert!(parse_ethcall_chain_id((1 << 16) | ETHEREUM_MAINNET_CHAIN_ID).is_err());
+        assert!(parse_ethcall_chain_id((1 << 16) | 42).is_err());
     }
 }

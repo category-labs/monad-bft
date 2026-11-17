@@ -368,6 +368,19 @@ pub fn merge_access_lists(generated: AccessList, original: Option<AccessList>) -
     AccessList(merged_items)
 }
 
+/// A private domain's gas is paid on the L1, so a call's gas limit must not be derived from
+/// the sender's domain balance.
+pub fn fill_private_domain_gas(
+    eth_call_handler_config: &EthCallHandlerConfig,
+    tx: &mut CallRequest,
+    header: &Header,
+    provider_gas_limit: U256,
+) {
+    if eth_call_handler_config.private_domain_chain_id.is_some() && tx.gas.is_none() {
+        tx.gas = Some(U256::from(header.gas_limit).min(provider_gas_limit));
+    }
+}
+
 /// Populate gas limit and gas prices
 pub async fn fill_gas_params<T: Triedb>(
     triedb_env: &T,
@@ -622,6 +635,12 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     let eth_call_provider_gas_limit = eth_call_handler_config
         .provider_gas_limit_eth_call
         .min(header.header.gas_limit);
+    fill_private_domain_gas(
+        eth_call_handler_config,
+        &mut tx,
+        &header.header,
+        U256::from(eth_call_provider_gas_limit),
+    );
     fill_gas_params(
         triedb_env,
         block_key,

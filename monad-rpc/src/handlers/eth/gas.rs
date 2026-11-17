@@ -42,7 +42,10 @@ use crate::{
     },
     handlers::{
         eth::{
-            call::{check_contract_creation_size, fill_gas_params, CallRequest, GasPriceDetails},
+            call::{
+                check_contract_creation_size, fill_gas_params, fill_private_domain_gas,
+                CallRequest, GasPriceDetails,
+            },
             CallResult, SuccessCallResult,
         },
         parse_ethcall_chain_id,
@@ -340,6 +343,12 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         .provider_gas_limit_eth_estimate_gas
         .min(header.header.gas_limit);
     let original_tx_gas = tx.gas.unwrap_or(U256::from(header.header.gas_limit));
+    fill_private_domain_gas(
+        eth_call_handler_config,
+        &mut tx,
+        &header.header,
+        U256::from(provider_gas_limit),
+    );
     fill_gas_params(
         &data_provider.triedb_env,
         block_key,
@@ -1119,6 +1128,7 @@ mod tests {
             provider_gas_limit_eth_simulate: 0,
             provider_max_calls_eth_simulate: 0,
             provider_max_blocks_eth_simulate: 0,
+            private_domain_chain_id: None,
         }
     }
 
@@ -1145,6 +1155,31 @@ mod tests {
         );
 
         DataProvider::new(None, Arc::new(mock_triedb), None)
+    }
+
+    #[test]
+    fn private_domain_gas_does_not_depend_on_the_sender() {
+        let header = alloy_consensus::Header {
+            gas_limit: 150_000_000,
+            ..Default::default()
+        };
+        let provider_gas_limit = U256::from(30_000_000);
+
+        let mut config = mock_eth_call_handler_config();
+        let mut call_request = CallRequest::default();
+        fill_private_domain_gas(&config, &mut call_request, &header, provider_gas_limit);
+        assert_eq!(call_request.gas, None);
+
+        config.private_domain_chain_id = Some((1 << 16) | 20143);
+        fill_private_domain_gas(&config, &mut call_request, &header, provider_gas_limit);
+        assert_eq!(call_request.gas, Some(provider_gas_limit));
+
+        let mut call_request = CallRequest {
+            gas: Some(U256::from(30_000)),
+            ..Default::default()
+        };
+        fill_private_domain_gas(&config, &mut call_request, &header, provider_gas_limit);
+        assert_eq!(call_request.gas, Some(U256::from(30_000)));
     }
 
     #[tokio::test]

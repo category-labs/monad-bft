@@ -49,6 +49,11 @@ pub struct Cli {
     #[arg(long)]
     pub node_config: PathBuf,
 
+    /// Serve the private domain triedb that `monad-domain` writes to `--triedb-path`.
+    /// Must end with the node config's chain id; `--ipc-path` must not be set.
+    #[arg(long)]
+    pub domain_chain_id: Option<u64>,
+
     /// Set the number of worker threads for the RPC server
     #[arg(long, default_value_t = 2)]
     pub worker_threads: usize,

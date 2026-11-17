@@ -33,6 +33,7 @@ use monad_rpc::{
     },
     event::EventServer,
     handlers::{
+        private_domain_network_chain_id,
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
@@ -126,6 +127,26 @@ async fn main() -> std::io::Result<()> {
     }
 
     MONAD_RPC_VERSION.map(|v| info!("starting monad-rpc with version {}", v));
+
+    let chain_id = match args.domain_chain_id {
+        Some(domain_chain_id) => {
+            if private_domain_network_chain_id(domain_chain_id) != Some(node_config.chain_id) {
+                panic!(
+                    "--domain-chain-id {} must differ from and end with the node config's chain id {}",
+                    domain_chain_id, node_config.chain_id
+                );
+            }
+            if args.ipc_path.is_some() {
+                panic!("--ipc-path cannot be set with --domain-chain-id: a private domain has no tx pool");
+            }
+            info!(
+                domain_chain_id,
+                "serving the triedb of a private domain; transactions are sequenced on the L1"
+            );
+            domain_chain_id
+        }
+        None => node_config.chain_id,
+    };
 
     let (txpool_bridge_client, _txpool_bridge_handle) = if let Some(ipc_path) = args.ipc_path {
         // Wait for bft to be in a ready state before starting the RPC server.
@@ -293,6 +314,7 @@ async fn main() -> std::io::Result<()> {
                 provider_gas_limit_eth_simulate: args.eth_simulate_gas_limit,
                 provider_max_calls_eth_simulate: args.eth_simulate_max_calls,
                 provider_max_blocks_eth_simulate: args.eth_simulate_max_blocks,
+                private_domain_chain_id: args.domain_chain_id,
             },
             triedb_path,
         )
@@ -368,7 +390,7 @@ async fn main() -> std::io::Result<()> {
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
         eth_call_handler,
-        node_config.chain_id,
+        chain_id,
         data_provider,
         event_server_client.clone(),
         args.batch_request_limit,
