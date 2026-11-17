@@ -20,7 +20,7 @@ cflags="${CFLAGS:--march=haswell}"
 cxxflags="${CXXFLAGS:--march=haswell}"
 
 # --- version stamping ---
-# monad-node and monad-rpc read MONAD_VERSION at compile time via option_env!.
+# monad-node reads MONAD_VERSION at compile time via option_env!.
 if [ -z "${MONAD_VERSION:-}" ] && [ -n "${PACKAGE_VERSION:-}" ]; then
   export MONAD_VERSION="$PACKAGE_VERSION"
 fi
@@ -34,7 +34,6 @@ cargo build --locked --release \
   --bin monad-node \
   --bin monad-keystore \
   --bin monad-debug-node \
-  --bin monad-rpc \
   --bin monad-archiver \
   --bin monad-archive-checker \
   --bin monad-indexer \
