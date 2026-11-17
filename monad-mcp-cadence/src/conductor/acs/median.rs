@@ -13,20 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::Arc,
-};
+use std::{collections::VecDeque, sync::Arc};
 
 use super::{
     Acs, AcsOutput,
-    types::{NodeId, ValidatorData},
+    types::{ValidatorData, ValidatorIndex, ValidatorMap},
 };
 
 /// A single-round ACS protocol that decides on median of all
 /// received messages after receiving all proposals.
 pub struct MedianAcs<V> {
-    proposals: BTreeMap<NodeId, Option<V>>,
+    proposals: ValidatorMap<V>,
     outbox: VecDeque<AcsOutput<V>>,
     decision: Option<V>,
 }
@@ -42,11 +39,11 @@ where
     fn new(val_data: &Arc<ValidatorData>) -> Self {
         use crate::spec::validator::ValidatorData as _;
 
-        let proposals: BTreeMap<NodeId, _> = val_data.nodes().map(|id| (*id, None)).collect();
-        assert!(!proposals.is_empty());
+        let num_validators = val_data.len();
+        assert!(num_validators > 0);
 
         Self {
-            proposals,
+            proposals: ValidatorMap::new(num_validators),
             decision: None,
             outbox: Default::default(),
         }
@@ -60,26 +57,21 @@ where
         self.outbox.push_back(AcsOutput::Broadcast(value));
     }
 
-    fn handle_message(&mut self, sender: NodeId, message: V) {
+    fn handle_message(&mut self, sender: ValidatorIndex, message: V) {
         if self.decision.is_some() {
             return;
         }
 
-        let proposal = self
-            .proposals
-            .get_mut(&sender)
-            .expect("sender must be from validator set");
-        *proposal = Some(message);
-
-        if !self.proposals.values().all(|v| v.is_some()) {
+        self.proposals.insert(sender, message);
+        if self.proposals.len() < self.proposals.cap() {
             return;
         }
 
         // we've seen all proposals, decide on the median value
-        let mut values: Vec<_> = std::mem::take(&mut self.proposals)
-            .into_values()
-            .map(|v| v.unwrap())
-            .collect();
+        let mut values = Vec::with_capacity(self.proposals.cap());
+        for index in self.proposals.keys().iter() {
+            values.extend(self.proposals.remove(index));
+        }
         values.sort();
 
         let median_idx = values.len() / 2;
@@ -100,9 +92,10 @@ mod tests {
     use monad_mcp_common::spec::KeyPair as _;
 
     use super::{
-        super::types::{Stake, Timestamp},
+        super::types::{NodeId, Stake, Timestamp},
         *,
     };
+    use crate::spec::validator::ValidatorData as _;
 
     fn context(validators: &[NodeId]) -> Arc<ValidatorData> {
         let valset = validators
@@ -119,7 +112,9 @@ mod tests {
     #[test]
     fn decides_median_proposal() {
         let validators = [NodeId::dummy(1), NodeId::dummy(2), NodeId::dummy(3)];
-        let mut acs = MedianAcs::<Timestamp>::new(&context(&validators));
+        let context = context(&validators);
+        let index = |i: usize| context.index_of(&validators[i]).expect("a validator");
+        let mut acs = MedianAcs::<Timestamp>::new(&context);
 
         acs.propose(Timestamp::from_nanos(20));
         assert_eq!(
@@ -127,10 +122,10 @@ mod tests {
             Some(AcsOutput::Broadcast(Timestamp::from_nanos(20)))
         );
 
-        acs.handle_message(validators[0], Timestamp::from_nanos(10));
-        acs.handle_message(validators[1], Timestamp::from_nanos(30));
+        acs.handle_message(index(0), Timestamp::from_nanos(10));
+        acs.handle_message(index(1), Timestamp::from_nanos(30));
         assert_eq!(acs.decision(), None);
-        acs.handle_message(validators[2], Timestamp::from_nanos(20));
+        acs.handle_message(index(2), Timestamp::from_nanos(20));
 
         assert_eq!(acs.decision(), Some(&Timestamp::from_nanos(20)));
     }

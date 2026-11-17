@@ -30,16 +30,15 @@ pub mod validator {
         type PubKey: common_spec::PubKey;
         type Stake: common_spec::Stake;
 
-        // in index order
-        fn nodes(&self) -> impl Iterator<Item = &Self::NodeId>;
         fn len(&self) -> usize;
+
+        // in index order
+        fn indices(&self) -> impl Iterator<Item = ValidatorIndex> {
+            (0..self.len()).map(ValidatorIndex::new_unchecked)
+        }
 
         // None if the node is not a validator
         fn index_of(&self, node_id: &Self::NodeId) -> Option<ValidatorIndex>;
-
-        fn contains(&self, node_id: &Self::NodeId) -> bool {
-            self.index_of(node_id).is_some()
-        }
 
         // the caller must guarantee that the index came from this
         // validator data.
@@ -47,13 +46,11 @@ pub mod validator {
 
         // the caller must guarantee that the index came from this
         // validator data.
-        fn pubkey(&self, index: ValidatorIndex) -> &Self::PubKey;
+        fn vote_key(&self, index: ValidatorIndex) -> &Self::PubKey;
 
-        // the caller must guarantee that the node_id is in the valset.
-        fn get_pubkey(&self, node_id: &Self::NodeId) -> &Self::PubKey;
-
-        // the caller must guarantee that the node_id is in the valset.
-        fn get_stake(&self, node_id: &Self::NodeId) -> &Self::Stake;
+        // the caller must guarantee that the index came from this
+        // validator data.
+        fn stake(&self, index: ValidatorIndex) -> &Self::Stake;
 
         // the caller must guarantee that the validators came from this
         // validator data.

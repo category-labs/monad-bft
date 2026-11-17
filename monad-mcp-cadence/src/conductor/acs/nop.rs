@@ -15,7 +15,7 @@
 
 use alloy_rlp::{Decodable, Encodable};
 
-use super::{Acs, AcsOutput, types::NodeId};
+use super::{Acs, AcsOutput, types::ValidatorIndex};
 
 /// An ACS that never communicates and immediately decides on its own
 /// proposal.
@@ -38,7 +38,7 @@ impl<V> Acs<V> for NopAcs<V> {
         self.decision = Some(data);
     }
 
-    fn handle_message(&mut self, _sender: NodeId, message: Self::Message) {
+    fn handle_message(&mut self, _sender: ValidatorIndex, message: Self::Message) {
         match message {}
     }
 

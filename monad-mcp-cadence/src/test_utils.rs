@@ -38,10 +38,8 @@ where
     decoded
 }
 
-/// The validator index of `NodeId::dummy(i)` among dummy validators `0..n`,
-/// which is `i`: the stub indexes validators in NodeId order.
 pub(crate) fn dummy_index(
     node: impl std::borrow::Borrow<super::types::NodeId>,
 ) -> super::types::ValidatorIndex {
-    super::types::ValidatorIndex::new_unchecked(u64::from(*node.borrow()) as usize)
+    super::types::ValidatorData::dummy_index(u64::from(*node.borrow()))
 }

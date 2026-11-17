@@ -280,7 +280,13 @@ impl ProposerRaptorcast {
         match self.tracked.get(pid) {
             Some(instance) => instance.missing_chunks(),
             // no header yet, so no assignment: any validator may own chunks we lack
-            None => Some(everything_missing(epoch_handle.validator_data.nodes())),
+            None => {
+                let validator_data = &epoch_handle.validator_data;
+                let nodes = validator_data
+                    .indices()
+                    .map(|index| validator_data.node_id(index));
+                Some(everything_missing(nodes))
+            }
         }
     }
 

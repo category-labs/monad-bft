@@ -15,6 +15,8 @@
 
 use std::sync::Arc;
 
+use monad_mcp_common::{Slot, ValidatorIndex};
+
 use crate::{
     cadence::{
         slot::chorus::ChorusContext,
@@ -33,6 +35,8 @@ pub type NodeProposerSchedule = RotatingProposerSchedule<RoundRobinLeaderSchedul
 #[derive(Clone)]
 pub struct EpochHandle {
     pub self_id: NodeId,
+    // None if this node is not a validator of the epoch
+    pub self_index: Option<ValidatorIndex>,
     // signs votes
     pub key: Arc<KeyPair>,
     // signs proposal headers
@@ -52,13 +56,39 @@ impl EpochHandle {
         }
     }
 
-    pub fn chorus(&self) -> ChorusContext {
-        ChorusContext {
-            node_id: self.self_id,
+    // None if this node is not a validator of the epoch
+    pub fn chorus(&self) -> Option<ChorusContext> {
+        let context = ChorusContext {
+            self_index: self.self_index?,
             key: self.key.clone(),
             validator_data: self.validator_data.clone(),
             header_auth: self.header_auth.clone(),
             proposers: self.proposers.clone(),
-        }
+        };
+        Some(context)
+    }
+}
+
+// The epoch of each slot. A validator index is valid in one epoch, so a
+// layer that sees slots of several epochs finds the validator table here.
+#[derive(Clone)]
+pub struct Epochs {
+    // one handle until epochs exist
+    current: EpochHandle,
+}
+
+impl Epochs {
+    pub fn new(current: EpochHandle) -> Self {
+        Self { current }
+    }
+
+    // None for a slot whose epoch this node does not know
+    pub fn at(&self, _slot: Slot) -> Option<&EpochHandle> {
+        Some(&self.current)
+    }
+
+    // the id of this node, which no epoch scopes
+    pub fn self_id(&self) -> NodeId {
+        self.current.self_id
     }
 }

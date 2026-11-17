@@ -20,13 +20,16 @@
 //! no real cryptography. The tests therefore exercise the quorum arithmetic
 //! and the signing domains, not the primitives underneath
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 pub(super) use super::super::super::super::test_utils::dummy_index;
 use super::{
     super::{
         super::{
-            super::message::{Outbound, Recipients},
+            super::{
+                message::{Outbound, SlotRecipients},
+                types::ValidatorIndex,
+            },
             fast::{CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry},
             types::{
                 HeaderAuth, IsVote, Lane, Lanes, NodeId, ProposalId, ProposalScope, Slot, StrongQc,
@@ -89,21 +92,7 @@ pub(super) fn quorum() -> Vec<NodeId> {
 }
 
 pub(super) fn validator_data() -> Arc<ValidatorData> {
-    use monad_mcp_common::spec::KeyPair as _;
-
-    let valset: HashMap<_, _> = nodes()
-        .into_iter()
-        .map(|node| (node, 1u64.into()))
-        .collect();
-    let mapping: HashMap<_, _> = nodes()
-        .into_iter()
-        .map(|node| {
-            let pubkey = node.keypair().pubkey();
-            (node, pubkey)
-        })
-        .collect();
-
-    Arc::new(ValidatorData::new(valset, mapping))
+    Arc::new(ValidatorData::dummy(NUM_NODES))
 }
 
 /// The same round-robin the implementation uses, restated so the tests do not
@@ -117,7 +106,7 @@ pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMv
     MonadMvba::new(MvbaContext {
         slot: SLOT,
         num_lanes: NUM_LANES,
-        node_id: node,
+        self_index: dummy_index(node),
         key: Arc::new(node.keypair()),
         validator_data: validator_data.clone(),
         header_auth: Arc::new(HeaderAuth::new(|_| false)),
@@ -311,7 +300,7 @@ pub(super) fn feed_prepare_votes(
             PrepareVote(entries.clone()),
             &node.keypair(),
         );
-        instance.handle_message_from(*node, Message::Prepare(msg));
+        instance.handle_message(dummy_index(node), Message::Prepare(msg));
     }
 }
 
@@ -329,7 +318,7 @@ pub(super) fn feed_commit_votes(
             FallbackCommitVote(block.entries()),
             &node.keypair(),
         );
-        instance.handle_message_from(*node, Message::Commit(msg));
+        instance.handle_message(dummy_index(node), Message::Commit(msg));
     }
 }
 
@@ -358,7 +347,7 @@ pub(super) fn feed_timeouts(
 ) {
     for node in signers {
         let msg = TimeoutMsg::new_signed(SLOT, v, high_prep_qc.clone(), &node.keypair());
-        instance.handle_message_from(*node, Message::Timeout(msg));
+        instance.handle_message(dummy_index(node), Message::Timeout(msg));
     }
 }
 
@@ -383,7 +372,7 @@ pub(super) fn broadcasts(outputs: &[Output]) -> Vec<&Message> {
         .iter()
         .filter_map(|output| match output {
             MVBAOutput::Send(Outbound {
-                to: Recipients::Everyone,
+                to: SlotRecipients::Broadcast,
                 message,
                 ..
             }) => Some(message),
@@ -392,12 +381,12 @@ pub(super) fn broadcasts(outputs: &[Output]) -> Vec<&Message> {
         .collect()
 }
 
-pub(super) fn unicasts(outputs: &[Output]) -> Vec<(NodeId, &Message)> {
+pub(super) fn unicasts(outputs: &[Output]) -> Vec<(ValidatorIndex, &Message)> {
     outputs
         .iter()
         .filter_map(|output| match output {
             MVBAOutput::Send(Outbound {
-                to: Recipients::Node(to),
+                to: SlotRecipients::Unicast(to),
                 message,
                 ..
             }) => Some((*to, message)),
@@ -497,7 +486,7 @@ pub(super) fn decided(
     let mut instance = started(node, block, validator_data);
 
     let (leader, proposal) = pre_prepare(view(1), block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     feed_prepare_votes(&mut instance, view(1), &block.entries(), &quorum());
     feed_commit_votes(&mut instance, view(1), block, &quorum());
 

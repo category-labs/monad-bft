@@ -52,11 +52,11 @@ pub trait DAProposalKeyPair {
     fn sign(&self, signed_bytes: &[u8]) -> Self::Signature;
 }
 
-// the compressed public key, as the assignment seed reads it
-pub const PUBKEY_LEN: usize = 33;
+// the node id is the compressed public key, as the assignment seed reads it
+pub const NODE_ID_LEN: usize = 33;
 
-pub trait DAPubKey: common_spec::PubKey {
-    // writes exactly PUBKEY_LEN bytes
+pub trait DANodeId: common_spec::NodeId {
+    // writes exactly NODE_ID_LEN bytes
     fn to_bytes(&self, field: &mut [u8]);
 }
 

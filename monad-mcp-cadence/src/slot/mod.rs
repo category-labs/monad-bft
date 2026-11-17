@@ -20,7 +20,7 @@ pub mod fallback;
 mod fast;
 
 use super::{
-    message::Outbound,
+    message::{Outbound, SlotRecipients},
     types::{self, NodeId, Slot, SlotScoped, TimestampDelta},
 };
 
@@ -64,7 +64,7 @@ pub enum SlotOutput<S: SlotConsensus> {
 
     /// Send a message to validators of the slot. A recipient can be this
     /// validator: the message then comes back through handle_message.
-    Send(Outbound<S::Message>),
+    Send(Outbound<S::Message, SlotRecipients>),
 
     /// Effect directed at a local component
     Local(S::LocalOut),

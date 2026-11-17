@@ -16,7 +16,7 @@
 use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc};
 
 use alloy_rlp::Encodable as _;
-use monad_mcp_cadence::ledger::BatchBuilder;
+use monad_mcp_cadence::{ledger::BatchBuilder, spec::validator::ValidatorData as _};
 use monad_mcp_common::{Timestamp, TimestampDelta, spec::KeyPair as _};
 use rand::SeedableRng as _;
 use rand_chacha::ChaCha8Rng;
@@ -160,6 +160,7 @@ impl NodeConfig {
 
         Ok(EpochHandle {
             self_id: self.node_id,
+            self_index: validator_data.index_of(&self.node_id),
             key: Arc::new(self.cadence_key_pair.clone()),
             proposal_key: Arc::new(self.proposal_key_pair.clone()),
             validator_data,
@@ -183,7 +184,8 @@ impl NodeConfig {
             valset.insert(validator.node_id, Stake::from(validator.stake));
             mapping.insert(validator.node_id, validator.chorus_pubkey);
         }
-        ValidatorData::new(valset, mapping)
+        // todo: the seed of the epoch, once epochs exist
+        ValidatorData::with_seed(valset, mapping, 0)
     }
 }
 

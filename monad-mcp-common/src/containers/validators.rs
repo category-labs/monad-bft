@@ -89,6 +89,17 @@ impl ValidatorSet {
         Self { words: [0; WORDS] }
     }
 
+    // each validator of a table with `num_validators` entries
+    pub fn full(num_validators: usize) -> Self {
+        debug_assert!(num_validators <= MAX_VALIDATORS);
+        let mut words = [0; WORDS];
+        for (word, bits) in words.iter_mut().enumerate() {
+            let members = num_validators.saturating_sub(word * 64).min(64);
+            *bits = u64::MAX.checked_shr(64 - members as u32).unwrap_or(0);
+        }
+        Self { words }
+    }
+
     /// Whether the validator was not in the set before.
     pub fn insert(&mut self, validator: ValidatorIndex) -> bool {
         let (word, bit) = Self::position(validator);
@@ -270,6 +281,15 @@ mod tests {
     #[should_panic]
     fn a_set_has_at_most_the_maximum_of_validators() {
         ValidatorIndex::new(0, MAX_VALIDATORS + 1);
+    }
+
+    #[test]
+    fn a_full_set_has_each_validator_of_its_table() {
+        for size in [0, 1, 63, 64, 65, MAX_VALIDATORS] {
+            let full = ValidatorSet::full(size);
+            let expected: ValidatorSet = (0..size as u16).map(index).collect();
+            assert_eq!(full, expected, "size {size}");
+        }
     }
 
     #[test]

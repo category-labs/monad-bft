@@ -29,7 +29,7 @@ use monad_mcp_node::{
     Component, FinalizedSlot, Node, NodeOutput, NodeRouter, Router,
     cadence::slot::chorus::ChorusMessage,
     common::NodeId,
-    component::{Proposing, ProposingComponent, ProposingInput, ProposingOutput},
+    component::{Proposing, ProposingInput, ProposingOutput},
     config::{NodeConfig, SourceKind},
     ledger::new_block,
     network::{AppMessage, NodeAppMessage, WireInbound},
@@ -150,13 +150,8 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let writer = LedgerWriter::open(dir.path()).unwrap();
-    let proposers = harness
-        .node
-        .router()
-        .epoch_handle()
-        .proposers
-        .proposers_at(finalized.slot)
-        .unwrap();
+    let epoch = harness.node.epoch_handle();
+    let proposers = epoch.proposers.proposers_at(finalized.slot).unwrap();
     let written = writer
         .write(&new_block(finalized, Some(&proposers)))
         .unwrap();
@@ -259,12 +254,6 @@ fn a_random_source_node_drops_txs() {
 struct DropFirstBatch {
     inner: Proposing,
     dropped: Arc<OnceLock<u64>>,
-}
-
-impl ProposingComponent for DropFirstBatch {
-    fn wants_vote_facts(&self) -> bool {
-        self.inner.wants_vote_facts()
-    }
 }
 
 impl Component for DropFirstBatch {

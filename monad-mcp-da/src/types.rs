@@ -19,7 +19,7 @@ pub(crate) use monad_mcp_common::{
     TimestampDelta, WirePriority,
 };
 
-pub(crate) use super::common::{NodeId, PubKey, Stake};
+pub(crate) use super::common::{NodeId, Stake};
 // re-export cadence types
 pub use super::{
     cadence::{

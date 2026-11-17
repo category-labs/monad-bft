@@ -18,16 +18,12 @@ use monad_crypto::hasher::HasherType;
 pub(crate) use monad_mcp_cadence::stub as cadence;
 pub(crate) use monad_mcp_common::stub as common;
 
-pub(crate) use self::common::NodeId;
-use self::{
-    cadence::env::{
-        EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
-        SignedProposalHeader,
-    },
-    common::PubKey,
+use self::cadence::env::{
+    EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature, SignedProposalHeader,
 };
+pub(crate) use self::common::NodeId;
 use crate::spec::{
-    DAMerkleRoot, DAProposalHeader, DAProposalKeyPair, DAProposalSignature, DAPubKey, SIGNATURE_LEN,
+    DAMerkleRoot, DANodeId, DAProposalHeader, DAProposalKeyPair, DAProposalSignature, SIGNATURE_LEN,
 };
 
 // The keypair used to sign/verify proposal. Not used for aggregation.
@@ -111,7 +107,7 @@ impl DAProposalHeader for SignedProposalHeader {
 
 // tag(1) key(8), zero padded to the field. the key sits where the
 // seed derivation reads, after the tag byte.
-impl DAPubKey for PubKey {
+impl DANodeId for NodeId {
     fn to_bytes(&self, field: &mut [u8]) {
         field.fill(0);
         field[1..9].copy_from_slice(&u64::from(*self).to_le_bytes());

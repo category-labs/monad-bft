@@ -22,7 +22,10 @@ use rand_chacha::ChaCha8Rng;
 
 use super::{Component, Mempool};
 use crate::{
-    cadence::{proposing::ProposalPlanner, slot::chorus::FinalizationPath},
+    cadence::{
+        proposing::{ProposalPlanner, VoteReceived},
+        slot::chorus::FinalizationPath,
+    },
     common::NodeId,
     config::{ProposalConfig, SourceKind},
     epoch::EpochHandle,
@@ -33,21 +36,11 @@ pub enum ProposingInput {
     // every slot strictly below cap is finalized
     CapAdvance(Slot),
     // demo(tx-timeline): `at` stamps mempool admission
-    Tx {
-        at: Timestamp,
-        from: NodeId,
-        tx: Tx,
-    },
+    Tx { at: Timestamp, from: NodeId, tx: Tx },
     // the lanes the slot's finalization commits, and the path it took
     Finalized(Slot, Lanes<bool>, FinalizationPath),
-    // a peer's batch vote arrived, with per lane whether its entry is
-    // positive: every copy, only for a component that wants vote facts
-    BatchVote {
-        slot: Slot,
-        from: NodeId,
-        at: Timestamp,
-        positive: Lanes<bool>,
-    },
+    // every lane and every voter, this node included
+    VoteReceived(VoteReceived),
 }
 
 // a sealed proposal for DA, with the first-hop send order the planner
@@ -66,23 +59,8 @@ impl From<Proposal<Bytes>> for ProposingOutput {
     }
 }
 
-// a proposing component: a component, plus which optional facts it wants
-pub trait ProposingComponent: Component<Input = ProposingInput, Output = ProposingOutput> {
-    // every peer's batch vote, as `ProposingInput::BatchVote`; the router
-    // copies them only for a component that wants them
-    fn wants_vote_facts(&self) -> bool {
-        false
-    }
-}
-
 // any proposing component; the node holds one and never knows which
-pub type Proposing = Box<dyn ProposingComponent + Send>;
-
-impl ProposingComponent for Proposing {
-    fn wants_vote_facts(&self) -> bool {
-        (**self).wants_vote_facts()
-    }
-}
+pub type Proposing = Box<dyn Component<Input = ProposingInput, Output = ProposingOutput> + Send>;
 
 impl Component for Proposing {
     type Input = ProposingInput;
@@ -159,8 +137,6 @@ impl MempoolProposing {
     }
 }
 
-impl ProposingComponent for MempoolProposing {}
-
 impl Component for MempoolProposing {
     type Input = ProposingInput;
     type Output = ProposingOutput;
@@ -180,12 +156,7 @@ impl Component for MempoolProposing {
                 let is_committed = |lane: Lane| committed.get(lane) == Some(&true);
                 self.mempool.settle(slot, is_committed);
             }
-            ProposingInput::BatchVote {
-                slot,
-                from,
-                at,
-                positive,
-            } => self.planner.handle_batch_vote(slot, &from, at, &positive),
+            ProposingInput::VoteReceived(vote) => self.planner.handle_vote_received(&vote),
         }
         self.collect(now);
     }
@@ -247,8 +218,6 @@ impl RandomProposing {
     }
 }
 
-impl ProposingComponent for RandomProposing {}
-
 impl Component for RandomProposing {
     type Input = ProposingInput;
     type Output = ProposingOutput;
@@ -263,12 +232,7 @@ impl Component for RandomProposing {
             ProposingInput::Finalized(slot, committed, path) => {
                 self.planner.handle_finalized(slot, &committed, path);
             }
-            ProposingInput::BatchVote {
-                slot,
-                from,
-                at,
-                positive,
-            } => self.planner.handle_batch_vote(slot, &from, at, &positive),
+            ProposingInput::VoteReceived(vote) => self.planner.handle_vote_received(&vote),
         }
         self.collect(now);
     }

@@ -34,12 +34,9 @@ use cadence::{
     },
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_cadence::stub as cadence;
+use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
-use monad_mcp_common::{
-    SlotDeadline, Timestamp, TimestampDelta,
-    stub::{NodeId, Stake},
-};
+use monad_mcp_common::{SlotDeadline, Timestamp, TimestampDelta, stub::NodeId};
 use monad_sim::Time;
 use monad_sim_swarm::Network;
 
@@ -58,7 +55,7 @@ const GENESIS_DEADLINE: Timestamp = Timestamp::from_millis(100);
 // GENESIS_DEADLINE + k * tau = 100 + k * 100.
 type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
-fn conductor() -> Conductor {
+fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
     let config = ConductorConfig::new(
         SLOTS_PER_WINDOW,
         SYNC_BOUNDARY_SLOTS,
@@ -67,7 +64,7 @@ fn conductor() -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    Conductor::genesis(config, ()).unwrap()
+    Conductor::genesis(config, val_data.clone(), ()).unwrap()
 }
 
 // Slot k's deadline under the natural genesis-anchored schedule:
@@ -77,19 +74,6 @@ fn slot_deadline(slot: u64) -> Timestamp {
     GENESIS_DEADLINE
         .checked_add_deltas(TimestampDelta::from_millis(SLOT_INTERVAL), slot)
         .unwrap()
-}
-
-fn gen_validator_data(n: u64) -> ValidatorData {
-    use monad_mcp_common::spec::KeyPair as _;
-
-    let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();
-    let valset = validators.iter().map(|id| (*id, Stake::from(1))).collect();
-    let mapping = validators
-        .iter()
-        .map(|id| (*id, id.keypair().pubkey()))
-        .collect();
-
-    ValidatorData::new(valset, mapping)
 }
 
 fn proposer_schedule(
@@ -117,13 +101,15 @@ fn full_window_rolls_over_with_dummy_slot_consensus() {
     let mut builder = CadenceSwarmBuilder::<DummySlotConsensus, _>::new();
     builder.set_latency(TimestampDelta::from_millis(LATENCY).as_duration());
 
+    let val_data = Arc::new(ValidatorData::dummy(NODES));
+    builder.set_validators(val_data.clone());
     for i in 0..NODES {
         let id = NodeId::dummy(i);
         let slot_config = DummySlotConsensusConfig {
             quorum: NODES as usize,
         };
         let key = Arc::new(id.keypair());
-        builder.add_node(id, conductor(), slot_config, key);
+        builder.add_node(id, conductor(&val_data), slot_config, key);
     }
 
     let mut swarm = builder.build();
@@ -155,20 +141,21 @@ fn full_window_rolls_over_with_chorus() {
     let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(TimestampDelta::from_millis(LATENCY).as_duration());
 
-    let val_data = Arc::new(gen_validator_data(NODES));
+    let val_data = Arc::new(ValidatorData::dummy(NODES));
+    builder.set_validators(val_data.clone());
     for i in 0..NODES {
         let id = NodeId::dummy(i);
         let slot_config = ChorusConfig {
             delta: TimestampDelta::from_millis(DELTA),
         };
         let context = ChorusContext {
-            node_id: id,
+            self_index: val_data.index_of(&id).expect("a validator"),
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: proposer_schedule(&val_data),
         };
-        builder.add_node(id, conductor(), slot_config, context);
+        builder.add_node(id, conductor(&val_data), slot_config, context);
     }
 
     let mut swarm = builder.build();
@@ -202,20 +189,21 @@ fn a_partitioned_node_jumps_its_cap_to_the_majority() {
     let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_network(network);
 
-    let val_data = Arc::new(gen_validator_data(NODES));
+    let val_data = Arc::new(ValidatorData::dummy(NODES));
+    builder.set_validators(val_data.clone());
     for i in 0..NODES {
         let id = NodeId::dummy(i);
         let slot_config = ChorusConfig {
             delta: TimestampDelta::from_millis(DELTA),
         };
         let context = ChorusContext {
-            node_id: id,
+            self_index: val_data.index_of(&id).expect("a validator"),
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: proposer_schedule(&val_data),
         };
-        builder.add_node(id, conductor(), slot_config, context);
+        builder.add_node(id, conductor(&val_data), slot_config, context);
     }
 
     let mut swarm = builder.build();

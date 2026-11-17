@@ -495,8 +495,6 @@ impl Decodable for EquivCert {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 
     use super::{super::test_utils::dummy_index, *};
@@ -522,13 +520,7 @@ mod tests {
     /// Seven validators of stake one each, as in the aggregation tests.
     fn claim_setup() -> (Vec<NodeId>, Arc<ValidatorData>) {
         let nodes: Vec<NodeId> = (0..NUM_VALIDATORS as u64).map(NodeId::dummy).collect();
-        let valset: HashMap<_, _> = nodes.iter().map(|node| (*node, Stake::from(1))).collect();
-        let mapping: HashMap<_, _> = nodes
-            .iter()
-            .map(|node| (*node, node.keypair().pubkey()))
-            .collect();
-
-        (nodes, Arc::new(ValidatorData::new(valset, mapping)))
+        (nodes, Arc::new(ValidatorData::dummy(NUM_VALIDATORS as u64)))
     }
 
     const SCOPE: u64 = 7;

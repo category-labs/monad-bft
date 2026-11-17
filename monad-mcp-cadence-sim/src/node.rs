@@ -15,9 +15,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use cadence::{Inbound, Outbound, Recipients, Runtime, proposing::ProposalPlanner};
+use cadence::{
+    Inbound, Outbound, Recipients, Runtime,
+    proposing::ProposalPlanner,
+    types::{ValidatorData, ValidatorIndex},
+};
 // choose stub cadence for implementation
-use monad_mcp_cadence::stub as cadence;
+use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
 use monad_mcp_common::{Timestamp, stub::NodeId};
 use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, SimClient};
@@ -72,6 +76,8 @@ pub(crate) struct ProposerHarness<E> {
 pub struct SimNode<R: Runtime> {
     id: NodeId,
     runtime: R,
+    // None until the swarm builder sets it
+    validators: Option<Arc<ValidatorData>>,
     on_output: Box<OutputFn<R>>,
     proposer: Option<ProposerHarness<R::LocalIn>>,
     /// The one live timer step, at the runtime's last polled `next_due`.
@@ -93,6 +99,7 @@ where
         Self {
             id,
             runtime,
+            validators: None,
             on_output: Box::new(on_output),
             proposer: None,
             due_alarm: None,
@@ -111,6 +118,15 @@ where
             proposer: Some(harness),
             ..Self::new(id, runtime, on_output)
         }
+    }
+
+    pub(crate) fn set_validators(&mut self, validators: Arc<ValidatorData>) {
+        self.validators = Some(validators);
+    }
+
+    fn node_id(&self, index: ValidatorIndex) -> NodeId {
+        let validators = self.validators.as_ref();
+        *validators.expect("the validator table").node_id(index)
     }
 
     pub fn init(&mut self, ctx: &mut Ctx) {
@@ -264,9 +280,13 @@ where
         let net = self.net.expect("node not wired");
         let message = SimMessage::Cadence(event.message);
         match event.to {
-            Recipients::Everyone => {
-                ctx.schedule(net, now, StepLabel::source("broadcast"), move |net, ctx| {
-                    net.broadcast(ctx, message)
+            Recipients::Validators(_, validators) => {
+                let nodes = validators.iter().map(|to| self.node_id(to));
+                let nodes: Vec<NodeId> = nodes.collect();
+                ctx.schedule(net, now, StepLabel::source("send"), move |net, ctx| {
+                    for to in nodes {
+                        net.send(ctx, to, message.clone());
+                    }
                 });
             }
             Recipients::Node(to) => {

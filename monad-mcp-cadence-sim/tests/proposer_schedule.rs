@@ -31,7 +31,7 @@ use cadence::{
     },
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_cadence::stub as cadence;
+use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
 use monad_mcp_common::{
     Lane, Slot, SlotDeadline, Timestamp, TimestampDelta,
@@ -52,7 +52,7 @@ const GENESIS_DEADLINE: Timestamp = Timestamp::from_millis(100);
 
 type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
-fn conductor() -> Conductor {
+fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
     let config = ConductorConfig::new(
         SLOTS_PER_WINDOW,
         SYNC_BOUNDARY_SLOTS,
@@ -61,7 +61,7 @@ fn conductor() -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    Conductor::genesis(config, ()).unwrap()
+    Conductor::genesis(config, val_data.clone(), ()).unwrap()
 }
 
 // Non-uniform stakes: the heaviest validator holds 20/90 ≈ 22% of the
@@ -109,6 +109,7 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
     builder.set_latency(Duration::from_millis(LATENCY));
 
     let val_data = Arc::new(gen_validator_data());
+    builder.set_validators(val_data.clone());
     // One scheduler per node: every node derives the schedule independently
     // from the shared (config, seed, stakes) inputs.
     let mut schedules = Vec::new();
@@ -121,13 +122,13 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
             delta: TimestampDelta::from_millis(DELTA),
         };
         let context = ChorusContext {
-            node_id,
+            self_index: val_data.index_of(&node_id).expect("a validator"),
             key: Arc::new(node_id.keypair()),
             validator_data: val_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: schedule,
         };
-        builder.add_node(node_id, conductor(), config, context);
+        builder.add_node(node_id, conductor(&val_data), config, context);
     }
 
     let mut swarm = builder.build();
@@ -236,6 +237,7 @@ fn vacant_indices_do_not_delay_the_fast_path() {
 
     let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(Duration::from_millis(LATENCY));
+    builder.set_validators(val_data.clone());
 
     for id in 0..NODES {
         let node_id = NodeId::dummy(id);
@@ -243,13 +245,13 @@ fn vacant_indices_do_not_delay_the_fast_path() {
             delta: TimestampDelta::from_millis(DELTA),
         };
         let context = ChorusContext {
-            node_id,
+            self_index: val_data.index_of(&node_id).expect("a validator"),
             key: Arc::new(node_id.keypair()),
             validator_data: val_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: schedule.clone(),
         };
-        builder.add_node(node_id, conductor(), chorus_config, context);
+        builder.add_node(node_id, conductor(&val_data), chorus_config, context);
     }
 
     let mut swarm = builder.build();

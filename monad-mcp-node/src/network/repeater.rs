@@ -175,7 +175,7 @@ mod tests {
     use monad_mcp_common::{Outbound, WirePriority};
 
     use super::*;
-    use crate::common::NodeId;
+    use crate::{cadence::Recipients, common::NodeId};
 
     const INTERVAL: TimestampDelta = TimestampDelta::from_millis(5_000);
 
@@ -197,7 +197,7 @@ mod tests {
     // a message to everyone, with a body that tells messages apart
     fn note(body: u64) -> WireOutbound<u64> {
         Outbound {
-            to: everyone(),
+            to: Recipients::Nodes(everyone()),
             message: body,
             qos: WirePriority::Regular,
         }
@@ -205,7 +205,7 @@ mod tests {
 
     fn note_to(node: u64, body: u64) -> WireOutbound<u64> {
         Outbound {
-            to: vec![NodeId::dummy(node)],
+            to: Recipients::Node(NodeId::dummy(node)),
             message: body,
             qos: WirePriority::Regular,
         }

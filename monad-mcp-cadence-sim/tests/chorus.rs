@@ -25,12 +25,9 @@ use cadence::{
     },
 };
 use helper::expect_finalized_at;
-use monad_mcp_cadence::stub as cadence;
+use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
-use monad_mcp_common::{
-    SlotDeadline, TimestampDelta,
-    stub::{NodeId, Stake},
-};
+use monad_mcp_common::{SlotDeadline, TimestampDelta, stub::NodeId};
 
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
 const LAG_THRESHOLD: NonZeroU64 = SLOTS_PER_WINDOW; // one window behind triggers a cap jump
@@ -42,7 +39,7 @@ const DELTA: TimestampDelta = TimestampDelta::from_millis(100); // latency bound
 
 type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
-fn conductor() -> Conductor {
+fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
     let config = ConductorConfig::new(
         SLOTS_PER_WINDOW,
         SYNC_BOUNDARY_SLOTS,
@@ -51,7 +48,7 @@ fn conductor() -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    CadenceConductor::genesis(config, ()).unwrap()
+    CadenceConductor::genesis(config, val_data.clone(), ()).unwrap()
 }
 
 fn proposer_schedule(
@@ -74,7 +71,7 @@ fn add_node(
 ) {
     let node_id = NodeId::dummy(id);
     let context = ChorusContext {
-        node_id,
+        self_index: val_data.index_of(&node_id).expect("a validator"),
         key: Arc::new(node_id.keypair()),
         validator_data: val_data.clone(),
         header_auth: Arc::new(HeaderAuth::new(|_| false)),
@@ -82,20 +79,7 @@ fn add_node(
     };
     let config = ChorusConfig { delta: DELTA };
 
-    builder.add_node(node_id, conductor(), config, context);
-}
-
-fn gen_validator_data(n: u64) -> ValidatorData {
-    use monad_mcp_common::spec::KeyPair as _;
-
-    let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();
-    let valset = validators.iter().map(|id| (*id, Stake::from(1))).collect();
-    let mapping = validators
-        .iter()
-        .map(|id| (*id, id.keypair().pubkey()))
-        .collect();
-
-    ValidatorData::new(valset, mapping)
+    builder.add_node(node_id, conductor(val_data), config, context);
 }
 
 #[test]
@@ -105,7 +89,8 @@ fn all_slots_finalize_on_schedule() {
     let mut builder = CadenceSwarmBuilder::new();
     builder.set_latency(LATENCY.as_duration());
 
-    let val_data = Arc::new(gen_validator_data(NODES));
+    let val_data = Arc::new(ValidatorData::dummy(NODES));
+    builder.set_validators(val_data.clone());
     for i in 0..NODES {
         add_node(&mut builder, i, &val_data);
     }

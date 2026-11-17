@@ -39,7 +39,7 @@ pub(crate) struct BlockRequestMsg<E> {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
-pub(crate) struct BlockResponseMsg<V> {
+pub struct BlockResponseMsg<V> {
     pub slot: Slot,
     pub block: V,
 }

@@ -16,11 +16,10 @@
 //! The cadence wire message and its byte layout.
 
 use alloy_rlp::{Decodable, Encodable};
+pub use monad_mcp_common::{Outbound, Recipients, SlotRecipients};
 
 use super::{conductor::Conductor, slot::SlotConsensus, types::NodeId};
 
-pub type Recipients = monad_mcp_common::Recipients<NodeId>;
-pub type Outbound<M> = monad_mcp_common::Outbound<M, Recipients>;
 pub type Inbound<M> = monad_mcp_common::Inbound<M, NodeId>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -123,21 +122,13 @@ mod rlp_tests {
     }
 
     fn chorus_message(slot: Slot) -> super::super::slot::chorus::ChorusMessage {
-        use monad_mcp_common::spec::KeyPair as _;
-
         use super::super::{
             slot::fallback::EnterFallbackVote,
             types::{ValidatorData, VoteMsg, VotePool},
         };
 
         let nodes: Vec<_> = (0..4).map(NodeId::dummy).collect();
-        let validators = ValidatorData::new(
-            nodes.iter().map(|node| (*node, 1u64.into())).collect(),
-            nodes
-                .iter()
-                .map(|node| (*node, node.keypair().pubkey()))
-                .collect(),
-        );
+        let validators = ValidatorData::dummy(4);
         let mut votes = VotePool::new(slot, std::sync::Arc::new(validators));
         for node in &nodes[..3] {
             votes.add_vote(

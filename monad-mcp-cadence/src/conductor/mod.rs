@@ -17,6 +17,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
     num::NonZeroU64,
+    sync::Arc,
 };
 
 use alloy_rlp::{Decodable, Encodable, RlpEncodable};
@@ -31,8 +32,11 @@ use acs::Acs;
 pub use deadline_agreement::{DeadlineAgreementManager, DeadlineAgreementMessage};
 
 use super::{
-    message::Outbound,
-    types::{self, NodeId, Slot, Timestamp, TimestampDelta, WindowId},
+    message::{Outbound, Recipients},
+    types::{
+        self, NodeId, Slot, Timestamp, TimestampDelta, ValidatorData, ValidatorIndex, ValidatorSet,
+        WindowId,
+    },
 };
 
 pub trait Conductor
@@ -350,6 +354,8 @@ where
     A: Acs<Timestamp>,
 {
     config: ConductorConfig,
+    // todo: one table for each epoch
+    validator_data: Arc<ValidatorData>,
     deadline_agreement_manager: DeadlineAgreementManager<A>,
     // Exclusive: every window strictly below the cap is open.
     open_window_cap: WindowId,
@@ -376,10 +382,15 @@ impl<A> CadenceConductor<A>
 where
     A: Acs<Timestamp>,
 {
-    pub fn genesis(config: ConductorConfig, context: A::Context) -> Result<Self, ConductorError> {
+    pub fn genesis(
+        config: ConductorConfig,
+        validator_data: Arc<ValidatorData>,
+        context: A::Context,
+    ) -> Result<Self, ConductorError> {
         let genesis_deadline = config.genesis_deadline();
         let mut conductor = Self {
             config,
+            validator_data,
             deadline_agreement_manager: DeadlineAgreementManager::<A>::new(context),
             open_window_cap: WindowId::FIRST,
             completion_tracker: CompletionTracker::new(),
@@ -422,12 +433,38 @@ where
         }
         if let Some(cap) = self.completion_tracker.advance_on_completion(slot)? {
             self.outputs.push_back(ConductorOutput::CloseSlots { cap });
-            let message = ConductorMessage::CapAdvance(CapAdvance { cap });
-            let outbound = Outbound::broadcast(message);
-            self.outputs.push_back(ConductorOutput::Send(outbound));
+            self.announce_cap(cap);
         }
 
         self.try_run_deadline_agreement(slot_completion)
+    }
+
+    // The announcement goes to the validators of the last slot below the cap.
+    fn announce_cap(&mut self, cap: Slot) {
+        let Some(last) = cap.checked_sub(1) else {
+            return;
+        };
+        self.broadcast(last, ConductorMessage::CapAdvance(CapAdvance { cap }));
+    }
+
+    // to each validator of the slot
+    fn broadcast(&mut self, slot: Slot, message: ConductorMessage<A::Message>) {
+        use crate::spec::validator::ValidatorData as _;
+
+        let everyone = ValidatorSet::full(self.validator_data.len());
+        let outbound = Outbound {
+            to: Recipients::Validators(slot, everyone),
+            message,
+            qos: Default::default(),
+        };
+        self.outputs.push_back(ConductorOutput::Send(outbound));
+    }
+
+    // todo: look the validator up in the table of the slot, once epochs exist
+    fn validator_at(&self, _slot: Slot, node_id: &NodeId) -> Option<ValidatorIndex> {
+        use crate::spec::validator::ValidatorData as _;
+
+        self.validator_data.index_of(node_id)
     }
 
     // A peer cap at least `lag_threshold` ahead is trusted as a certificate:
@@ -467,20 +504,42 @@ where
         self.poll_deadline_agreement()
     }
 
+    // The author of a deadline agreement message is a validator of the
+    // first slot of its window.
     fn handle_deadline_agreement_msg(
         &mut self,
         sender: NodeId,
         msg: DeadlineAgreementMessage<A::Message>,
     ) -> Result<(), ConductorError> {
+        let first = self.config.first_slot(msg.window)?;
+        let Some(sender) = self.validator_at(first, &sender) else {
+            return Ok(());
+        };
         self.deadline_agreement_manager.handle_message(sender, msg);
         self.poll_deadline_agreement()
     }
 
+    // The author of a cap announcement is a validator of the last slot below
+    // the cap.
+    fn handle_cap_advance_msg(
+        &mut self,
+        at: Timestamp,
+        sender: NodeId,
+        cap: Slot,
+    ) -> Result<(), ConductorError> {
+        let Some(last) = cap.checked_sub(1) else {
+            return Ok(());
+        };
+        if self.validator_at(last, &sender).is_none() {
+            return Ok(());
+        }
+        self.handle_cap_advance(at, cap)
+    }
+
     fn poll_deadline_agreement(&mut self) -> Result<(), ConductorError> {
         while let Some(message) = self.deadline_agreement_manager.poll() {
-            let message = ConductorMessage::DeadlineAgreement(message);
-            let outbound = Outbound::broadcast(message);
-            self.outputs.push_back(ConductorOutput::Send(outbound));
+            let first = self.config.first_slot(message.window)?;
+            self.broadcast(first, ConductorMessage::DeadlineAgreement(message));
         }
 
         // The decision always targets the window at the open-window cap: the
@@ -578,7 +637,9 @@ where
             ConductorMessage::DeadlineAgreement(message) => {
                 self.handle_deadline_agreement_msg(sender, message)
             }
-            ConductorMessage::CapAdvance(CapAdvance { cap }) => self.handle_cap_advance(at, cap),
+            ConductorMessage::CapAdvance(CapAdvance { cap }) => {
+                self.handle_cap_advance_msg(at, sender, cap)
+            }
         };
 
         if let Err(error) = result {
@@ -631,6 +692,10 @@ mod tests {
         .unwrap()
     }
 
+    fn validator_data() -> Arc<ValidatorData> {
+        Arc::new(ValidatorData::dummy(4))
+    }
+
     fn genesis_plus(nanos: u64) -> Timestamp {
         GENESIS_DEADLINE
             .checked_add_delta(TimestampDelta::from_nanos(nanos))
@@ -652,7 +717,7 @@ mod tests {
 
         fn propose(&mut self, _deadline: Timestamp) {}
 
-        fn handle_message(&mut self, _sender: NodeId, message: Self::Message) {
+        fn handle_message(&mut self, _sender: ValidatorIndex, message: Self::Message) {
             self.decision = Some(message);
         }
 
@@ -665,8 +730,12 @@ mod tests {
         }
     }
 
+    fn genesis<A: Acs<Timestamp, Context = ()>>(config: ConductorConfig) -> CadenceConductor<A> {
+        CadenceConductor::genesis(config, validator_data(), ()).unwrap()
+    }
+
     fn conductor() -> CadenceConductor<NopAcs<Timestamp>> {
-        let mut conductor = CadenceConductor::genesis(config(), ()).unwrap();
+        let mut conductor = genesis(config());
         assert!(matches!(
             conductor.poll(),
             Some(ConductorOutput::OpenSlots(_))
@@ -877,7 +946,7 @@ mod tests {
 
     #[test]
     fn genesis_opens_exactly_one_window() {
-        let mut conductor = CadenceConductor::<NopAcs<Timestamp>>::genesis(config(), ()).unwrap();
+        let mut conductor = genesis::<NopAcs<Timestamp>>(config());
         let schedules = extract_runtime_open_slots(conductor.poll().unwrap());
         let slot_interval = config().slot_interval();
         let expected_schedules = (0..10)
@@ -900,7 +969,7 @@ mod tests {
 
     #[test]
     fn genesis_effect_is_available_through_runtime_poll() {
-        let mut conductor = CadenceConductor::<NopAcs<Timestamp>>::genesis(config(), ()).unwrap();
+        let mut conductor = genesis::<NopAcs<Timestamp>>(config());
         let slots = extract_runtime_open_slots(conductor.poll().unwrap());
 
         assert_eq!(
@@ -922,8 +991,7 @@ mod tests {
             nz(4),
         )
         .unwrap();
-        let mut conductor =
-            CadenceConductor::<NopAcs<Timestamp>>::genesis(runtime_config, ()).unwrap();
+        let mut conductor = genesis::<NopAcs<Timestamp>>(runtime_config);
         let _ = conductor.poll().unwrap();
 
         conductor.handle_slot_finalization(Timestamp::from_nanos(11), Slot(0));
@@ -1031,7 +1099,7 @@ mod tests {
 
     #[test]
     fn deadline_decision_opens_next_window_and_derives_first_slot() {
-        let mut conductor = CadenceConductor::<MessageAcs>::genesis(config(), ()).unwrap();
+        let mut conductor = genesis::<MessageAcs>(config());
         let _ = conductor.poll().unwrap();
         for slot in 0..=7 {
             let outputs = complete_slot(&mut conductor, slot, 100).unwrap();
@@ -1107,8 +1175,7 @@ mod tests {
         )
         .unwrap();
         let bound = 2 * config.slots_per_window().get() - config.sync_boundary_slots().get();
-        let mut conductor =
-            CadenceConductor::<NopAcs<Timestamp>>::genesis(config.clone(), ()).unwrap();
+        let mut conductor = genesis::<NopAcs<Timestamp>>(config.clone());
         let _ = conductor.poll().unwrap();
 
         for window_id in 0..4 {
@@ -1194,8 +1261,7 @@ mod tests {
             nz(20),
         )
         .unwrap();
-        let mut conductor =
-            CadenceConductor::<NopAcs<Timestamp>>::genesis(wide_config, ()).unwrap();
+        let mut conductor = genesis::<NopAcs<Timestamp>>(wide_config);
         let _ = conductor.poll().unwrap();
         for slot in 0..10 {
             let _ = complete_slot(&mut conductor, slot, 100 + slot).unwrap();

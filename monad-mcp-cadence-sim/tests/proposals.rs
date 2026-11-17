@@ -38,12 +38,9 @@ use cadence::{
     },
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_cadence::stub as cadence;
+use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
 use monad_mcp_cadence_sim::{CadenceSwarm, CadenceSwarmBuilder, MockDa, mock_header, mock_payload};
-use monad_mcp_common::{
-    Lane, Slot, SlotDeadline, Timestamp, TimestampDelta,
-    stub::{NodeId, Stake},
-};
+use monad_mcp_common::{Lane, Slot, SlotDeadline, Timestamp, TimestampDelta, stub::NodeId};
 
 const NODES: u64 = 4;
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
@@ -67,7 +64,7 @@ type Schedule = RotatingProposerSchedule<RoundRobinLeaderSchedule>;
 // lane.
 type EntriesLog = Arc<Mutex<BTreeMap<(NodeId, Slot), Vec<Entry>>>>;
 
-fn conductor() -> Conductor {
+fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
     let config = ConductorConfig::new(
         SLOTS_PER_WINDOW,
         SYNC_BOUNDARY_SLOTS,
@@ -76,26 +73,13 @@ fn conductor() -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    Conductor::genesis(config, ()).unwrap()
+    Conductor::genesis(config, val_data.clone(), ()).unwrap()
 }
 
 fn deadline_of_slot(slot: u64) -> Timestamp {
     GENESIS_DEADLINE
         .checked_add_deltas(SLOT_INTERVAL, slot)
         .unwrap()
-}
-
-fn gen_validator_data(n: u64) -> ValidatorData {
-    use monad_mcp_common::spec::KeyPair as _;
-
-    let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();
-    let valset = validators.iter().map(|id| (*id, Stake::from(1))).collect();
-    let mapping = validators
-        .iter()
-        .map(|id| (*id, id.keypair().pubkey()))
-        .collect();
-
-    ValidatorData::new(valset, mapping)
 }
 
 // One shared schedule instance for the whole swarm: the schedule is
@@ -115,6 +99,7 @@ fn build_swarm(
 
     let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(LATENCY.as_duration());
+    builder.set_validators(val_data.clone());
 
     for i in 0..NODES {
         let id = NodeId::dummy(i);
@@ -124,7 +109,7 @@ fn build_swarm(
         let header_auth = Arc::new(header_auth(schedule.clone()));
         let da = Arc::new(MockDa::new(id, header_auth.clone()));
         let context = ChorusContext {
-            node_id: id,
+            self_index: val_data.index_of(&id).expect("a validator"),
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
             header_auth,
@@ -156,7 +141,7 @@ fn build_swarm(
 
         builder.add_proposer_node(
             id,
-            conductor(),
+            conductor(val_data),
             ChorusConfig { delta: DELTA },
             context,
             planner,
@@ -215,7 +200,7 @@ fn scheduled_proposals_finalize_positive() {
         rotation_slack: 1,
         slots_per_epoch: 1_000, // never crossed in this test
     };
-    let val_data = Arc::new(gen_validator_data(NODES));
+    let val_data = Arc::new(ValidatorData::dummy(NODES));
     let schedule = round_robin_schedule(proposer_config.clone(), &val_data);
 
     // round robin, one-slot rotations: slot s is proposed by validator
@@ -272,7 +257,7 @@ fn staggered_proposers_with_rotation_vacancy() {
         rotation_slack: 2,
         slots_per_epoch: 1_000, // never crossed in this test
     };
-    let val_data = Arc::new(gen_validator_data(NODES));
+    let val_data = Arc::new(ValidatorData::dummy(NODES));
     let schedule = round_robin_schedule(proposer_config.clone(), &val_data);
 
     // Spot-check the schedule shape (round robin: rotation r is led by

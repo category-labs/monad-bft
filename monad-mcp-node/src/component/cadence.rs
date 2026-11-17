@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use monad_mcp_common::{Slot, SlotDeadline, Timestamp};
 
 use super::Component;
@@ -20,7 +22,9 @@ use crate::cadence::{
     CadenceOutput as LocalOut, CadenceRuntime, Inbound, Outbound, Runtime as _, SlotLifecycle,
     SlotManager,
     conductor::{CadenceConductor, acs::nop::NopAcs},
-    slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
+    proposing::VoteReceived,
+    slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, ChorusLocalOut, SlotFinalization},
+    types::ValidatorData,
 };
 
 pub type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
@@ -35,6 +39,7 @@ pub enum CadenceOutput {
     Outbound(Outbound<CadenceWireMsg>),
     Lifecycle(SlotLifecycle),
     DACommand(Slot, ChorusDACommand),
+    VoteReceived(VoteReceived),
     Finalized(Timestamp, Slot, SlotFinalization),
     FastBlock(Timestamp, Slot), // demo(tx-timeline)
 }
@@ -46,9 +51,13 @@ pub struct Cadence {
 }
 
 impl Cadence {
-    pub fn new(slot_manager: SlotManager<Chorus>, conductor: Conductor) -> Self {
+    pub fn new(
+        slot_manager: SlotManager<Chorus>,
+        conductor: Conductor,
+        validator_data: Arc<ValidatorData>,
+    ) -> Self {
         Self {
-            runtime: CadenceRuntime::new(slot_manager, conductor),
+            runtime: CadenceRuntime::new(slot_manager, conductor, validator_data),
             now: Timestamp::GENESIS,
         }
     }
@@ -81,7 +90,19 @@ impl Component for Cadence {
         }
         let output = match self.runtime.poll_output()? {
             LocalOut::Lifecycle(event) => CadenceOutput::Lifecycle(event),
-            LocalOut::Local(slot, command) => CadenceOutput::DACommand(slot, command),
+            LocalOut::Local(slot, ChorusLocalOut::DA(command)) => {
+                CadenceOutput::DACommand(slot, command)
+            }
+            LocalOut::Local(slot, ChorusLocalOut::VoteReceived { voter, lane, entry }) => {
+                let at = self.now;
+                CadenceOutput::VoteReceived(VoteReceived {
+                    slot,
+                    voter,
+                    lane,
+                    entry,
+                    at,
+                })
+            }
             LocalOut::CommitOptimistic(slot) => CadenceOutput::FastBlock(self.now, slot),
             LocalOut::Finalized(slot, finalization) => {
                 CadenceOutput::Finalized(self.now, slot, finalization)

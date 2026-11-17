@@ -24,6 +24,7 @@ use cadence::{
     SlotLifecycle, SlotManager,
     proposing::ProposalPlanner,
     slot::chorus::{ChorusDAEvent, ProposalDAEvent},
+    types::ValidatorData,
 };
 use monad_mcp_cadence::stub as cadence;
 use monad_mcp_common::{Slot, Timestamp, stub::NodeId};
@@ -41,6 +42,7 @@ pub struct CadenceSwarmBuilder<S: SlotConsensus, C: Conductor> {
     seed: u64,
     network: Network<NodeId, SimMessage<CadenceWireMsg<S, C>>>,
     nodes: Vec<(NodeId, CadenceNode<S, C>)>,
+    validators: Option<Arc<ValidatorData>>,
     track_logs: bool,
     log: FinalizationLog,
 }
@@ -51,6 +53,7 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
             seed: 0,
             network: Network::default(),
             nodes: Vec::new(),
+            validators: None,
             track_logs: true,
             log: FinalizationLog::new(),
         }
@@ -66,6 +69,17 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
 
     pub fn set_seed(&mut self, seed: u64) {
         self.seed = seed;
+    }
+
+    /// The table that resolves a recipient named by its validator index.
+    pub fn set_validators(&mut self, validators: Arc<ValidatorData>) {
+        self.validators = Some(validators);
+    }
+
+    // the runtime of each node needs the table
+    fn validators(&self) -> Arc<ValidatorData> {
+        let validators = self.validators.clone();
+        validators.expect("set_validators comes before a node")
     }
 
     pub fn track_logs(&mut self, track: bool) {
@@ -86,7 +100,7 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         CadenceWireMsg<S, C>: Send,
     {
         let slot_manager = SlotManager::new(slot_config, slot_context);
-        let runtime = CadenceRuntime::new(slot_manager, conductor);
+        let runtime = CadenceRuntime::new(slot_manager, conductor, self.validators());
 
         let mut record = self.track_logs.then(|| self.log.allocate(id));
         let on_output = move |now: Timestamp, output: CadenceOutput<S>| {
@@ -131,7 +145,7 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         let facts = planner.clone();
 
         let slot_manager = SlotManager::new(slot_config, slot_context);
-        let runtime = CadenceRuntime::new(slot_manager, conductor);
+        let runtime = CadenceRuntime::new(slot_manager, conductor, self.validators());
 
         let mut record = self.track_logs.then(|| self.log.allocate(id));
         let on_output = move |now: Timestamp, output: CadenceOutput<S>| match output {
@@ -178,7 +192,7 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         self.nodes.push((id, node));
     }
 
-    pub fn build(self) -> CadenceSwarm<S, C>
+    pub fn build(mut self) -> CadenceSwarm<S, C>
     where
         S: 'static,
         C: 'static,
@@ -186,6 +200,11 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         CadenceRuntime<S, C>: Send,
         CadenceWireMsg<S, C>: Send,
     {
+        if let Some(validators) = &self.validators {
+            for (_, node) in &mut self.nodes {
+                node.set_validators(validators.clone());
+            }
+        }
         CadenceSwarm {
             swarm: build_sim_swarm(self.seed, self.network, self.nodes),
             log: self.log,

@@ -39,7 +39,7 @@ where
         ProposalHeader as _, SignedProposalHeader as _, validator::ValidatorData as _,
     };
 
-    use super::encoding_scheme::is_canonical;
+    use super::{cadence::proposers::is_proposer, encoding_scheme::is_canonical};
     use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
 
     HeaderAuth::new(move |signed: &SignedProposalHeader| {
@@ -52,11 +52,7 @@ where
         let Some(author) = signed.sig().recover_author(&preimage) else {
             return false;
         };
-        // an unavailable schedule authenticates nothing
-        let Ok(proposers) = schedule.proposers_at(signed.slot()) else {
-            return false;
-        };
-        proposers.proposer(signed.lane()) == Some(author)
+        is_proposer(&author, signed.scope(), &*schedule)
     })
 }
 

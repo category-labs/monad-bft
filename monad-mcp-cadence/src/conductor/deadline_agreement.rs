@@ -18,7 +18,7 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 use super::{
     ConductorConfig, ConductorError,
     acs::{Acs, AcsOutput},
-    types::{NodeId, Slot, Timestamp, WindowId},
+    types::{Slot, Timestamp, ValidatorIndex, WindowId},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
@@ -76,7 +76,11 @@ where
         Ok(())
     }
 
-    fn handle_message(&mut self, sender: NodeId, message: DeadlineAgreementMessage<A::Message>) {
+    fn handle_message(
+        &mut self,
+        sender: ValidatorIndex,
+        message: DeadlineAgreementMessage<A::Message>,
+    ) {
         if message.window != self.target_window {
             tracing::info!(
                 ?sender,
@@ -144,7 +148,7 @@ where
 
     pub fn handle_message(
         &mut self,
-        sender: NodeId,
+        sender: ValidatorIndex,
         message: DeadlineAgreementMessage<A::Message>,
     ) {
         self.active_round.handle_message(sender, message);
@@ -212,7 +216,7 @@ mod tests {
             self.decision = Some(deadline);
         }
 
-        fn handle_message(&mut self, _sender: NodeId, message: Self::Message) {
+        fn handle_message(&mut self, _sender: ValidatorIndex, message: Self::Message) {
             self.decision = Some(message);
         }
 
@@ -335,8 +339,9 @@ mod tests {
 
         // a future-window message must not reach the ACS: a leak would
         // overwrite the decision with 220
+        let sender = ValidatorIndex::new_unchecked(1);
         manager.handle_message(
-            NodeId::dummy(1),
+            sender,
             DeadlineAgreementMessage {
                 window: WindowId(2),
                 acs_message: Timestamp::from_nanos(220),
@@ -352,7 +357,7 @@ mod tests {
             window: WindowId(1),
             acs_message: Timestamp::from_nanos(110),
         };
-        manager.handle_message(NodeId::dummy(1), round_message.clone());
+        manager.handle_message(sender, round_message.clone());
         assert_eq!(manager.decision(), Some(Timestamp::from_nanos(110)));
 
         // the same message targets a stale window once the round advances
@@ -360,7 +365,7 @@ mod tests {
         manager
             .handle_completion_cap_advance(&config, Slot(18), Timestamp::from_nanos(2_000))
             .unwrap();
-        manager.handle_message(NodeId::dummy(1), round_message);
+        manager.handle_message(sender, round_message);
         assert_eq!(manager.decision(), Some(genesis_plus(200)));
     }
 }

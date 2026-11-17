@@ -20,7 +20,7 @@ use alloy_rlp::{Decodable, Encodable};
 
 pub use super::fast::{BatchVoteMsg, Entry};
 use super::{
-    Outbound, SlotConsensus, SlotOutput,
+    Outbound, SlotConsensus, SlotOutput, SlotRecipients,
     fallback::{
         FallbackCommitQc, MVBAOutput, Metablock, Mvba as _, monad_mvba,
         monad_mvba::{MonadMvba, MvbaContext},
@@ -32,7 +32,7 @@ use super::{
     types::{
         HeaderAuth, KeyPair, Lane, Lanes, NodeId, ProposalId, ProposerSchedule, ProposerSet,
         RepeatUntil, SignatureCollection, SignedProposalHeader, Slot, SlotScoped, TimestampDelta,
-        ValidatorData, ValidatorSet,
+        ValidatorData, ValidatorIndex, ValidatorSet,
     },
 };
 
@@ -118,7 +118,8 @@ pub struct ChorusConfig {
 
 /// Shared resources needed to spawn a slot instance.
 pub struct ChorusContext {
-    pub node_id: NodeId,
+    // a slot instance exists only at a validator of the slot
+    pub self_index: ValidatorIndex,
     pub key: Arc<KeyPair>,
     pub validator_data: Arc<ValidatorData>,
     pub header_auth: Arc<HeaderAuth>,
@@ -232,8 +233,22 @@ pub enum ChorusDACommand {
 
     // an unseen header from a peer's fallback entry
     IngestProposalHeader {
-        sender: NodeId,
+        sender: ValidatorIndex,
         header: SignedProposalHeader,
+    },
+}
+
+// An effect of a slot instance on a local component.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ChorusLocalOut {
+    DA(ChorusDACommand),
+
+    // The first vote of a validator for a lane arrived. Its signature is not
+    // checked.
+    VoteReceived {
+        voter: ValidatorIndex,
+        lane: Lane,
+        entry: Entry,
     },
 }
 
@@ -272,12 +287,12 @@ impl SlotConsensus for Chorus {
     type OptimisticCommitData = FastBlock;
     type FinalizationData = SlotFinalization;
     type LocalIn = ChorusDAEvent;
-    type LocalOut = ChorusDACommand;
+    type LocalOut = ChorusLocalOut;
 
     fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self {
         let ChorusConfig { delta } = config;
         let ChorusContext {
-            node_id,
+            self_index,
             key,
             validator_data,
             header_auth,
@@ -312,7 +327,7 @@ impl SlotConsensus for Chorus {
             slot,
             num_lanes,
             delta: *delta,
-            node_id: *node_id,
+            self_index: *self_index,
             key: key.clone(),
             validator_data: validator_data.clone(),
             header_auth: header_auth.clone(),
@@ -368,6 +383,7 @@ impl SlotConsensus for Chorus {
 
         match message {
             ChorusMessage::BatchVote(batch_vote_msg) => {
+                self.report_votes(author, &batch_vote_msg);
                 if let Some(fast_block) = self.fast.handle_batch_vote(author, batch_vote_msg) {
                     self.commit_fast_block(fast_block);
                 }
@@ -541,7 +557,7 @@ impl Chorus {
 
     fn pin_final(&mut self, finalization: &SlotFinalization) {
         for (j, pid) in finalization.pids().into_indexed_iter() {
-            self.push(SlotOutput::Local(ChorusDACommand::PinFinal { j, pid }));
+            self.command_da(ChorusDACommand::PinFinal { j, pid });
         }
 
         let SlotFinalization::Fallback { block, .. } = finalization else {
@@ -551,14 +567,29 @@ impl Chorus {
             let Some((pid, holders)) = cert.decoded_holders(&self.validator_data) else {
                 continue;
             };
-            let command = ChorusDACommand::AddDecodedHolders { j, pid, holders };
-            self.push(SlotOutput::Local(command));
+            self.command_da(ChorusDACommand::AddDecodedHolders { j, pid, holders });
         }
     }
 
     fn drain_da_commands(&mut self) {
         while let Some(command) = self.fast.next_da_command() {
-            self.push(SlotOutput::Local(command));
+            self.command_da(command);
+        }
+    }
+
+    fn command_da(&mut self, command: ChorusDACommand) {
+        self.push(SlotOutput::Local(ChorusLocalOut::DA(command)));
+    }
+
+    // A repeat of a vote is no news for a local component.
+    fn report_votes(&mut self, voter: ValidatorIndex, vote: &BatchVoteMsg) {
+        for (lane, entry) in vote.entries() {
+            if self.fast.has_vote(lane, voter) {
+                continue;
+            }
+            let entry = entry.clone();
+            let received = ChorusLocalOut::VoteReceived { voter, lane, entry };
+            self.push(SlotOutput::Local(received));
         }
     }
 
@@ -568,7 +599,7 @@ impl Chorus {
     }
 
     // A message of the slot without a rule is repeated until the slot commits.
-    fn send(&mut self, outbound: Outbound<ChorusMessage>) {
+    fn send(&mut self, outbound: Outbound<ChorusMessage, SlotRecipients>) {
         let outbound = outbound.repeat_until(RepeatUntil::Commit(self.slot));
         self.push(SlotOutput::Send(outbound));
     }
@@ -721,29 +752,15 @@ impl Decodable for ChorusMessage {
 mod tests {
     use std::sync::Arc;
 
-    use monad_mcp_common::spec::KeyPair as _;
-
     use super::{
         super::{
             super::test_utils::dummy_index,
             types::{
-                FixedProposerSchedule, HeaderAuth, NodeId, Slot, Stake, TimestampDelta,
-                ValidatorData,
+                FixedProposerSchedule, HeaderAuth, NodeId, Slot, TimestampDelta, ValidatorData,
             },
         },
         *,
     };
-
-    fn validator_data(n: u64) -> ValidatorData {
-        let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();
-        let valset = validators.iter().map(|id| (*id, Stake::from(1))).collect();
-        let mapping = validators
-            .iter()
-            .map(|id| (*id, id.keypair().pubkey()))
-            .collect();
-
-        ValidatorData::new(valset, mapping)
-    }
 
     #[test]
     fn deadline_releases_chunks() {
@@ -751,9 +768,9 @@ mod tests {
             delta: TimestampDelta::from_millis(100),
         };
         let context = ChorusContext {
-            node_id: NodeId::dummy(0),
+            self_index: dummy_index(NodeId::dummy(0)),
             key: Arc::new(NodeId::dummy(0).keypair()),
-            validator_data: Arc::new(validator_data(4)),
+            validator_data: Arc::new(ValidatorData::dummy(4)),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: Arc::new(FixedProposerSchedule::new(vec![
                 NodeId::dummy(0),
@@ -766,7 +783,7 @@ mod tests {
 
         let mut commands = Vec::new();
         while let Some(output) = chorus.poll() {
-            if let SlotOutput::Local(command) = output {
+            if let SlotOutput::Local(ChorusLocalOut::DA(command)) = output {
                 commands.push(command);
             }
         }
@@ -781,9 +798,9 @@ mod tests {
             delta: TimestampDelta::from_millis(100),
         };
         let context = ChorusContext {
-            node_id: NodeId::dummy(0),
+            self_index: dummy_index(NodeId::dummy(0)),
             key: Arc::new(NodeId::dummy(0).keypair()),
-            validator_data: Arc::new(validator_data(4)),
+            validator_data: Arc::new(ValidatorData::dummy(4)),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)])),
         };
@@ -806,6 +823,67 @@ mod tests {
         assert!(outputs.is_empty());
     }
 
+    // the instance of dummy validator `id` among 4, where validator 0
+    // proposes at the only lane
+    fn instance(id: u64) -> Chorus {
+        let config = ChorusConfig {
+            delta: TimestampDelta::from_millis(100),
+        };
+        let context = ChorusContext {
+            self_index: dummy_index(NodeId::dummy(id)),
+            key: Arc::new(NodeId::dummy(id).keypair()),
+            validator_data: Arc::new(ValidatorData::dummy(4)),
+            header_auth: Arc::new(HeaderAuth::new(|_| false)),
+            proposers: Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)])),
+        };
+        Chorus::new(Slot(1), &config, &context)
+    }
+
+    // the batch vote that the instance casts at its deadline
+    fn batch_vote(instance: &mut Chorus) -> ChorusMessage {
+        instance.handle_deadline();
+        while let Some(output) = instance.poll() {
+            if let SlotOutput::Send(outbound) = output
+                && matches!(outbound.message, ChorusMessage::BatchVote(_))
+            {
+                return outbound.message;
+            }
+        }
+        panic!("the deadline casts a batch vote");
+    }
+
+    fn votes_received(instance: &mut Chorus) -> Vec<ChorusLocalOut> {
+        let mut received = Vec::new();
+        while let Some(output) = instance.poll() {
+            if let SlotOutput::Local(out @ ChorusLocalOut::VoteReceived { .. }) = output {
+                received.push(out);
+            }
+        }
+        received
+    }
+
+    #[test]
+    fn the_first_vote_of_each_validator_for_a_lane_is_reported() {
+        let vote = batch_vote(&mut instance(1));
+        let from = |id| ChorusLocalOut::VoteReceived {
+            voter: dummy_index(NodeId::dummy(id)),
+            lane: Lane::new_unchecked(0),
+            entry: Entry::Negative,
+        };
+
+        // a repeat of a vote is not a second vote
+        let mut chorus = instance(0);
+        chorus.handle_message(NodeId::dummy(1), vote.clone());
+        assert_eq!(votes_received(&mut chorus), vec![from(1)]);
+        chorus.handle_message(NodeId::dummy(1), vote);
+        assert!(votes_received(&mut chorus).is_empty());
+
+        // its own vote comes back through the network, and is a vote as any
+        let own = batch_vote(&mut chorus);
+        chorus.handle_message(NodeId::dummy(0), own);
+        assert_eq!(votes_received(&mut chorus), vec![from(0)]);
+    }
+
     #[test]
     fn commit_certificate_pins_before_finalizing() {
         use super::super::{
@@ -821,9 +899,9 @@ mod tests {
             delta: TimestampDelta::from_millis(100),
         };
         let context = ChorusContext {
-            node_id: NodeId::dummy(1),
+            self_index: dummy_index(NodeId::dummy(1)),
             key: Arc::new(NodeId::dummy(1).keypair()),
-            validator_data: Arc::new(validator_data(4)),
+            validator_data: Arc::new(ValidatorData::dummy(4)),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)])),
         };
@@ -836,7 +914,7 @@ mod tests {
         };
         let pid = header.pid();
         let entries = Lanes::new(1, |_| Entry::Positive(pid));
-        let mut pool = VotePool::new(Slot(1), Arc::new(validator_data(4)));
+        let mut pool = VotePool::new(Slot(1), Arc::new(ValidatorData::dummy(4)));
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let vote = FastCommitVote {
@@ -858,7 +936,9 @@ mod tests {
         let mut pins = Vec::new();
         while let Some(output) = chorus.poll() {
             match output {
-                SlotOutput::Local(command @ ChorusDACommand::PinFinal { .. }) => {
+                SlotOutput::Local(ChorusLocalOut::DA(
+                    command @ ChorusDACommand::PinFinal { .. },
+                )) => {
                     order.push("pin");
                     pins.push(command);
                 }
@@ -893,11 +973,11 @@ mod tests {
         let config = ChorusConfig {
             delta: TimestampDelta::from_millis(100),
         };
-        let validator_data = Arc::new(validator_data(4));
+        let validator_data = Arc::new(ValidatorData::dummy(4));
         let header_auth = Arc::new(HeaderAuth::new(|_| false));
         let proposers = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)]));
         let context = ChorusContext {
-            node_id: NodeId::dummy(0),
+            self_index: dummy_index(NodeId::dummy(0)),
             key: Arc::new(NodeId::dummy(0).keypair()),
             validator_data: validator_data.clone(),
             header_auth: header_auth.clone(),

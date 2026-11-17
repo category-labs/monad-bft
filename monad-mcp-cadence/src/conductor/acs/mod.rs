@@ -16,7 +16,7 @@
 pub mod median;
 pub mod nop;
 
-use super::types::{self, NodeId};
+use super::types::{self, ValidatorIndex};
 
 /// A protocol for Agreement on a Core Set
 pub trait Acs<V> {
@@ -30,7 +30,7 @@ pub trait Acs<V> {
     fn propose(&mut self, data: V);
 
     /// Handle a message received over network
-    fn handle_message(&mut self, sender: NodeId, message: Self::Message);
+    fn handle_message(&mut self, sender: ValidatorIndex, message: Self::Message);
 
     /// Query whether the ACS has made an decision
     fn decision(&self) -> Option<&V>;

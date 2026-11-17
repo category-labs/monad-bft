@@ -20,9 +20,10 @@ use std::{num::NonZeroU64, sync::Arc};
 use cadence::{
     conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     slot::dummy::{DummySlotConsensus, DummySlotConsensusConfig},
+    types::ValidatorData,
 };
 use helper::expect_finalized_at;
-use monad_mcp_cadence::stub as cadence;
+use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
 use monad_mcp_common::{SlotDeadline, TimestampDelta, stub::NodeId};
 
@@ -34,7 +35,11 @@ const GENESIS_DEADLINE: SlotDeadline = SlotDeadline::from_millis(100);
 
 type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
-fn conductor() -> Conductor {
+fn validator_data(n: u64) -> Arc<ValidatorData> {
+    Arc::new(ValidatorData::dummy(n))
+}
+
+fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
     let config = ConductorConfig::new(
         SLOTS_PER_WINDOW,
         SYNC_BOUNDARY_SLOTS,
@@ -43,17 +48,19 @@ fn conductor() -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    CadenceConductor::genesis(config, ()).unwrap()
+    CadenceConductor::genesis(config, val_data.clone(), ()).unwrap()
 }
 
 fn add_dummy_node(
     builder: &mut CadenceSwarmBuilder<DummySlotConsensus, Conductor>,
     id: NodeId,
-    quorum: usize,
+    val_data: &Arc<ValidatorData>,
 ) {
-    let config = DummySlotConsensusConfig { quorum };
+    let config = DummySlotConsensusConfig {
+        quorum: val_data.len(),
+    };
     let key = Arc::new(id.keypair());
-    builder.add_node(id, conductor(), config, key);
+    builder.add_node(id, conductor(val_data), config, key);
 }
 
 #[test]
@@ -64,8 +71,10 @@ fn all_slots_finalize_on_schedule() {
     let mut builder = CadenceSwarmBuilder::new();
     builder.set_latency(LATENCY.as_duration());
 
+    let val_data = validator_data(NODES as u64);
+    builder.set_validators(val_data.clone());
     for i in 0..NODES {
-        add_dummy_node(&mut builder, NodeId::dummy(i as u64), NODES);
+        add_dummy_node(&mut builder, NodeId::dummy(i as u64), &val_data);
     }
 
     let deadline_of_slot = |s: u64| {

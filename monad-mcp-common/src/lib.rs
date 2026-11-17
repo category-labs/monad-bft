@@ -93,7 +93,7 @@ pub trait SlotScoped {
 
 // A message on its way out, with its recipients and delivery contract.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Outbound<M, R, Q = Qos> {
+pub struct Outbound<M, R = Recipients, Q = Qos> {
     pub to: R,
     pub message: M,
     pub qos: Q,
@@ -113,38 +113,65 @@ impl<M, R, Q> Outbound<M, R, Q> {
     }
 }
 
-// todo: name the recipients by slot and validator index
+// Recipients of a message. A validator index is valid only with the slot,
+// whose epoch has the validator table. A node id is valid everywhere.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Recipients<N> {
-    Everyone,
-    Node(N),
-    Nodes(Vec<N>),
+pub enum Recipients {
+    Validators(Slot, ValidatorSet),
+    Node(stub::NodeId),
+    Nodes(Vec<stub::NodeId>),
 }
 
-impl<M, N, Q> Outbound<M, Recipients<N>, Q> {
+// no recipient
+impl Default for Recipients {
+    fn default() -> Self {
+        Self::Nodes(Vec::new())
+    }
+}
+
+impl Recipients {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Validators(_, validators) => validators.is_empty(),
+            Self::Node(_) => false,
+            Self::Nodes(nodes) => nodes.is_empty(),
+        }
+    }
+}
+
+// Recipients of a message of a slot instance, which are validators of its slot.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlotRecipients {
+    Broadcast,
+    Unicast(ValidatorIndex),
+}
+
+impl SlotRecipients {
+    // the same validators, for a reader outside the instance
+    pub fn at(self, slot: Slot, num_validators: usize) -> Recipients {
+        let validators = match self {
+            Self::Broadcast => ValidatorSet::full(num_validators),
+            Self::Unicast(validator) => ValidatorSet::from_iter([validator]),
+        };
+        Recipients::Validators(slot, validators)
+    }
+}
+
+impl<M, Q> Outbound<M, SlotRecipients, Q> {
     pub fn broadcast(message: M) -> Self
     where
         Q: Default,
     {
-        let to = Recipients::Everyone;
+        let to = SlotRecipients::Broadcast;
         let qos = Q::default();
         Self { to, message, qos }
     }
 
-    pub fn unicast(to: N, message: M) -> Self
+    pub fn unicast(to: ValidatorIndex, message: M) -> Self
     where
         Q: Default,
     {
-        let to = Recipients::Node(to);
-        let qos = Q::default();
-        Self { to, message, qos }
-    }
-
-    pub fn multicast(to: Vec<N>, message: M) -> Self
-    where
-        Q: Default,
-    {
-        let to = Recipients::Nodes(to);
+        let to = SlotRecipients::Unicast(to);
         let qos = Q::default();
         Self { to, message, qos }
     }

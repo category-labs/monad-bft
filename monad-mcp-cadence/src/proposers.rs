@@ -94,7 +94,8 @@ use std::{
 use super::{
     proposer_schedule::{EpochSchedule, ScheduleConfig, ScheduleError},
     types::{
-        HeaderAuth, Lane, MAX_PROPOSER_SET_SIZE, NodeId, SignedProposalHeader, Slot, ValidatorData,
+        HeaderAuth, Lane, MAX_PROPOSER_SET_SIZE, NodeId, ProposalScope, SignedProposalHeader, Slot,
+        ValidatorData,
     },
 };
 
@@ -508,10 +509,11 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
         use crate::spec::validator::ValidatorData as _;
 
         cfg.validate()?;
-        let stakes: Vec<(NodeId, u64)> = validator_data
-            .nodes()
-            .map(|id| (*id, validator_data.get_stake(id).amount()))
-            .collect();
+        let mut stakes: Vec<(NodeId, u64)> = Vec::with_capacity(validator_data.len());
+        for index in validator_data.indices() {
+            let weight = validator_data.stake(index).amount();
+            stakes.push((*validator_data.node_id(index), weight));
+        }
         let staked = stakes.iter().filter(|(_, weight)| *weight > 0).count();
         if staked == 0 {
             return Err(ScheduleError::NotEnoughValidators {
@@ -788,12 +790,21 @@ where
     HeaderAuth::new(move |header: &SignedProposalHeader| {
         use crate::spec::ProposalHeader as _;
 
-        // an unavailable schedule authenticates nothing
-        let Ok(proposers) = schedule.proposers_at(header.slot()) else {
-            return false;
-        };
-        proposers.proposer(header.lane()) == Some(header.sig.signer)
+        is_proposer(&header.sig.signer, header.scope(), &*schedule)
     })
+}
+
+/// Whether `node` is the proposer at `scope`. An unavailable schedule has no
+/// proposer.
+pub fn is_proposer(
+    node: &NodeId,
+    scope: ProposalScope,
+    schedule: &(impl ProposerSchedule + ?Sized),
+) -> bool {
+    let Ok(proposers) = schedule.proposers_at(scope.slot) else {
+        return false;
+    };
+    proposers.proposer(scope.lane) == Some(*node)
 }
 
 #[cfg(test)]

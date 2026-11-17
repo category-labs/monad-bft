@@ -17,7 +17,14 @@
 //! them, run from inputs the fast path already formed. What is asserted is what
 //! the protocol promises: agreement, integrity, external validity, termination
 
-use std::{cell::Cell, collections::BTreeMap, rc::Rc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use cadence::slot::fallback::Metablock;
 use monad_mcp_cadence::stub as cadence;
@@ -28,7 +35,7 @@ use monad_sim_swarm::Network;
 
 /// The inputs the fast path would have formed
 mod fixtures {
-    use std::{collections::HashMap, sync::Arc};
+    use std::sync::Arc;
 
     use cadence::{
         env::{D33, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader as Header},
@@ -40,13 +47,12 @@ mod fixtures {
             HeaderAuth, IsVote, ProposalId, StrongQc, ValidatorData, VoteMsg, VotePool, WeakQc,
         },
     };
-    use monad_mcp_cadence::{spec::ProposalHeader as _, stub as cadence};
-    use monad_mcp_cadence_sim::MonadMvba;
-    use monad_mcp_common::{
-        Lane, Lanes, ProposalScope, Slot, TimestampDelta,
-        spec::KeyPair as _,
-        stub::{NodeId, Stake},
+    use monad_mcp_cadence::{
+        spec::{ProposalHeader as _, validator::ValidatorData as _},
+        stub as cadence,
     };
+    use monad_mcp_cadence_sim::MonadMvba;
+    use monad_mcp_common::{Lane, Lanes, ProposalScope, Slot, TimestampDelta, stub::NodeId};
 
     const NUM_NODES: u64 = 4;
 
@@ -80,16 +86,7 @@ mod fixtures {
     }
 
     pub fn validator_data() -> Arc<ValidatorData> {
-        let valset: HashMap<_, _> = nodes()
-            .into_iter()
-            .map(|node| (node, Stake::from(1u64)))
-            .collect();
-        let mapping = nodes()
-            .into_iter()
-            .map(|node| (node, node.keypair().pubkey()))
-            .collect();
-
-        Arc::new(ValidatorData::new(valset, mapping))
+        Arc::new(ValidatorData::dummy(NUM_NODES))
     }
 
     /// The same round-robin the implementation uses, restated so the tests do
@@ -104,7 +101,7 @@ mod fixtures {
         MonadMvba::new(MvbaContext {
             slot: SLOT,
             num_lanes: NUM_LANES,
-            node_id: node,
+            self_index: validator_data.index_of(&node).expect("a validator"),
             key: Arc::new(node.keypair()),
             validator_data: validator_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
@@ -161,8 +158,6 @@ mod fixtures {
         signers: &[NodeId],
         validator_data: &Arc<ValidatorData>,
     ) -> VotePool<V> {
-        use monad_mcp_cadence::spec::validator::ValidatorData as _;
-
         let mut pool = VotePool::new(scope.clone(), validator_data.clone());
         for node in signers {
             pool.add_vote(
@@ -234,6 +229,7 @@ fn swarm(
 ) -> MvbaSwarm {
     let validator_data = fixtures::validator_data();
     let mut builder = MvbaSwarmBuilder::new();
+    builder.set_validators(validator_data.clone());
     builder.set_seed(seed).set_network(network);
 
     for node in fixtures::nodes() {
@@ -457,17 +453,18 @@ fn a_partitioned_validator_catches_up_through_block_sync() {
     // recovery
     let window = Time(0)..(Time(0) + 5 * LATENCY / 2);
     let network = Network::reliable(LATENCY).partition(window, [[laggard]]);
-    let mut swarm = swarm(0, network, |node| inputs[&node].clone());
 
-    // a block response is the only unicast, so counting those steps separates
-    // catching up through block sync from merely hearing the round late
-    let responses = Rc::new(Cell::new(0usize));
+    // counting the block responses separates catching up through block sync
+    // from merely hearing the round late. The filter drops nothing
+    let responses = Arc::new(AtomicUsize::new(0));
     let counter = responses.clone();
-    swarm.swarm_mut().sim().on_step(move |step| {
-        if step.label.source == Some("unicast") {
-            counter.set(counter.get() + 1);
+    let network = network.drop_if(move |_, message| {
+        if matches!(message, SimMessage::Cadence(Message::BlockResponse(_))) {
+            counter.fetch_add(1, Ordering::Relaxed);
         }
+        false
     });
+    let mut swarm = swarm(0, network, |node| inputs[&node].clone());
 
     let majority: Vec<NodeId> = nodes
         .iter()
@@ -496,7 +493,7 @@ fn a_partitioned_validator_catches_up_through_block_sync() {
     let decided = expect_agreement(&swarm);
     assert_eq!(decided, inputs[&leader]);
     assert!(
-        responses.get() > 0,
+        responses.load(Ordering::Relaxed) > 0,
         "no block was ever fetched, so block sync was not what caught the laggard up"
     );
 
@@ -536,6 +533,7 @@ fn agreement_holds_under_randomized_latency() {
         for divergent_inputs in [false, true] {
             let validator_data = fixtures::validator_data();
             let mut builder = MvbaSwarmBuilder::new();
+            builder.set_validators(validator_data.clone());
             // no sample exceeds Δ, so the three rounds fit the view timeout
             // however they land
             let latency = uniform_duration(LATENCY / 4, LATENCY);
@@ -627,6 +625,7 @@ fn a_validator_without_an_input_listens_without_deciding() {
         .collect();
 
     let mut builder = MvbaSwarmBuilder::new();
+    builder.set_validators(validator_data.clone());
     builder.set_seed(0).set_network(Network::reliable(LATENCY));
     for node in &nodes {
         let mvba = fixtures::mvba(*node, &validator_data);
@@ -688,6 +687,7 @@ fn staggered_starts_wait_on_the_leader_s_own_start() {
     starts.insert(leader, leader_start);
 
     let mut builder = MvbaSwarmBuilder::new();
+    builder.set_validators(validator_data.clone());
     builder.set_network(Network::reliable(LINK));
     for node in fixtures::nodes() {
         let mvba = fixtures::mvba(node, &validator_data);

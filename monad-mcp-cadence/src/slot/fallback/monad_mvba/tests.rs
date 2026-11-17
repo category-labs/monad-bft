@@ -44,7 +44,7 @@ fn decides_along_the_happy_path() {
     );
 
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
     assert_eq!(prepared_entries(&outputs), Some(block.entries()));
 
@@ -87,7 +87,7 @@ fn a_commit_quorum_decides_while_still_preparing() {
     drain(&mut instance);
 
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
     assert_eq!(prepared_entries(&outputs), Some(block.entries()));
 
@@ -116,7 +116,7 @@ fn a_quorum_that_arrives_before_the_proposal_fires_on_arrival() {
     assert!(broadcasts(&outputs).is_empty());
 
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
 
     assert_eq!(prepared_entries(&outputs), Some(block.entries()));
@@ -154,7 +154,7 @@ fn commit_votes_decide_once_the_block_is_fetched() {
     assert!(instance.decision().is_none());
     assert!(instance.decision_proof().is_none());
 
-    instance.handle_message_from(nodes()[1], block_response(block.clone()));
+    instance.handle_message(dummy_index(nodes()[1]), block_response(block.clone()));
     let outputs = drain(&mut instance);
 
     assert_eq!(instance.decision(), Some(&block));
@@ -192,7 +192,7 @@ fn a_proposal_that_breaks_the_lock_is_ignored() {
     drain(&mut instance);
     let (leader, proposal) = pre_prepare(view(2), &locked, Some(tc));
     let proposal = delivered(proposal).expect("a proposal that keeps the lock decodes");
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
 
     assert_eq!(prepared_entries(&outputs), Some(locked.entries()));
@@ -209,7 +209,7 @@ fn a_stale_validator_jumps_views_on_a_carried_certificate() {
 
     let tc = timeout_certificate(view(2), None, &validator_data);
     let (leader, proposal) = pre_prepare(view(3), &block, Some(tc));
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
 
     assert!(
@@ -237,7 +237,7 @@ fn a_refused_proposal_still_yields_the_certificate_it_carried() {
     // and the view it certifies has still been left
     let tc = timeout_certificate(view(1), None, &validator_data);
     let (leader, proposal) = pre_prepare(view(3), &block, Some(tc));
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
 
     assert!(
@@ -334,7 +334,7 @@ fn a_proposal_carrying_a_certificate_for_another_slot_is_rejected() {
     );
     let (leader, proposal) = pre_prepare_with_cert(view(1), &block, Some(foreign));
 
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
 
     assert_eq!(
@@ -373,7 +373,7 @@ fn a_view_1_proposal_without_a_certificate_is_the_paper_s_fast_metablock() {
     // certificate, and every entry here is a `FastQc`
     let (leader, proposal) = pre_prepare_with_cert(view(1), &block, None);
 
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
 
     assert_eq!(
@@ -403,7 +403,7 @@ fn a_fast_metablock_is_the_only_thing_an_absent_certificate_admits() {
     // the same value with a certificate beside it: mixed evidence is fine
     // once something admits the path, so it is the ⊥ arm that refused above
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
 
     assert_eq!(
@@ -426,7 +426,7 @@ fn a_leader_proposes_once_in_a_view() {
     // its own pre-prepare comes back to it, and the votes for it follow: every
     // one of them runs the state machine again
     let (_, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     feed_prepare_votes(&mut instance, view(1), &block.entries(), &quorum());
     let outputs = drain(&mut instance);
 
@@ -467,7 +467,7 @@ fn a_locked_leader_fetches_the_block_before_reproposing_it() {
         "it may only propose the locked value, and does not have it yet"
     );
 
-    instance.handle_message_from(nodes()[1], block_response(locked.clone()));
+    instance.handle_message(dummy_index(nodes()[1]), block_response(locked.clone()));
     let outputs = drain(&mut instance);
 
     let proposal = proposed(&outputs).expect("the block landed, so the leader can propose");
@@ -794,8 +794,8 @@ fn retransmission_repeats_pending_block_requests() {
     let mut instance = started(follower, &own, &validator_data);
     drain(&mut instance);
 
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     let outputs = drain(&mut instance);
@@ -933,11 +933,11 @@ fn a_second_proposal_cannot_displace_the_first() {
     drain(&mut instance);
 
     let (leader, proposal) = pre_prepare(view(1), &second, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     drain(&mut instance);
 
     let (leader, proposal) = pre_prepare(view(1), &first, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
 
     assert_eq!(
@@ -962,7 +962,7 @@ fn a_proposal_from_the_wrong_sender_is_discarded() {
         .find(|node| *node != leader && *node != follower)
         .expect("the cluster has more than two validators");
 
-    instance.handle_message_from(impostor, proposal);
+    instance.handle_message(dummy_index(impostor), proposal);
     let outputs = drain(&mut instance);
 
     assert_eq!(prepared_entries(&outputs), None);
@@ -980,8 +980,8 @@ fn a_received_certificate_decides_once_its_block_is_retrieved() {
 
     // this validator saw neither the proposal nor the votes: the certificate
     // settles the entries, and block sync has to supply the rest
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     let outputs = drain(&mut instance);
@@ -993,7 +993,7 @@ fn a_received_certificate_decides_once_its_block_is_retrieved() {
         "a certificate this validator cannot complete is not passed on"
     );
 
-    instance.handle_message_from(nodes()[2], block_response(block.clone()));
+    instance.handle_message(dummy_index(nodes()[2]), block_response(block.clone()));
     let outputs = drain(&mut instance);
 
     assert_eq!(instance.decision(), Some(&block));
@@ -1012,8 +1012,8 @@ fn a_bogus_block_response_is_ignored() {
     let mut instance = started(follower, &own, &validator_data);
     drain(&mut instance);
 
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     assert_eq!(
@@ -1021,7 +1021,7 @@ fn a_bogus_block_response_is_ignored() {
         vec![block.entries()]
     );
 
-    instance.handle_message_from(nodes()[1], block_response(other));
+    instance.handle_message(dummy_index(nodes()[1]), block_response(other));
     assert!(drain(&mut instance).is_empty());
     assert!(instance.decision().is_none());
 
@@ -1044,14 +1044,14 @@ fn a_bogus_block_response_is_ignored() {
         "the test needs a response that matches the request"
     );
 
-    instance.handle_message_from(nodes()[1], block_response(forged));
+    instance.handle_message(dummy_index(nodes()[1]), block_response(forged));
     assert!(drain(&mut instance).is_empty());
     assert!(
         instance.decision().is_none(),
         "a certified entry that is not bound to this slot is no proof"
     );
 
-    instance.handle_message_from(nodes()[1], block_response(block.clone()));
+    instance.handle_message(dummy_index(nodes()[1]), block_response(block.clone()));
     drain(&mut instance);
     assert_eq!(instance.decision(), Some(&block));
 }
@@ -1068,11 +1068,11 @@ fn an_unsolicited_block_response_is_ignored() {
 
     // valid in every way, but nothing asked for it: taking it in would be a
     // way to fill this instance's store
-    instance.handle_message_from(nodes()[1], block_response(block.clone()));
+    instance.handle_message(dummy_index(nodes()[1]), block_response(block.clone()));
     assert!(drain(&mut instance).is_empty());
 
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     let outputs = drain(&mut instance);
@@ -1091,18 +1091,18 @@ fn a_holder_answers_a_block_request_with_a_unicast() {
     drain(&mut instance);
 
     let asker = nodes()[1];
-    instance.handle_message_from(asker, block_request(&block.entries()));
+    instance.handle_message(dummy_index(asker), block_request(&block.entries()));
     let outputs = drain(&mut instance);
 
     assert_eq!(
         unicasts(&outputs),
-        vec![(asker, &block_response(block))],
+        vec![(dummy_index(asker), &block_response(block))],
         "the block goes back to the sender alone"
     );
     assert!(broadcasts(&outputs).is_empty());
 
     let other = metablock(2, &validator_data);
-    instance.handle_message_from(asker, block_request(&other.entries()));
+    instance.handle_message(dummy_index(asker), block_request(&other.entries()));
     assert!(drain(&mut instance).is_empty());
 }
 
@@ -1116,8 +1116,8 @@ fn a_block_is_only_requested_once() {
     let mut instance = started(follower, &own, &validator_data);
     drain(&mut instance);
 
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     assert_eq!(
@@ -1125,8 +1125,8 @@ fn a_block_is_only_requested_once() {
         vec![block.entries()]
     );
 
-    instance.handle_message_from(
-        nodes()[2],
+    instance.handle_message(
+        dummy_index(nodes()[2]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     feed_commit_votes(&mut instance, view(1), &block, &quorum());
@@ -1149,8 +1149,8 @@ fn each_want_arms_its_own_retransmit_timer() {
     let mut instance = started(follower, &own, &validator_data);
     drain(&mut instance);
 
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     let outputs = drain(&mut instance);
@@ -1185,8 +1185,8 @@ fn the_retransmit_timer_re_arms_while_its_request_is_pending() {
     let mut instance = started(follower, &own, &validator_data);
     drain(&mut instance);
 
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     drain(&mut instance);
@@ -1223,7 +1223,7 @@ fn the_retransmit_timer_dies_once_its_block_arrives() {
         vec![locked.entries()]
     );
 
-    instance.handle_message_from(nodes()[1], block_response(locked.clone()));
+    instance.handle_message(dummy_index(nodes()[1]), block_response(locked.clone()));
     drain(&mut instance);
     assert_eq!(instance.decision(), None);
 
@@ -1249,8 +1249,8 @@ fn a_fire_retransmits_only_its_own_block() {
     let mut instance = started(follower, &own, &validator_data);
     drain(&mut instance);
 
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     let qc = prepare_qc(view(1), &locked.entries(), &validator_data);
@@ -1291,7 +1291,7 @@ fn a_decided_instance_lets_the_retransmit_timer_die() {
     );
 
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     feed_prepare_votes(&mut instance, view(1), &block.entries(), &quorum());
     feed_commit_votes(&mut instance, view(1), &block, &quorum());
     drain(&mut instance);
@@ -1317,8 +1317,8 @@ fn abandon_silences_the_block_retransmit() {
     let mut instance = started(follower, &own, &validator_data);
     drain(&mut instance);
 
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     drain(&mut instance);
@@ -1338,7 +1338,7 @@ fn a_decided_instance_ignores_everything_after() {
 
     let mut instance = started(follower, &block, &validator_data);
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     feed_prepare_votes(&mut instance, view(1), &block.entries(), &quorum());
     feed_commit_votes(&mut instance, view(1), &block, &quorum());
     drain(&mut instance);
@@ -1346,14 +1346,14 @@ fn a_decided_instance_ignores_everything_after() {
 
     let tc = timeout_certificate(view(1), None, &validator_data);
     let (leader, proposal) = pre_prepare(view(2), &other, Some(tc));
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     feed_timeouts(&mut instance, view(1), None, &quorum());
     instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
 
     // a decided instance takes no catch-up either: the window stays hard
     let far = timeout_certificate(view(12), None, &validator_data);
     let (leader, proposal) = pre_prepare(view(13), &other, Some(far));
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
 
     assert!(drain(&mut instance).is_empty(), "a decision is terminal");
     assert_eq!(instance.decision(), Some(&block), "and it never changes");
@@ -1370,7 +1370,7 @@ fn abandon_stops_this_instance_sending() {
     assert!(drain(&mut instance).is_empty(), "pending sends are dropped");
 
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     assert!(drain(&mut instance).is_empty());
     assert!(instance.decision().is_none());
 }
@@ -1388,8 +1388,8 @@ fn a_certificate_arriving_before_propose_is_fetched_once_it_does() {
     // the certificate is recorded -- it is valid evidence whenever it arrives --
     // but an instance with no input does not participate, so it sends nothing,
     // not even a block request
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &block, &validator_data),
     );
     assert!(drain(&mut instance).is_empty());
@@ -1408,7 +1408,7 @@ fn a_certificate_arriving_before_propose_is_fetched_once_it_does() {
         "the block is not here yet, so there is nothing to hand on"
     );
 
-    instance.handle_message_from(nodes()[1], block_response(block.clone()));
+    instance.handle_message(dummy_index(nodes()[1]), block_response(block.clone()));
     let outputs = drain(&mut instance);
 
     assert_eq!(instance.decision(), Some(&block));
@@ -1423,8 +1423,8 @@ fn a_certificate_over_this_validators_own_input_decides_on_propose() {
 
     let mut instance = mvba(follower, &validator_data);
 
-    instance.handle_message_from(
-        nodes()[1],
+    instance.handle_message(
+        dummy_index(nodes()[1]),
         commit_qc_message(view(1), &own, &validator_data),
     );
     assert!(drain(&mut instance).is_empty());
@@ -1448,7 +1448,7 @@ fn nothing_is_sent_before_propose() {
     let mut instance = mvba(leader_of(view(1)), &validator_data);
 
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     feed_prepare_votes(&mut instance, view(1), &block.entries(), &quorum());
     assert!(drain(&mut instance).is_empty());
 
@@ -1473,7 +1473,7 @@ fn a_timed_out_view_neither_votes_nor_raises_its_lock() {
     drain(&mut instance);
 
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
     assert_eq!(
         prepared_entries(&outputs),
@@ -1521,7 +1521,7 @@ fn a_timed_out_view_still_decides_what_it_accepted() {
     drain(&mut instance);
 
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     drain(&mut instance);
 
     instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
@@ -1651,7 +1651,7 @@ fn a_laggard_catches_up_on_the_decision_broadcast() {
     drain(&mut laggard);
     assert!(laggard.decision().is_none());
 
-    laggard.handle_message_from(nodes()[0], decision);
+    laggard.handle_message(dummy_index(nodes()[0]), decision);
     let outputs = drain(&mut laggard);
     assert_eq!(
         requested_entries(&outputs),
@@ -1659,16 +1659,16 @@ fn a_laggard_catches_up_on_the_decision_broadcast() {
         "the certificate settles the entries; the block is asked for"
     );
 
-    decider.handle_message_from(laggard_id, block_request(&block.entries()));
+    decider.handle_message(dummy_index(laggard_id), block_request(&block.entries()));
     let outputs = drain(&mut decider);
     let (to, response) = unicasts(&outputs)
         .into_iter()
         .next()
         .expect("a decided instance answers block requests in every phase");
-    assert_eq!(to, laggard_id);
+    assert_eq!(to, dummy_index(laggard_id));
     let response = response.clone();
 
-    laggard.handle_message_from(nodes()[0], response);
+    laggard.handle_message(dummy_index(nodes()[0]), response);
     drain(&mut laggard);
 
     assert_eq!(laggard.decision(), Some(&block));
@@ -1703,7 +1703,7 @@ fn a_pre_prepare_beyond_the_window_catches_a_lagging_node_up() {
     // proof the views below it were left
     let tc = timeout_certificate(view(12), None, &validator_data);
     let (leader, proposal) = pre_prepare(view(13), &block, Some(tc));
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
 
     assert!(
@@ -1729,7 +1729,7 @@ fn a_refused_far_ahead_proposal_still_yields_its_certificate() {
     // a view-12 certificate justifies view 13, not 14; both are past the window
     let tc = timeout_certificate(view(12), None, &validator_data);
     let (leader, proposal) = pre_prepare(view(14), &block, Some(tc));
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     let outputs = drain(&mut instance);
 
     assert!(
@@ -1753,7 +1753,7 @@ fn a_commit_quorum_completing_after_a_view_change_still_decides() {
     drain(&mut instance);
 
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     feed_timeouts(&mut instance, view(1), None, &quorum());
     let outputs = drain(&mut instance);
     assert!(
@@ -1782,7 +1782,7 @@ fn commit_votes_two_views_back_are_beyond_the_lookback() {
     drain(&mut instance);
 
     let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
     feed_timeouts(&mut instance, view(1), None, &quorum());
     feed_timeouts(&mut instance, view(2), None, &quorum());
     drain(&mut instance);
@@ -1808,7 +1808,7 @@ fn a_pre_input_instance_buffers_a_catch_up_only_inside_the_window() {
     let mut instance = mvba(follower, &validator_data);
     let tc = timeout_certificate(view(12), None, &validator_data);
     let (leader, proposal) = pre_prepare(view(13), &block, Some(tc));
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
 
     instance.propose(block, Some(enter_fallback_cert(&validator_data)));
     let outputs = drain(&mut instance);
@@ -1829,7 +1829,7 @@ fn a_buffered_in_window_certificate_jumps_at_propose() {
     let mut instance = mvba(follower, &validator_data);
     let tc = timeout_certificate(view(5), None, &validator_data);
     let (leader, proposal) = pre_prepare(view(6), &block, Some(tc));
-    instance.handle_message_from(leader, proposal);
+    instance.handle_message(dummy_index(leader), proposal);
 
     instance.propose(block.clone(), Some(enter_fallback_cert(&validator_data)));
     let outputs = drain(&mut instance);
@@ -1985,7 +1985,7 @@ mod toy_value {
                 FallbackCommitVote, Justification, MvbaMessage, PrePrepareMsg, PrepareVote,
             },
             test_helpers::{
-                DELTA, NUM_LANES, SLOT, leader_of, nodes, quorum, validator_data, view,
+                DELTA, NUM_LANES, SLOT, dummy_index, leader_of, nodes, quorum, validator_data, view,
             },
         },
         MvbaScope,
@@ -2039,7 +2039,7 @@ mod toy_value {
         MonadMvba::new(MvbaContext {
             slot: SLOT,
             num_lanes: NUM_LANES,
-            node_id: node,
+            self_index: dummy_index(node),
             key: Arc::new(node.keypair()),
             validator_data: validator_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
@@ -2082,7 +2082,7 @@ mod toy_value {
             Justification::FallbackCert(Some(TestCert)),
             &leader.keypair(),
         );
-        instance.handle_message_from(leader, MvbaMessage::PrePrepare(proposal));
+        instance.handle_message(dummy_index(leader), MvbaMessage::PrePrepare(proposal));
         let prepares = sent(drain(&mut instance));
         let mut prepares = prepares.iter();
         assert!(
@@ -2096,7 +2096,7 @@ mod toy_value {
                 PrepareVote::<<TestValue as Votable>::Entries>(value.entries()),
                 &node.keypair(),
             );
-            instance.handle_message_from(node, MvbaMessage::Prepare(msg));
+            instance.handle_message(dummy_index(node), MvbaMessage::Prepare(msg));
         }
         let commits = sent(drain(&mut instance));
         let mut commits = commits.iter();
@@ -2111,7 +2111,7 @@ mod toy_value {
                 FallbackCommitVote::<<TestValue as Votable>::Entries>(value.entries()),
                 &node.keypair(),
             );
-            instance.handle_message_from(node, MvbaMessage::Commit(msg));
+            instance.handle_message(dummy_index(node), MvbaMessage::Commit(msg));
         }
 
         assert_eq!(

@@ -340,14 +340,8 @@ impl EpochSchedule<NodeId> {
 
         use crate::spec::validator::ValidatorData as _;
 
-        Self::build(
-            cfg,
-            epoch,
-            validators
-                .nodes()
-                .map(|id| (*id, validators.get_stake(id).amount())),
-            prev_epoch_tail,
-        )
+        let stake = |index| (*validators.node_id(index), validators.stake(index).amount());
+        Self::build(cfg, epoch, validators.indices().map(stake), prev_epoch_tail)
     }
 }
 

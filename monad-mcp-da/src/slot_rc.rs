@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use monad_mcp_cadence::spec::proposal::ProposalHeader as _;
+use monad_mcp_cadence::spec::{proposal::ProposalHeader as _, validator::ValidatorData as _};
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
@@ -209,6 +209,7 @@ impl SlotRaptorcast {
             }
             ChorusDACommand::IngestProposalHeader { sender, header } => {
                 let envelope = ProposalEnvelope::from_header(header);
+                let sender = *self.epoch_handle.validator_data.node_id(sender);
                 if let Err(err) = self.ingest(&sender, envelope) {
                     tracing::debug!(?err, "dropping a header from consensus");
                 }
@@ -273,7 +274,7 @@ mod tests {
                 group, proposal_chunks, proposal_chunks_from, proposal_chunks_under,
                 proposer_schedule, timing, validator_data,
             },
-            types::{HeaderAuth, ProposalDAEvent, ProposalKeyPair},
+            types::{HeaderAuth, ProposalDAEvent, ProposalKeyPair, ValidatorData},
         },
         *,
     };
@@ -484,7 +485,7 @@ mod tests {
         let (header, _) = proposal_chunks(&epoch_handle, 1);
 
         let command = ChorusDACommand::IngestProposalHeader {
-            sender: NodeId::dummy(2),
+            sender: ValidatorData::dummy_index(2),
             header: header.clone(),
         };
         raptorcast.handle_command(command, NOW);

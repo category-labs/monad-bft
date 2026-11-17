@@ -26,7 +26,10 @@ use std::{
     time::Duration,
 };
 
-use cadence::slot::fallback::{EnterFallbackCert, Metablock, MvbaRuntime, monad_mvba};
+use cadence::{
+    slot::fallback::{EnterFallbackCert, Metablock, MvbaRuntime, monad_mvba},
+    types::ValidatorData,
+};
 use monad_mcp_cadence::stub as cadence;
 use monad_mcp_common::{Timestamp, stub::NodeId};
 use monad_sim::{RunOutcome, StepLabel, Time};
@@ -110,6 +113,7 @@ pub struct MvbaSwarmBuilder {
     seed: u64,
     network: Network<NodeId, SimMessage<Message>>,
     nodes: Vec<(NodeId, MvbaNode)>,
+    validators: Option<Arc<ValidatorData>>,
     inputs: BTreeMap<NodeId, Metablock>,
     starts: Vec<(NodeId, Time, Input)>,
     log: DecisionLog,
@@ -121,6 +125,7 @@ impl MvbaSwarmBuilder {
             seed: 0,
             network: Network::default(),
             nodes: Vec::new(),
+            validators: None,
             inputs: BTreeMap::new(),
             starts: Vec::new(),
             log: DecisionLog::new(),
@@ -134,6 +139,12 @@ impl MvbaSwarmBuilder {
 
     pub fn set_network(&mut self, network: Network<NodeId, SimMessage<Message>>) -> &mut Self {
         self.network = network;
+        self
+    }
+
+    /// The table that resolves a recipient named by its validator index.
+    pub fn set_validators(&mut self, validators: Arc<ValidatorData>) -> &mut Self {
+        self.validators = Some(validators);
         self
     }
 
@@ -164,7 +175,12 @@ impl MvbaSwarmBuilder {
         self
     }
 
-    pub fn build(self) -> MvbaSwarm {
+    pub fn build(mut self) -> MvbaSwarm {
+        if let Some(validators) = &self.validators {
+            for (_, node) in &mut self.nodes {
+                node.set_validators(validators.clone());
+            }
+        }
         let mut swarm = build_sim_swarm(self.seed, self.network, self.nodes);
         for (id, start, input) in self.starts {
             let handle = swarm.handle(&id).expect("node just built");

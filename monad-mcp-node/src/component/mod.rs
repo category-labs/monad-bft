@@ -34,10 +34,7 @@ pub use self::{
     da::{DA, DAInput},
     finalization::FinalizationInput,
     mempool::Mempool,
-    proposing::{
-        MempoolProposing, Proposing, ProposingComponent, ProposingInput, ProposingOutput,
-        RandomProposing,
-    },
+    proposing::{MempoolProposing, Proposing, ProposingInput, ProposingOutput, RandomProposing},
 };
 use crate::clock::Clock;
 

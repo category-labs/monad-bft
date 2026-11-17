@@ -67,8 +67,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use tracing::{info, trace, warn};
 
 use super::{
-    slot::chorus::FinalizationPath,
-    types::{Lane, Lanes, NodeId, ProposerSchedule, Slot, Timestamp, TimestampDelta},
+    slot::chorus::{Entry, FinalizationPath},
+    types::{
+        Lane, Lanes, NodeId, ProposerSchedule, Slot, Timestamp, TimestampDelta, ValidatorIndex,
+    },
 };
 
 /// Timing parameters of the proposal planner. Node-local policy, not
@@ -97,6 +99,17 @@ struct PendingSeal {
     deadline: Timestamp,
     /// `deadline − lead`, clamped to the open time: never in the past.
     due: Timestamp,
+}
+
+/// Fact: the first vote of `voter` for `lane` of `slot` arrived at `at`, with
+/// its `entry`. Its signature is not checked.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct VoteReceived {
+    pub slot: Slot,
+    pub voter: ValidatorIndex,
+    pub lane: Lane,
+    pub entry: Entry,
+    pub at: Timestamp,
 }
 
 /// See the module docs.
@@ -177,18 +190,11 @@ impl ProposalPlanner {
         self.drop_late(now);
     }
 
-    /// Fact: `voter`'s batch vote for `slot` arrived at `at`, with `positive`
-    /// its entry per lane. Every copy is reported (the repeater re-sends);
-    /// only the first is a sample. A validator that saw a fast block before
-    /// its deadline sends no batch vote: missing, not negative.
-    pub fn handle_batch_vote(
-        &mut self,
-        slot: Slot,
-        voter: &NodeId,
-        at: Timestamp,
-        positive: &Lanes<bool>,
-    ) {
-        trace!(?slot, ?voter, ?at, ?positive, "batch vote observed");
+    /// Every lane and every voter is reported, this node included. A
+    /// validator that saw a fast block before its deadline sends no batch
+    /// vote: missing, not negative.
+    pub fn handle_vote_received(&mut self, vote: &VoteReceived) {
+        trace!(?vote, "vote received");
     }
 
     /// Fact: `slot` finalized, committing the `committed` lanes over `path`.

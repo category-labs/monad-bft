@@ -13,22 +13,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_mcp_common::{Inbound, Outbound, ProposalScope, Timestamp};
+use monad_mcp_common::{Inbound, Outbound, ProposalScope, Recipients, Timestamp};
 
 use crate::{
-    cadence::{CadenceMessage, SlotLifecycle, slot::chorus::ChorusMessage},
-    common::NodeId,
+    cadence::SlotLifecycle,
     component::{
-        CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, FinalizationInput, ProposingInput,
-        ProposingOutput,
+        CadenceInput, CadenceOutput, DAInput, FinalizationInput, ProposingInput, ProposingOutput,
     },
     config::NodeConfig,
     da::{DAOutput, ProposalScheme},
-    epoch::EpochHandle,
     finalization::FinalizedSlot,
     network::{
-        AppMessage, NetworkInput, NetworkOutput, NodeAppMessage, NodeInbound, NodeOutbound,
-        WireInbound, WireOutbound,
+        AppMessage, NetworkInput, NetworkOutput, NodeAppMessage, NodeInbound, WireInbound,
+        WireOutbound,
     },
 };
 
@@ -70,32 +67,15 @@ pub trait Router<W> {
 }
 
 pub struct NodeRouter {
-    epoch_handle: EpochHandle,
     // the scheme our proposals go to DA under
     proposal_scheme: ProposalScheme,
-    // copy every inbound batch vote to proposing (`ProposingInput::BatchVote`)
-    observe_votes: bool,
 }
 
 impl NodeRouter {
-    pub fn new(epoch_handle: EpochHandle, config: &NodeConfig) -> Self {
+    pub fn new(config: &NodeConfig) -> Self {
         Self {
-            epoch_handle,
             proposal_scheme: config.proposal.encoding_scheme,
-            observe_votes: false,
         }
-    }
-
-    // proposing sees every peer's batch vote with its arrival time, for a
-    // proposing component that wants them (`wants_vote_facts`). Off, the
-    // router emits exactly what it did before
-    pub fn observe_votes(mut self, observe: bool) -> Self {
-        self.observe_votes = observe;
-        self
-    }
-
-    pub fn epoch_handle(&self) -> &EpochHandle {
-        &self.epoch_handle
     }
 
     fn route_cadence<W>(&mut self, output: CadenceOutput, sink: &mut impl Sink<Routed<W>>) {
@@ -128,6 +108,10 @@ impl NodeRouter {
                 sink.send(Routed::DA(DAInput::Command(slot, command)));
             }
 
+            CadenceOutput::VoteReceived(vote) => {
+                sink.send(Routed::Proposing(ProposingInput::VoteReceived(vote)));
+            }
+
             CadenceOutput::Finalized(now, slot, finalization) => {
                 let committed = finalization.pids().into_iter().flatten().count();
                 let path = finalization.path();
@@ -158,11 +142,6 @@ impl NodeRouter {
         let Inbound { sender, message } = inbound;
         match message {
             AppMessage::Cadence(message) => {
-                // our own messages loop back through the network
-                let from_peer = sender != self.epoch_handle.self_id;
-                if self.observe_votes && from_peer {
-                    observe_vote(now, sender, &message, sink);
-                }
                 // todo: signature checks for a transport that does
                 // not authenticate the sender.
 
@@ -207,27 +186,6 @@ impl<W> Router<W> for NodeRouter {
     }
 }
 
-// the arrival time of a peer's batch vote, at the router: in the async node
-// the time the network task handed it over, not the Cadence task's dequeue.
-// Every copy goes out, the repeater's too; proposing keeps the first.
-fn observe_vote<W>(
-    now: Timestamp,
-    from: NodeId,
-    message: &CadenceWireMsg,
-    sink: &mut impl Sink<Routed<W>>,
-) {
-    let CadenceMessage::Slot(ChorusMessage::BatchVote(vote)) = message else {
-        return;
-    };
-    let input = ProposingInput::BatchVote {
-        slot: vote.slot(),
-        from,
-        at: now,
-        positive: vote.positive_lanes(),
-    };
-    sink.send(Routed::Proposing(input));
-}
-
 fn route_proposal<W>(
     proposal_scheme: ProposalScheme,
     output: ProposingOutput,
@@ -235,7 +193,7 @@ fn route_proposal<W>(
 ) {
     let ProposingOutput {
         proposal,
-        send_order,
+        send_order: _,
     } = output;
     tracing::info!(
         ?proposal.slot,
@@ -246,7 +204,6 @@ fn route_proposal<W>(
     let input = DAInput::Propose {
         scheme: proposal_scheme,
         proposal,
-        send_order,
     };
     sink.send(Routed::DA(input));
 }
@@ -271,15 +228,19 @@ fn route_da<W>(now: Timestamp, output: DAOutput, sink: &mut impl Sink<Routed<W>>
             };
             sink.send(Routed::Finalization(input));
         }
+        // todo: DA names its recipients by node id for now
         DAOutput::Send(dissemination) => {
             let Outbound { to, message, qos } = dissemination;
-            let outbound = NodeOutbound::multicast(to, AppMessage::Chunk(message));
-            let outbound = outbound.with_qos(qos);
+            let to = Recipients::Nodes(to);
+            let message = AppMessage::Chunk(message);
+            let outbound = Outbound { to, message, qos };
             sink.send(Routed::Network(NetworkInput::Send(outbound)));
         }
-        DAOutput::Pull(Outbound { to, message, qos }) => {
-            let outbound = NodeOutbound::unicast(to, AppMessage::ChunkRequest(message));
-            let outbound = outbound.with_qos(qos);
+        DAOutput::Pull(request) => {
+            let Outbound { to, message, qos } = request;
+            let to = Recipients::Node(to);
+            let message = AppMessage::ChunkRequest(message);
+            let outbound = Outbound { to, message, qos };
             sink.send(Routed::Network(NetworkInput::Send(outbound)));
         }
     }

@@ -45,7 +45,7 @@ use self::{
 };
 pub use self::{
     component::Component,
-    epoch::{EpochHandle, NodeProposerSchedule},
+    epoch::{EpochHandle, Epochs, NodeProposerSchedule},
     finalization::FinalizedSlot,
     logging::init_logging,
     node::{Node, NodeOutput},
@@ -64,7 +64,8 @@ pub async fn run_node(config: NodeConfig) -> Result<(), RunError> {
 
 async fn run(config: NodeConfig) -> Result<(), RunError> {
     let node = Node::new(&config)?;
-    let proposers = node.router().epoch_handle().proposers.clone();
+    let proposers = node.epoch_handle().proposers.clone();
+    let epochs = Epochs::new(node.epoch_handle().clone());
     let sink = LedgerSink::spawn(&config.ledger.dir)?;
 
     let mut node = AsyncNode::spawn(node, Clock::start());
@@ -74,7 +75,8 @@ async fn run(config: NodeConfig) -> Result<(), RunError> {
     node.on_finalization(move |finalized| recorder.record(finalized));
 
     let mut tasks = JoinSet::new();
-    let udp = UdpTransport::bind(config.node_id, config.network.port, config.peers()).await?;
+    let (port, peers) = (config.network.port, config.peers());
+    let udp = UdpTransport::bind(config.node_id, port, peers, epochs).await?;
     tasks.spawn(udp.run(transport).in_current_span());
 
     node.run().await;

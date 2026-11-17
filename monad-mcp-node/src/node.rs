@@ -24,12 +24,10 @@ use monad_mcp_common::Timestamp;
 use crate::{
     RunError,
     cadence::{SlotManager, conductor::CadenceConductor},
-    component::{
-        Cadence, Component, DA, Mempool, MempoolProposing, Proposing, ProposingComponent as _,
-        RandomProposing,
-    },
+    component::{Cadence, Component, DA, Mempool, MempoolProposing, Proposing, RandomProposing},
     config::{NodeConfig, SourceKind},
     da::DARuntime,
+    epoch::{EpochHandle, Epochs},
     finalization::{FinalizationCollector, FinalizedSlot},
     network::{Network, NodeAppMessage, Wire, WireInbound, WireOutbound},
     router::{Effect, NodeRouter, Routed, Router, Sink},
@@ -43,6 +41,7 @@ pub enum NodeOutput<W = NodeAppMessage> {
 // W is the form of a message on the wire. With the default, the node's
 // own message type, the node does no ser/de.
 pub struct Node<R = NodeRouter, W = NodeAppMessage> {
+    epoch_handle: EpochHandle,
     pub(crate) router: R,
     pub(crate) parts: Parts<W>,
     outbox: VecDeque<NodeOutput<W>>,
@@ -63,10 +62,15 @@ impl<W> Node<NodeRouter, W> {
         let epoch_handle = config.epoch_handle()?;
 
         let slot_config = config.cadence.chorus();
-        let slot_manager = SlotManager::new(slot_config, epoch_handle.chorus());
+        // todo: a full node, which has no slot instance
+        let chorus = epoch_handle
+            .chorus()
+            .ok_or("this node is not a validator")?;
+        let slot_manager = SlotManager::new(slot_config, chorus);
         let conductor_config = config.cadence.conductor(config.genesis_deadline)?;
-        let conductor = CadenceConductor::genesis(conductor_config, ())?;
-        let cadence = Cadence::new(slot_manager, conductor);
+        let validator_data = epoch_handle.validator_data.clone();
+        let conductor = CadenceConductor::genesis(conductor_config, validator_data.clone(), ())?;
+        let cadence = Cadence::new(slot_manager, conductor, validator_data);
 
         let da = DARuntime::new(
             config.da.runtime(config.cadence.delta),
@@ -85,8 +89,11 @@ impl<W> Node<NodeRouter, W> {
                 Box::new(proposing)
             }
         };
-        let observe_votes = proposing.wants_vote_facts();
-        let network = Network::new(&epoch_handle, config.repeater());
+        let epochs = Epochs::new(epoch_handle.clone());
+        let mut network = Network::new(epochs);
+        if let Some(repeater) = config.repeater() {
+            network = network.with_repeater(repeater);
+        }
         let collector = FinalizationCollector::default();
 
         let parts = Parts {
@@ -97,24 +104,23 @@ impl<W> Node<NodeRouter, W> {
             network,
         };
         Ok(Self {
-            router: NodeRouter::new(epoch_handle, config).observe_votes(observe_votes),
+            epoch_handle,
+            router: NodeRouter::new(config),
             parts,
             outbox: VecDeque::new(),
         })
     }
 
-    // the same node with a wrapped or replaced proposer, for scenarios; the
-    // router copies batch votes to it if it wants them
+    // the same node with a wrapped or replaced proposer, for scenarios
     pub fn map_proposing(mut self, wrap: impl FnOnce(Proposing) -> Proposing) -> Self {
         self.parts.proposing = wrap(self.parts.proposing);
-        let observe_votes = self.parts.proposing.wants_vote_facts();
-        self.router = self.router.observe_votes(observe_votes);
         self
     }
 
     // the same components under a wrapped router, for scenarios
     pub fn map_router<R>(self, wrap: impl FnOnce(NodeRouter) -> R) -> Node<R, W> {
         Node {
+            epoch_handle: self.epoch_handle,
             router: wrap(self.router),
             parts: self.parts,
             outbox: self.outbox,
@@ -125,6 +131,10 @@ impl<W> Node<NodeRouter, W> {
 impl<R, W> Node<R, W> {
     pub fn router(&self) -> &R {
         &self.router
+    }
+
+    pub fn epoch_handle(&self) -> &EpochHandle {
+        &self.epoch_handle
     }
 }
 

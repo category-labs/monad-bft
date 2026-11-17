@@ -30,7 +30,7 @@ pub use super::fast::{
 };
 use super::{
     super::{
-        message::{Inbound, Outbound},
+        message::{Inbound, Outbound, SlotRecipients},
         runtime::Runtime,
         timers::Timers,
     },
@@ -156,6 +156,8 @@ where
     /// At most one proposal per instance
     fn propose(&mut self, data: V, cert: Option<Self::FallbackCert>);
 
+    fn slot(&self) -> Slot;
+
     /// The validators the sender indices refer to
     fn validator_data(&self) -> &ValidatorData;
 
@@ -179,7 +181,7 @@ where
 }
 
 pub enum MVBAOutput<M, T> {
-    Send(Outbound<M>),
+    Send(Outbound<M, SlotRecipients>),
     /// (Re-)schedule `timer_event` to fire once after `duration`. Arming an
     /// event already pending replaces it -- the last arm wins, as in
     /// [`super::SlotOutput::ScheduleTimer`]
@@ -224,7 +226,7 @@ where
     fn drain(&mut self, now: Timestamp) {
         while let Some(output) = self.mvba.poll() {
             match output {
-                MVBAOutput::Send(outbound) => self.outbox.push_back(outbound),
+                MVBAOutput::Send(outbound) => self.send(outbound),
                 MVBAOutput::ScheduleTimer {
                     duration,
                     timer_event,
@@ -236,6 +238,15 @@ where
             }
         }
         self.report_decision();
+    }
+
+    // the boundary of a standalone instance: its recipients get their slot here
+    fn send(&mut self, outbound: Outbound<A::Message, SlotRecipients>) {
+        use crate::spec::validator::ValidatorData as _;
+
+        let Outbound { to, message, qos } = outbound;
+        let to = to.at(self.mvba.slot(), self.mvba.validator_data().len());
+        self.outbox.push_back(Outbound { to, message, qos });
     }
 
     // reports the first decision, and any later one that differs from it

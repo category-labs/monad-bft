@@ -26,8 +26,8 @@ use super::{
     chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders},
     fallback::Metablock,
     types::{
-        EquivCert, Gate, HeaderAuth, IsVote, KeyPair, Lane, Lanes, NodeId, ProposalId,
-        ProposalScope, ProposerSet, Signature, SignedProposalHeader, Slot, StrongQc, ValidatorData,
+        EquivCert, Gate, HeaderAuth, IsVote, KeyPair, Lane, Lanes, ProposalId, ProposalScope,
+        ProposerSet, Signature, SignedProposalHeader, Slot, StrongQc, ValidatorData,
         ValidatorIndex, ValidatorSet, VoteMsg, VotePool, WeakQc,
     },
 };
@@ -153,6 +153,11 @@ impl FastPath {
         self.try_cast_fast_commit_vote()
     }
 
+    // whether a vote of the voter for the lane is held
+    pub(crate) fn has_vote(&self, j: Lane, voter: ValidatorIndex) -> bool {
+        self.votes[j].voters().contains(voter)
+    }
+
     fn handle_vote(&mut self, voter: ValidatorIndex, vote_msg: VoteMsg<Entry>) {
         let j = vote_msg.scope.lane;
         self.votes[j].add_vote(voter, vote_msg);
@@ -236,10 +241,8 @@ impl FastPath {
             && self.availability[j].header_for(&header.pid()).is_none()
         {
             let header = header.clone();
-            self.emit(ChorusDACommand::IngestProposalHeader {
-                sender: *self.validator_data.node_id(voter),
-                header,
-            });
+            let sender = voter;
+            self.emit(ChorusDACommand::IngestProposalHeader { sender, header });
         }
 
         // 2. count the vote
@@ -376,7 +379,7 @@ impl FastPath {
 
     // per lane: admitted voter count, and the (lane, voter) pairs whose
     // positive vote names a proposal without a seen header
-    pub(crate) fn vote_admission_state(&self) -> (Vec<usize>, Vec<(Lane, NodeId)>) {
+    pub(crate) fn vote_admission_state(&self) -> (Vec<usize>, Vec<(Lane, ValidatorIndex)>) {
         let mut admitted = Vec::new();
         let mut waiting_on_header = Vec::new();
         for j in self.proposals.indices() {
@@ -388,7 +391,7 @@ impl FastPath {
                     continue;
                 }
                 for voter in voters {
-                    waiting_on_header.push((j, *self.validator_data.node_id(voter)));
+                    waiting_on_header.push((j, voter));
                 }
             }
             admitted.push(count);
@@ -401,13 +404,8 @@ impl FastPath {
     }
 
     // enter-fallback voters seen and the lanes still without a certified entry
-    pub(crate) fn fallback_wait_state(&self) -> (Vec<NodeId>, Vec<Lane>) {
-        let voters = self
-            .enter_fallback_votes
-            .voters()
-            .iter()
-            .map(|voter| *self.validator_data.node_id(voter))
-            .collect();
+    pub(crate) fn fallback_wait_state(&self) -> (ValidatorSet, Vec<Lane>) {
+        let voters = self.enter_fallback_votes.voters();
         let uncertified = self
             .proposals
             .indices()
@@ -656,14 +654,12 @@ impl BatchVoteMsg {
         check_entry_lanes(entries, proposers)
     }
 
-    /// Per lane, whether the voter's entry is positive: it held its share of
-    /// the lane's proposal at its deadline. Read off the message as sent, its
+    /// The voter's entry for each lane. Read off the message as sent, its
     /// signatures unchecked: for observers outside consensus (the proposal
     /// planner), never for a decision that needs the vote to be authentic.
-    pub fn positive_lanes(&self) -> Lanes<bool> {
-        self.votes
-            .as_ref()
-            .map(|signed| matches!(signed.entry, Entry::Positive(_)))
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (Lane, &Entry)> {
+        let votes = self.votes.as_ref().into_indexed_iter();
+        votes.map(|(lane, signed)| (lane, &signed.entry))
     }
 
     // one char per lane, + positive / - negative, for logs
@@ -1239,14 +1235,12 @@ impl Decodable for FastCommitVote {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_common::spec::KeyPair as _;
-
     use super::{
         super::{
             super::{proposers, test_utils::dummy_index},
             chorus::ProposalDAEvent,
             types::{
-                FixedProposerSchedule, MAX_PROPOSER_SET_SIZE, ProposerSchedule as _, Stake,
+                FixedProposerSchedule, MAX_PROPOSER_SET_SIZE, NodeId, ProposerSchedule as _,
                 ValidatorData,
             },
         },
@@ -1257,17 +1251,6 @@ mod tests {
     };
 
     const SLOT: Slot = Slot(1);
-
-    fn validator_data(n: u64) -> ValidatorData {
-        let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();
-        let valset = validators.iter().map(|id| (*id, Stake::from(1))).collect();
-        let mapping = validators
-            .iter()
-            .map(|id| (*id, id.keypair().pubkey()))
-            .collect();
-
-        ValidatorData::new(valset, mapping)
-    }
 
     fn root(byte: u8) -> MerkleRoot {
         MerkleRoot(MerkleHash([byte; 20]))
@@ -1305,7 +1288,7 @@ mod tests {
             SLOT,
             schedule.num_lanes(),
             Arc::new(NodeId::dummy(1).keypair()),
-            Arc::new(validator_data(4)),
+            Arc::new(ValidatorData::dummy(4)),
             Arc::new(proposers::header_auth(schedule)),
         )
     }
@@ -1328,7 +1311,7 @@ mod tests {
 
     // a fast qc on header(byte) at `scope`, signed by validators 0, 2 and 3
     fn fast_qc(scope: ProposalScope, byte: u8) -> FastQc {
-        let mut pool = VotePool::new(scope, Arc::new(validator_data(4)));
+        let mut pool = VotePool::new(scope, Arc::new(ValidatorData::dummy(4)));
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let msg = VoteMsg::new_signed(scope, Entry::Positive(pid(byte)), &voter.keypair());
@@ -1347,7 +1330,7 @@ mod tests {
     // a fast commit qc on `entries`, signed by validators 0, 2 and 3
     fn fast_commit_qc(entries: Lanes<Entry>) -> FastCommitQc {
         let vote = FastCommitVote { entries };
-        let mut pool = VotePool::new(SLOT, Arc::new(validator_data(4)));
+        let mut pool = VotePool::new(SLOT, Arc::new(ValidatorData::dummy(4)));
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let msg = VoteMsg::new_signed(SLOT, vote.clone(), &voter.keypair());
@@ -1446,7 +1429,7 @@ mod tests {
     #[test]
     fn a_positive_fallback_qc_names_its_signers_as_decoded_holders() {
         let entry = FallbackEntry(Entry::Positive(pid(1)));
-        let validator_data = Arc::new(validator_data(4));
+        let validator_data = Arc::new(ValidatorData::dummy(4));
         let scope = ProposalScope::new(SLOT, Lane::new_unchecked(0));
         let mut pool = VotePool::new(scope, validator_data.clone());
         for id in [0, 2] {
@@ -1666,7 +1649,7 @@ mod tests {
         let (voter, msg) = fallback_vote(2, header(1));
         fast.handle_fallback_vote(dummy_index(voter), msg);
         let ingest = ChorusDACommand::IngestProposalHeader {
-            sender: voter,
+            sender: dummy_index(voter),
             header: header(1),
         };
         assert_eq!(drain_commands(&mut fast), vec![ingest]);
@@ -1771,7 +1754,7 @@ mod tests {
     /// neither a strong nor a weak quorum.
     #[test]
     fn a_certificate_does_not_verify_under_a_foreign_scope() {
-        let validators = Arc::new(validator_data(4));
+        let validators = Arc::new(ValidatorData::dummy(4));
         let scope = ProposalScope::new(SLOT, Lane::new_unchecked(0));
         let foreign = ProposalScope::new(SLOT, Lane::new_unchecked(1));
 
@@ -1834,7 +1817,7 @@ mod rlp_tests {
 
     #[test]
     fn chorus_variants_and_nested_evidence_roundtrip() {
-        use super::super::types::{SignatureCollection, Stake};
+        use super::super::types::{NodeId, SignatureCollection, Stake};
 
         let slot = Slot(9);
         let key = NodeId::dummy(1).keypair();

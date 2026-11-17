@@ -15,23 +15,25 @@
 
 mod repeater;
 
-use std::{collections::VecDeque, fmt::Debug, sync::Arc};
+use std::{collections::VecDeque, fmt::Debug};
 
 use bytes::Bytes;
 use monad_mcp_cadence::{
     ledger::{Tx, TxError},
     spec::validator::ValidatorData as _,
 };
-use monad_mcp_common::{Inbound, Outbound, Qos, RepeatUntil, Slot, Timestamp, WirePriority};
+use monad_mcp_common::{
+    Inbound, Outbound, Qos, RepeatUntil, Slot, Timestamp, ValidatorSet, WirePriority,
+};
 
 use self::repeater::Repeater;
 pub use self::repeater::RepeaterConfig;
 use crate::{
-    cadence::{Recipients, SlotLifecycle, types::ValidatorData},
+    cadence::{Recipients, SlotLifecycle},
     common::NodeId,
     component::{CadenceWireMsg, Component},
     da::{ChunkPull, MalformedPacket, ProposalEnvelope, read_envelope, write_envelope},
-    epoch::EpochHandle,
+    epoch::Epochs,
 };
 
 // a message between nodes, by kind
@@ -125,16 +127,16 @@ impl Wire<NodeAppMessage> for NodeAppMessage {
 }
 
 // what the node's components send and receive
-pub type NodeOutbound = Outbound<NodeAppMessage, Recipients>;
+pub type NodeOutbound = Outbound<NodeAppMessage>;
 pub type NodeInbound = Inbound<NodeAppMessage, NodeId>;
 
-// what the transport takes and gives: recipients in send order, and the
+// what the transport takes and gives: recipients without this node, and the
 // sender it authenticated
-pub type WireOutbound<W> = Outbound<W, Vec<NodeId>, WirePriority>;
+pub type WireOutbound<W> = Outbound<W, Recipients, WirePriority>;
 pub type WireInbound<W> = Inbound<W, NodeId>;
 
 pub enum NetworkInput<M, W> {
-    Send(Outbound<M, Recipients>),
+    Send(Outbound<M>),
     FromWire(WireInbound<W>),
     Lifecycle(SlotLifecycle),
 }
@@ -149,51 +151,55 @@ pub enum NetworkOutput<M, W> {
 // loops a message to this node back, converts to and from the wire form W,
 // and repeats a message as its qos asks.
 pub struct Network<M, W> {
-    me: NodeId,
-    validator_data: Arc<ValidatorData>,
+    epochs: Epochs,
     // absent: nothing is repeated
     repeater: Option<Repeater<W>>,
     outbox: VecDeque<NetworkOutput<M, W>>,
 }
 
 impl<M, W> Network<M, W> {
-    pub fn new(epoch_handle: &EpochHandle, repeater: Option<RepeaterConfig>) -> Self {
+    pub fn new(epochs: Epochs) -> Self {
         Self {
-            me: epoch_handle.self_id,
-            validator_data: epoch_handle.validator_data.clone(),
-            repeater: repeater.map(Repeater::new),
+            epochs,
+            repeater: None,
             outbox: VecDeque::new(),
         }
     }
 
-    fn send(&mut self, now: Timestamp, outbound: Outbound<M, Recipients>)
+    pub fn with_repeater(mut self, config: RepeaterConfig) -> Self {
+        self.repeater = Some(Repeater::new(config));
+        self
+    }
+
+    fn send(&mut self, now: Timestamp, outbound: Outbound<M>)
     where
         W: Wire<M>,
     {
         let Outbound { to, message, qos } = outbound;
-        let mut nodes = self.resolve(to);
-        let to_me = nodes.contains(&self.me);
-        nodes.retain(|node| *node != self.me);
+        let sender = self.epochs.self_id();
+        // A slot of an unknown epoch has no validator table, so no recipients.
+        let Some((mut to, loopback)) = self.resolve(to) else {
+            return;
+        };
 
-        if !nodes.is_empty() {
+        if !to.is_empty() {
             let mut wires = W::to_wire(&message).peekable();
             while let Some(wire) = wires.next() {
-                // the last wire message takes the list, the others a copy
+                // the last wire message takes the recipients, the others a copy
                 let to = match wires.peek() {
-                    Some(_) => nodes.clone(),
-                    None => std::mem::take(&mut nodes),
+                    Some(_) => to.clone(),
+                    None => std::mem::take(&mut to),
                 };
                 self.deliver(now, to, wire, qos);
             }
         }
-        if to_me {
-            let sender = self.me;
+        if loopback {
             let own = Inbound { sender, message };
             self.outbox.push_back(NetworkOutput::Received(own));
         }
     }
 
-    fn deliver(&mut self, now: Timestamp, to: Vec<NodeId>, message: W, qos: Qos)
+    fn deliver(&mut self, now: Timestamp, to: Recipients, message: W, qos: Qos)
     where
         W: Clone + PartialEq,
     {
@@ -207,15 +213,27 @@ impl<M, W> Network<M, W> {
         self.outbox.push_back(NetworkOutput::ToWire(to_wire));
     }
 
-    fn resolve(&self, to: Recipients) -> Vec<NodeId> {
-        match to {
-            Recipients::Everyone => self.validator_data.nodes().copied().collect(),
-            Recipients::Node(node) => vec![node],
-            Recipients::Nodes(nodes) => nodes,
-        }
+    // the recipients without this node, and whether the message loops back
+    fn resolve(&self, to: Recipients) -> Option<(Recipients, bool)> {
+        let me = self.epochs.self_id();
+        let resolved = match to {
+            Recipients::Validators(slot, mut validators) => {
+                let me = self.epochs.at(slot)?.self_index;
+                let loopback = me.is_some_and(|me| validators.remove(me));
+                (Recipients::Validators(slot, validators), loopback)
+            }
+            Recipients::Node(node) if node == me => (Recipients::default(), true),
+            Recipients::Node(node) => (Recipients::Node(node), false),
+            Recipients::Nodes(mut nodes) => {
+                let loopback = nodes.contains(&me);
+                nodes.retain(|node| *node != me);
+                (Recipients::Nodes(nodes), loopback)
+            }
+        };
+        Some(resolved)
     }
 
-    fn record(&mut self, now: Timestamp, slot: Slot, to: &[NodeId], message: &W)
+    fn record(&mut self, now: Timestamp, slot: Slot, to: &Recipients, message: &W)
     where
         W: Clone + PartialEq,
     {
@@ -223,14 +241,14 @@ impl<M, W> Network<M, W> {
             return;
         };
         let repeat = Outbound {
-            to: to.to_vec(),
+            to: to.clone(),
             message: message.clone(),
             qos: WirePriority::Regular,
         };
         repeater.record(now, slot, repeat);
     }
 
-    fn certify(&mut self, slot: Slot, to: &[NodeId], message: &W)
+    fn certify(&mut self, slot: Slot, to: &Recipients, message: &W)
     where
         W: Clone,
     {
@@ -238,7 +256,7 @@ impl<M, W> Network<M, W> {
             return;
         };
         let repeat = Outbound {
-            to: to.to_vec(),
+            to: to.clone(),
             message: message.clone(),
             qos: WirePriority::Regular,
         };
@@ -270,6 +288,31 @@ impl<M, W> Network<M, W> {
             self.outbox.push_back(NetworkOutput::ToWire(repeat));
         }
     }
+}
+
+// the node id of each recipient, read from the table of the slot
+pub fn node_ids<'a>(
+    to: &'a Recipients,
+    epochs: &'a Epochs,
+) -> impl Iterator<Item = &'a NodeId> + 'a {
+    let (validators, nodes) = match to {
+        Recipients::Validators(slot, validators) => {
+            (validator_ids(validators, *slot, epochs), &[][..])
+        }
+        Recipients::Node(node) => (None, std::slice::from_ref(node)),
+        Recipients::Nodes(nodes) => (None, nodes.as_slice()),
+    };
+    validators.into_iter().flatten().chain(nodes)
+}
+
+// None for a slot of an unknown epoch
+fn validator_ids<'a>(
+    validators: &'a ValidatorSet,
+    slot: Slot,
+    epochs: &'a Epochs,
+) -> Option<impl Iterator<Item = &'a NodeId> + 'a> {
+    let table = &epochs.at(slot)?.validator_data;
+    Some(validators.iter().map(move |index| table.node_id(index)))
 }
 
 impl<M, W: Wire<M>> Component for Network<M, W> {
@@ -308,12 +351,13 @@ impl<M, W: Wire<M>> Component for Network<M, W> {
 mod tests {
     use std::net::SocketAddr;
 
-    use monad_mcp_common::{TimestampDelta, spec::KeyPair as _};
+    use monad_mcp_common::{TimestampDelta, ValidatorIndex, spec::KeyPair as _};
 
     use super::*;
     use crate::{
         common::KeyPair,
         config::{NodeConfig, ValidatorConfig},
+        epoch::EpochHandle,
     };
 
     const INTERVAL: TimestampDelta = TimestampDelta::from_millis(5_000);
@@ -328,8 +372,10 @@ mod tests {
         NodeId::dummy(id)
     }
 
-    // node 0 of three validators, with a repeater
-    fn network() -> TestNetwork {
+    const SLOT: Slot = Slot(3);
+
+    // the epoch of node 0, one of three validators
+    fn epoch() -> EpochHandle {
         let mut config = NodeConfig::single_node(0, at(10_000), "unused-ledger");
         for id in 1..3 {
             config.validators.push(ValidatorConfig {
@@ -339,12 +385,28 @@ mod tests {
                 address: SocketAddr::from(([127, 0, 0, 1], id as u16)),
             });
         }
-        let epoch_handle = config.epoch_handle().expect("config builds");
+        config.epoch_handle().expect("config builds")
+    }
+
+    // node 0, with a repeater
+    fn network(epoch: &EpochHandle) -> TestNetwork {
         let repeater = RepeaterConfig {
             interval: INTERVAL,
             certificate_retention: 2,
         };
-        Network::new(&epoch_handle, Some(repeater))
+        Network::new(Epochs::new(epoch.clone())).with_repeater(repeater)
+    }
+
+    fn index(epoch: &EpochHandle, id: u64) -> ValidatorIndex {
+        let index = epoch.validator_data.index_of(&node(id));
+        index.expect("a validator")
+    }
+
+    // the ids of the other validators
+    fn others(epoch: &EpochHandle) -> Vec<u64> {
+        let validators = &epoch.validator_data;
+        let nodes = validators.indices().map(|index| *validators.node_id(index));
+        nodes.map(u64::from).filter(|id| *id != 0).collect()
     }
 
     fn tx(nonce: u64) -> Tx {
@@ -362,12 +424,24 @@ mod tests {
         AppMessage::Tx(tx(nonce))
     }
 
+    // message `nonce` for the validators with the given ids
+    fn outbound(epoch: &EpochHandle, to: &[u64], nonce: u64) -> NodeOutbound {
+        let validators = to.iter().map(|id| index(epoch, *id)).collect();
+        Outbound {
+            to: Recipients::Validators(SLOT, validators),
+            message: message(nonce),
+            qos: Qos::default(),
+        }
+    }
+
     fn on_the_wire(
+        epoch: &EpochHandle,
         to: &[u64],
         nonce: u64,
         qos: WirePriority,
     ) -> NetworkOutput<NodeAppMessage, WireAppMessage> {
-        let to = to.iter().copied().map(node).collect();
+        let validators = to.iter().map(|id| index(epoch, *id)).collect();
+        let to = Recipients::Validators(SLOT, validators);
         let typed = message(nonce);
         let mut wires = WireAppMessage::to_wire(&typed);
         let message = wires.next().expect("a tx is one wire message");
@@ -380,7 +454,8 @@ mod tests {
 
     #[test]
     fn a_malformed_message_is_dropped_and_a_good_one_is_received() {
-        let mut network = network();
+        let epoch = epoch();
+        let mut network = network(&epoch);
         let junk = WireInbound {
             sender: node(1),
             message: AppMessage::Tx(Bytes::from_static(b"junk")),
@@ -405,8 +480,9 @@ mod tests {
 
     #[test]
     fn a_broadcast_goes_to_the_others_and_loops_back() {
-        let mut network = network();
-        let broadcast = Outbound::broadcast(message(1));
+        let epoch = epoch();
+        let mut network = network(&epoch);
+        let broadcast = outbound(&epoch, &[0, 1, 2], 1);
         network.handle(at(0), NetworkInput::Send(broadcast));
 
         let own = Inbound {
@@ -416,7 +492,7 @@ mod tests {
         assert_eq!(
             outputs(&mut network),
             vec![
-                on_the_wire(&[1, 2], 1, WirePriority::Regular),
+                on_the_wire(&epoch, &others(&epoch), 1, WirePriority::Regular),
                 NetworkOutput::Received(own),
             ]
         );
@@ -424,8 +500,10 @@ mod tests {
 
     #[test]
     fn a_message_to_this_node_only_loops_back() {
-        let mut network = network();
-        let to_me = Outbound::unicast(node(0), message(1)).with_priority(WirePriority::High);
+        let epoch = epoch();
+        let mut network = network(&epoch);
+        let to_me = outbound(&epoch, &[0], 1);
+        let to_me = to_me.with_priority(WirePriority::High);
         network.handle(at(0), NetworkInput::Send(to_me));
 
         let own = Inbound {
@@ -438,23 +516,24 @@ mod tests {
 
     #[test]
     fn a_message_repeats_until_its_slot_completes() {
-        let mut network = network();
-        let repeat = RepeatUntil::Commit(Slot(3));
-        let vote = Outbound::unicast(node(1), message(1)).repeat_until(repeat);
+        let epoch = epoch();
+        let mut network = network(&epoch);
+        let vote = outbound(&epoch, &[1], 1);
+        let vote = vote.repeat_until(RepeatUntil::Commit(SLOT));
         network.handle(at(0), NetworkInput::Send(vote));
         assert_eq!(
             outputs(&mut network),
-            vec![on_the_wire(&[1], 1, WirePriority::Regular)]
+            vec![on_the_wire(&epoch, &[1], 1, WirePriority::Regular)]
         );
 
         assert_eq!(network.next_due(), Some(at(5_000)));
         network.handle_due(at(5_000));
         assert_eq!(
             outputs(&mut network),
-            vec![on_the_wire(&[1], 1, WirePriority::Regular)]
+            vec![on_the_wire(&epoch, &[1], 1, WirePriority::Regular)]
         );
 
-        let completed = SlotLifecycle::Completed { slot: Slot(3) };
+        let completed = SlotLifecycle::Completed { slot: SLOT };
         network.handle(at(6_000), NetworkInput::Lifecycle(completed));
         network.handle_due(at(10_000));
         assert!(outputs(&mut network).is_empty());
@@ -463,9 +542,10 @@ mod tests {
 
     #[test]
     fn a_certificate_repeats_until_the_cap_is_past_its_slot() {
-        let mut network = network();
-        let repeat = RepeatUntil::CapAdvanced(Slot(3));
-        let certificate = Outbound::broadcast(message(1)).repeat_until(repeat);
+        let epoch = epoch();
+        let mut network = network(&epoch);
+        let certificate = outbound(&epoch, &[0, 1, 2], 1);
+        let certificate = certificate.repeat_until(RepeatUntil::CapAdvanced(SLOT));
         network.handle(at(0), NetworkInput::Send(certificate));
         let own = Inbound {
             sender: node(0),
@@ -474,7 +554,7 @@ mod tests {
         assert_eq!(
             outputs(&mut network),
             vec![
-                on_the_wire(&[1, 2], 1, WirePriority::Regular),
+                on_the_wire(&epoch, &others(&epoch), 1, WirePriority::Regular),
                 NetworkOutput::Received(own),
             ]
         );
@@ -482,7 +562,12 @@ mod tests {
         network.handle_due(at(5_000));
         assert_eq!(
             outputs(&mut network),
-            vec![on_the_wire(&[1, 2], 1, WirePriority::Regular)]
+            vec![on_the_wire(
+                &epoch,
+                &others(&epoch),
+                1,
+                WirePriority::Regular
+            )]
         );
 
         // past the retention of 2 slots
@@ -494,12 +579,14 @@ mod tests {
 
     #[test]
     fn a_prioritized_message_keeps_its_priority_on_the_wire() {
-        let mut network = network();
-        let request = Outbound::unicast(node(2), message(1)).with_priority(WirePriority::High);
+        let epoch = epoch();
+        let mut network = network(&epoch);
+        let request = outbound(&epoch, &[2], 1);
+        let request = request.with_priority(WirePriority::High);
         network.handle(at(0), NetworkInput::Send(request));
         assert_eq!(
             outputs(&mut network),
-            vec![on_the_wire(&[2], 1, WirePriority::High)]
+            vec![on_the_wire(&epoch, &[2], 1, WirePriority::High)]
         );
     }
 }

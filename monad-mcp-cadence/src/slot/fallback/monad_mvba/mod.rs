@@ -75,7 +75,7 @@ use super::{
     super::{
         fast::EnterFallbackCert,
         types::{
-            HeaderAuth, IsVote, KeyPair, NodeId, RepeatUntil, Slot, TimestampDelta, ValidatorData,
+            HeaderAuth, IsVote, KeyPair, RepeatUntil, Slot, TimestampDelta, ValidatorData,
             ValidatorIndex, VoteMsg,
         },
     },
@@ -99,7 +99,7 @@ pub struct MvbaContext {
     pub num_lanes: usize,
     pub delta: TimestampDelta,
 
-    pub node_id: NodeId,
+    pub self_index: ValidatorIndex,
     pub key: Arc<KeyPair>,
     pub validator_data: Arc<ValidatorData>,
     pub header_auth: Arc<HeaderAuth>,
@@ -110,11 +110,7 @@ impl MvbaContext {
     ///
     /// `Leader(slot, view)`: placeholder round-robin, ignoring stake
     /// TODO: replace with prod leader election
-    pub(crate) fn leader(&self, view: FallbackView) -> NodeId {
-        *self.validator_data.node_id(self.leader_index(view))
-    }
-
-    fn leader_index(&self, view: FallbackView) -> ValidatorIndex {
+    pub(crate) fn leader(&self, view: FallbackView) -> ValidatorIndex {
         let num_nodes = self.validator_data.len() as u64;
         assert!(num_nodes > 0);
 
@@ -210,24 +206,6 @@ pub struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
     abandoned: bool,
 }
 
-#[cfg(test)]
-impl<V, C> MonadMvba<V, C>
-where
-    V: ValidateInput + Votable,
-    C: ValidateCert<Context = V::Context>,
-    MvbaContext: MakesValidationContext<V>,
-{
-    /// [`Mvba::handle_message`] from a validator named by its node id
-    pub(crate) fn handle_message_from(&mut self, sender: NodeId, message: MvbaMessage<V, C>) {
-        let sender = self
-            .context
-            .validator_data
-            .index_of(&sender)
-            .expect("sender is a validator");
-        self.handle_message(sender, message);
-    }
-}
-
 impl<V, C> Mvba<V> for MonadMvba<V, C>
 where
     V: ValidateInput + Votable,
@@ -280,6 +258,10 @@ where
         self.outputs.extend(outputs);
 
         self.try_advance();
+    }
+
+    fn slot(&self) -> Slot {
+        self.context.slot
     }
 
     fn validator_data(&self) -> &ValidatorData {
@@ -365,10 +347,10 @@ where
             return;
         }
 
-        if sender != self.context.leader_index(view) {
+        if sender != self.context.leader(view) {
             return;
         }
-        if !msg.verify_signature(self.context.validator_data.pubkey(sender)) {
+        if !msg.verify_signature(self.context.validator_data.vote_key(sender)) {
             return;
         }
 
@@ -455,8 +437,8 @@ where
         request: &BlockRequestMsg<V::Entries>,
     ) {
         if let Some(response) = self.block_store.handle_request(request) {
-            let to = *self.context.validator_data.node_id(sender);
-            let outbound = Outbound::unicast(to, MvbaMessage::BlockResponse(response));
+            let response = MvbaMessage::BlockResponse(response);
+            let outbound = Outbound::unicast(sender, response);
             self.outputs.push_back(MVBAOutput::Send(outbound));
         }
     }
@@ -583,7 +565,7 @@ where
         // until it has a proposal to make, which a lock whose block is still in
         // flight can delay
         if matches!(self.phase, Phase::NewView(_)) {
-            if self.context.leader(self.view()) != self.context.node_id {
+            if !self.leads(self.view()) {
                 return Some(Transition::AwaitProposal);
             }
 
@@ -839,7 +821,7 @@ where
     fn own_proposal_ready(&self) -> Option<PrePrepareMsg<V, C>> {
         let view: FallbackView = self.view();
         debug_assert!(matches!(self.phase, Phase::NewView(_)));
-        debug_assert_eq!(self.context.leader(view), self.context.node_id);
+        debug_assert!(self.leads(view));
 
         // no input means this instance does not participate at all
         let input = self.input.as_ref()?;
@@ -920,7 +902,7 @@ where
         }
         // Leader stuck on NewView state means it's missing the locked block
         if matches!(self.phase, Phase::NewView(_))
-            && self.context.leader(self.view()) == self.context.node_id
+            && self.leads(self.view())
             && let Some(lock) = self.locked_entries()
         {
             wanted.push(lock.clone());
@@ -956,6 +938,10 @@ where
     }
 
     // ---------------- small helpers ----------------
+
+    fn leads(&self, view: FallbackView) -> bool {
+        self.context.self_index == self.context.leader(view)
+    }
 
     fn broadcast(
         &self,

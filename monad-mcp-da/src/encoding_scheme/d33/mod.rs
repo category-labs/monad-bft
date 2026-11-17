@@ -20,12 +20,12 @@ use rand_chacha::ChaCha20Rng;
 use super::{
     super::{
         assignment::{ChunkAssignment, PacketLossResistance, StakePartition},
-        types::{D33, Lane, MerkleRoot, NodeId, PubKey, Slot, ValidatorData},
+        types::{D33, Lane, MerkleRoot, NodeId, Slot, ValidatorData},
         wire::v1,
     },
     DAEncodingScheme,
 };
-use crate::spec::PUBKEY_LEN;
+use crate::spec::NODE_ID_LEN;
 
 mod chunks;
 
@@ -95,10 +95,10 @@ fn num_source_chunks(msg_len: u32, depth: u8) -> usize {
 
 // the prod seed: slot(8) unix_ts_ms/2048(8) pubkey[1..17]. the first
 // pubkey byte is a low entropy tag.
-fn seed(slot: Slot, unix_ts: u64, author: &PubKey) -> [u8; 32] {
-    use crate::spec::DAPubKey as _;
+fn seed(slot: Slot, unix_ts: u64, author: &NodeId) -> [u8; 32] {
+    use crate::spec::DANodeId as _;
 
-    let mut pubkey = [0u8; PUBKEY_LEN];
+    let mut pubkey = [0u8; NODE_ID_LEN];
     author.to_bytes(&mut pubkey);
     let coarse_ts = unix_ts / 2048;
 
@@ -147,11 +147,11 @@ impl DAEncodingScheme for D33 {
         use rand::{SeedableRng as _, seq::SliceRandom as _};
 
         let mut weights = Vec::with_capacity(validator_data.len());
-        for node_id in validator_data.nodes() {
-            let stake = validator_data.get_stake(node_id);
-            weights.push((*node_id, *stake));
+        for validator in validator_data.indices() {
+            let node_id = validator_data.node_id(validator);
+            weights.push((*node_id, *validator_data.stake(validator)));
         }
-        let seed = seed(self.slot, self.unix_ts, validator_data.get_pubkey(author));
+        let seed = seed(self.slot, self.unix_ts, author);
         weights.shuffle(&mut ChaCha20Rng::from_seed(seed));
 
         let partition = StakePartition::new(weights);
@@ -505,7 +505,8 @@ mod tests {
         let assignment = scheme_for(5).chunk_assignment(&author(), &validator_data);
 
         assert_eq!(assignment.num_nodes(), validator_data.len());
-        for node in validator_data.nodes() {
+        for index in validator_data.indices() {
+            let node = validator_data.node_id(index);
             assert!(assignment.index_of(node).is_some());
         }
     }

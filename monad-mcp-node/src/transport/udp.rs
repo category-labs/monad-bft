@@ -28,7 +28,8 @@ use tracing::Span;
 use crate::{
     common::NodeId,
     component::Link,
-    network::{AppMessage, WireAppMessage, WireInbound, WireOutbound},
+    epoch::Epochs,
+    network::{AppMessage, WireAppMessage, WireInbound, WireOutbound, node_ids},
 };
 
 // the transport's end of the link to the node
@@ -49,6 +50,8 @@ pub struct UdpTransport {
     socket: UdpSocket,
     self_id: NodeId,
     peers: HashMap<NodeId, SocketAddr>,
+    // the table of a slot names the recipients of a wire message
+    epochs: Epochs,
 }
 
 impl UdpTransport {
@@ -56,6 +59,7 @@ impl UdpTransport {
         self_id: NodeId,
         port: u16,
         peers: HashMap<NodeId, SocketAddr>,
+        epochs: Epochs,
     ) -> io::Result<Self> {
         let socket = UdpSocket::bind(("0.0.0.0", port)).await?;
         tracing::info!(address = %socket.local_addr()?, "udp bound");
@@ -63,6 +67,7 @@ impl UdpTransport {
             socket,
             self_id,
             peers,
+            epochs,
         })
     }
 
@@ -107,7 +112,7 @@ impl UdpTransport {
         let Some(frame) = self.frame(&outbound.message) else {
             return;
         };
-        for to in &outbound.to {
+        for to in node_ids(&outbound.to, &self.epochs) {
             let Some(address) = self.peers.get(to) else {
                 tracing::debug!(?to, "unknown recipient");
                 continue;
@@ -174,8 +179,10 @@ pub fn decode_frame(frame: &[u8]) -> Option<(NodeId, WireAppMessage)> {
 mod tests {
     use std::time::Duration;
 
+    use monad_mcp_common::Timestamp;
+
     use super::*;
-    use crate::transport::TransportHandle;
+    use crate::{config::NodeConfig, transport::TransportHandle};
 
     #[test]
     fn frames_roundtrip_and_reject_unknown_types() {
@@ -223,7 +230,9 @@ mod tests {
             (NodeId::dummy(0), SocketAddr::from(([127, 0, 0, 1], 1))),
             (NodeId::dummy(1), SocketAddr::from(([127, 0, 0, 1], 2))),
         ]);
-        let udp = UdpTransport::bind(NodeId::dummy(0), 0, peers)
+        let config = NodeConfig::single_node(0, Timestamp::from_millis(0), "unused-ledger");
+        let epochs = Epochs::new(config.epoch_handle().expect("config builds"));
+        let udp = UdpTransport::bind(NodeId::dummy(0), 0, peers, epochs)
             .await
             .unwrap();
         let port = udp.socket.local_addr().unwrap().port();

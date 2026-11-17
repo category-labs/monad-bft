@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use tracing::{debug, trace};
 
@@ -23,7 +23,7 @@ use super::{
     slot::{SlotConsensus, SlotOutput},
     slot_manager::SlotManager,
     timers::Timers,
-    types::{NodeId, Slot, SlotScoped, Timestamp},
+    types::{NodeId, Slot, SlotScoped, Timestamp, ValidatorData},
 };
 
 // A Runtime is a process that exchanges messages with peers, takes local
@@ -52,6 +52,9 @@ where
     clock: Timestamp,
     slot_manager: SlotManager<S>,
     conductor: C,
+    // gives the recipients of a slot instance their table
+    // todo: one table for each epoch
+    validator_data: Arc<ValidatorData>,
     timers: Timers<PendingWake<S::Timer, C::Alarm>>,
     outbox: VecDeque<Outbound<CadenceWireMsg<S, C>>>,
     outputs: VecDeque<CadenceOutput<S>>,
@@ -77,11 +80,16 @@ where
     S: SlotConsensus,
     C: Conductor,
 {
-    pub fn new(slot_manager: SlotManager<S>, conductor: C) -> Self {
+    pub fn new(
+        slot_manager: SlotManager<S>,
+        conductor: C,
+        validator_data: Arc<ValidatorData>,
+    ) -> Self {
         let mut runtime = Self {
             clock: Timestamp::GENESIS,
             slot_manager,
             conductor,
+            validator_data,
             timers: Timers::default(),
             outbox: VecDeque::new(),
             outputs: VecDeque::new(),
@@ -163,8 +171,13 @@ where
                     .schedule(now + delta, PendingWake::SlotTimer(slot, timer));
             }
             SlotOutput::Send(outbound) => {
-                debug_assert_eq!(outbound.message.slot(), slot);
-                self.outbox.push_back(outbound.map(CadenceMessage::Slot));
+                use crate::spec::validator::ValidatorData as _;
+
+                let Outbound { to, message, qos } = outbound;
+                debug_assert_eq!(message.slot(), slot);
+                let to = to.at(slot, self.validator_data.len());
+                let message = CadenceMessage::Slot(message);
+                self.outbox.push_back(Outbound { to, message, qos });
             }
             SlotOutput::Local(command) => {
                 self.outputs.push_back(CadenceOutput::Local(slot, command));
