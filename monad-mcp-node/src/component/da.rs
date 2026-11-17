@@ -20,7 +20,7 @@ use super::Component;
 use crate::{
     cadence::{SlotLifecycle, slot::chorus::ChorusDACommand},
     common::NodeId,
-    da::{ChunkRecoveryRequest, DAOutput, DARuntime, ProposalEnvelope, ProposalScheme},
+    da::{ChunkPull, DAOutput, DARuntime, ProposalEnvelope, ProposalScheme},
     epoch::NodeProposerSchedule,
 };
 
@@ -28,7 +28,7 @@ pub type DA = DARuntime<NodeProposerSchedule>;
 
 pub enum DAInput {
     Envelope(NodeId, ProposalEnvelope),
-    ChunkRequest(NodeId, ChunkRecoveryRequest),
+    ChunkRequest(NodeId, ChunkPull),
     Lifecycle(SlotLifecycle),
     Command(Slot, ChorusDACommand),
     // our proposal, encoded under the scheme at the time DA handles it, with

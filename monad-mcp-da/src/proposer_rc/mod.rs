@@ -533,7 +533,14 @@ mod tests {
         let your_chunks = ChunkRequest::all(header.pid(), ChunkRequestType::YourChunks);
         instance.handle_chunk_request(your_chunks, &requester, NOW, &mut egress);
         let recovered = egress.drain();
-        let [Dissemination { to, envelope }] = &recovered[..] else {
+        let [
+            Dissemination {
+                to,
+                message: envelope,
+                ..
+            },
+        ] = &recovered[..]
+        else {
             panic!("recovery unicasts to the requester");
         };
         assert_eq!(*to, [requester]);

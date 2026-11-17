@@ -16,9 +16,10 @@
 pub mod stub;
 
 use bytes::Bytes;
+use monad_mcp_common::{Inbound, Outbound, WirePriority};
 
 pub use self::stub::{decode_frame, encode_frame};
-use crate::{common::NodeId, component::Link};
+use crate::{cadence::Recipients, common::NodeId, component::Link};
 
 // what crosses the wire between nodes
 #[derive(Clone)]
@@ -31,25 +32,11 @@ pub enum NodeMessage {
     Tx(Bytes),
 }
 
-// todo: move this into shared types
-pub type NodeOutbound = crate::cadence::Outbound<NodeMessage>;
-
-// how an outbound message ranks on the node's uplink. The transport may
-// give the first hop of our own proposal strict priority over everything
-// else (docs/0005 §5.6); the stub transport sends everything in order
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum OutboundClass {
-    // our own proposal's first-hop shares
-    FirstHop,
-    #[default]
-    Standard,
-}
+// the stub transport sends in order and does not read the priority
+pub type NodeOutbound = Outbound<NodeMessage, Recipients, WirePriority>;
 
 // the transport authenticates the sender
-pub struct NodeInbound {
-    pub from: NodeId,
-    pub message: NodeMessage,
-}
+pub type NodeInbound = Inbound<NodeMessage, NodeId>;
 
 // what the transport hands the node and takes from it
 pub type NetworkHandle = Link<NodeOutbound, NodeInbound>;

@@ -79,7 +79,8 @@ use super::{
             ValidatorIndex, VoteMsg,
         },
     },
-    FallbackView, MVBAOutput, Metablock, Mvba, MvbaScope, ValidateCert, ValidateInput, Votable,
+    FallbackView, MVBAOutput, Metablock, Mvba, MvbaScope, Outbound, ValidateCert, ValidateInput,
+    Votable,
 };
 use crate::spec::validator::ValidatorData as _;
 
@@ -454,11 +455,9 @@ where
         request: &BlockRequestMsg<V::Entries>,
     ) {
         if let Some(response) = self.block_store.handle_request(request) {
-            self.outputs.push_back(MVBAOutput::Unicast {
-                to: *self.context.validator_data.node_id(sender),
-
-                message: MvbaMessage::BlockResponse(response),
-            });
+            let to = *self.context.validator_data.node_id(sender);
+            let outbound = Outbound::unicast(to, MvbaMessage::BlockResponse(response));
+            self.outputs.push_back(MVBAOutput::Send(outbound));
         }
     }
 
@@ -703,7 +702,7 @@ where
         let vote = self.sign_vote(PrepareVote::<V::Entries>(preparing.entries().clone()));
         (
             Phase::Preparing(preparing),
-            vec![MVBAOutput::Broadcast(MvbaMessage::Prepare(vote))],
+            vec![self.broadcast(MvbaMessage::Prepare(vote))],
         )
     }
 
@@ -732,7 +731,7 @@ where
 
         (
             Phase::Committing(committing),
-            vec![MVBAOutput::Broadcast(MvbaMessage::Commit(vote))],
+            vec![self.broadcast(MvbaMessage::Commit(vote))],
         )
     }
 
@@ -754,7 +753,7 @@ where
 
         (
             Phase::Decided(Decided::new(commit_qc.clone(), block)),
-            vec![MVBAOutput::Broadcast(MvbaMessage::CommitQc(commit_qc))],
+            vec![self.broadcast(MvbaMessage::CommitQc(commit_qc))],
         )
     }
 
@@ -813,7 +812,7 @@ where
                 duration: self.context.view_timeout(),
                 timer_event: TimerEvent::ViewTimeout(view),
             },
-            MVBAOutput::Broadcast(MvbaMessage::Timeout(timeout)),
+            self.broadcast(MvbaMessage::Timeout(timeout)),
         ];
 
         (phase, outputs)
@@ -875,7 +874,7 @@ where
         tracing::debug!(slot = ?self.context.slot, view = ?self.view(), "mvba proposing as leader");
         (
             Self::leave_new_view(phase),
-            vec![MVBAOutput::Broadcast(MvbaMessage::PrePrepare(pre_prepare))],
+            vec![self.broadcast(MvbaMessage::PrePrepare(pre_prepare))],
         )
     }
 
@@ -958,6 +957,13 @@ where
     }
 
     // ---------------- small helpers ----------------
+
+    fn broadcast(
+        &self,
+        message: MvbaMessage<V, C>,
+    ) -> MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>> {
+        MVBAOutput::Send(Outbound::broadcast(message))
+    }
 
     /// The paper's `v`, derived from how the view was entered
     fn view(&self) -> FallbackView {

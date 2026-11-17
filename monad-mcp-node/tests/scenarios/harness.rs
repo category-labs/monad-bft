@@ -23,17 +23,17 @@ use std::{
 };
 
 use monad_mcp_cadence::spec::ProposalHeader as _;
-use monad_mcp_common::{Lane, Lanes, Slot, Timestamp, TimestampDelta};
+use monad_mcp_common::{Lane, Lanes, Slot, Timestamp, TimestampDelta, WirePriority};
 use monad_mcp_node::{
     Component, NodeOutput,
-    cadence::{Outbound, slot::chorus::FinalizationPath, types::ProposalId},
+    cadence::{Recipients, slot::chorus::FinalizationPath, types::ProposalId},
     common::NodeId,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
         RepeaterSection, ValidatorConfig,
     },
     da::{self, ProposalKeyPair, ProposalScheme},
-    network::{NodeInbound, NodeMessage, OutboundClass},
+    network::{NodeInbound, NodeMessage, NodeOutbound},
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{
@@ -72,14 +72,21 @@ pub struct ChunkBytes {
     pub charged: u64,
 }
 
-// a message in the simulated network: the node's message, and whether it
-// is part of its sender's first hop. The flag is simulation metadata for the
-// network's priority classes and the receivers' records: the node never sees
-// it, and it costs no bytes
+// a message in the simulated network: the node's message and its priority.
+// The priority is simulation metadata for the network's priority classes and
+// the receivers' records: the receiving node never sees it, and it costs no
+// bytes
 #[derive(Clone)]
 pub struct SimMessage {
     pub message: NodeMessage,
-    pub first_hop: bool,
+    pub priority: WirePriority,
+}
+
+impl SimMessage {
+    // only the first hop of a proposal sends chunks at high priority
+    fn is_first_hop(&self) -> bool {
+        self.priority == WirePriority::High && matches!(self.message, NodeMessage::Chunk(_))
+    }
 }
 
 // What a recording node saw (opt-in, `SimNode::recording`), to compare a
@@ -101,9 +108,6 @@ pub struct SimNode {
     invalid: BTreeMap<Slot, Vec<usize>>,
     // how each slot finalized here
     paths: BTreeMap<Slot, FinalizationPath>,
-    // per own slot, when its first first-hop message left (the seal time,
-    // as encoding is instant here), and its lane
-    first_hops: BTreeMap<Slot, (Time, Lane)>,
     // receiver-side records, when recording
     records: Option<Records>,
     // hashes every message delivered to this node, with its time, in
@@ -129,7 +133,6 @@ impl SimNode {
             finalized: BTreeMap::new(),
             invalid: BTreeMap::new(),
             paths: BTreeMap::new(),
-            first_hops: BTreeMap::new(),
             records: None,
             delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
             chunk_bytes: ChunkBytes::default(),
@@ -175,7 +178,7 @@ impl SimNode {
     fn process(&mut self, ctx: &mut Ctx) {
         while let Some(output) = self.node.poll() {
             match output {
-                NodeOutput::Network(outbound, class) => self.transmit(outbound, class, ctx),
+                NodeOutput::Network(outbound) => self.transmit(outbound, ctx),
                 NodeOutput::Ledger(finalized) => {
                     let pattern = finalized.finalization.pids();
                     // committed, but without a message
@@ -200,18 +203,15 @@ impl SimNode {
     }
 
     // the node's whole outbound path: every message it sends goes through
-    // here to its network stack, which models the uplink, with the outbound
-    // class as the message's first-hop flag (see `first_hop_priority`)
-    fn transmit(&mut self, outbound: Outbound<NodeMessage>, class: OutboundClass, ctx: &mut Ctx) {
+    // here to its network stack, which models the uplink, with the message's
+    // priority (see `first_hop_priority`)
+    fn transmit(&mut self, outbound: NodeOutbound, ctx: &mut Ctx) {
         let net = self.net.expect("node not wired");
-        let first_hop = class == OutboundClass::FirstHop;
-        if first_hop {
-            self.record_first_hop(&outbound, ctx.now());
-        }
-        let wrap = |message| SimMessage { message, first_hop };
-        match outbound {
-            Outbound::Broadcast(message) => {
-                let message = wrap(message);
+        let NodeOutbound { to, message, qos } = outbound;
+        let priority = qos;
+        let message = SimMessage { message, priority };
+        match to {
+            Recipients::Everyone => {
                 ctx.schedule(
                     net,
                     ctx.now(),
@@ -219,8 +219,7 @@ impl SimNode {
                     move |net, ctx| net.broadcast(ctx, message),
                 );
             }
-            Outbound::Unicast(to, message) => {
-                let message = wrap(message);
+            Recipients::Node(to) => {
                 ctx.schedule(
                     net,
                     ctx.now(),
@@ -283,30 +282,8 @@ impl SimNode {
         &self.paths
     }
 
-    // per own slot, when its first hop started to leave, and its lane
-    pub fn first_hops(&self) -> &BTreeMap<Slot, (Time, Lane)> {
-        &self.first_hops
-    }
-
     pub fn records(&self) -> Option<&Records> {
         self.records.as_ref()
-    }
-
-    // a proposal's first hop leaves in one burst: only the first message of
-    // a burst is decoded for its slot
-    fn record_first_hop(&mut self, outbound: &Outbound<NodeMessage>, now: Time) {
-        if self.first_hops.values().next_back().map(|(at, _)| *at) == Some(now) {
-            return;
-        }
-        let Outbound::Unicast(_, NodeMessage::Chunk(bytes)) = outbound else {
-            return;
-        };
-        let Ok(envelope) = da::read_envelope(bytes.clone()) else {
-            return;
-        };
-        let header = envelope.header();
-        let first = (now, header.lane());
-        self.first_hops.entry(header.slot()).or_insert(first);
     }
 
     // a recording node's view of a delivery: first-hop chunks of others'
@@ -316,7 +293,7 @@ impl SimNode {
             return;
         };
         match &message.message {
-            NodeMessage::Chunk(bytes) if message.first_hop => {
+            NodeMessage::Chunk(bytes) if message.is_first_hop() => {
                 let Ok(envelope) = da::read_envelope(bytes.clone()) else {
                     return;
                 };
@@ -366,18 +343,16 @@ impl SimClient for SimNode {
         self.net = Some(net);
     }
 
-    fn receive(&mut self, from: NodeId, message: SimMessage, ctx: &mut Ctx) {
+    fn receive(&mut self, sender: NodeId, message: SimMessage, ctx: &mut Ctx) {
         let _span = self.span().entered();
-        self.record_delivery(ctx.now(), from, &message.message);
+        self.record_delivery(ctx.now(), sender, &message.message);
         // the node loops its own messages back itself
-        if from == self.id {
+        if sender == self.id {
             return;
         }
-        self.record_inbound(ctx.now(), from, &message);
-        let inbound = NodeInbound {
-            from,
-            message: message.message,
-        };
+        self.record_inbound(ctx.now(), sender, &message);
+        let message = message.message;
+        let inbound = NodeInbound { sender, message };
         let now = self.local_now(ctx);
         self.node.handle(now, inbound);
         self.process(ctx);
@@ -585,13 +560,14 @@ pub fn sim_wire_size(message: &SimMessage) -> usize {
     wire_size(&message.message)
 }
 
-// Strict priority for each node's own first-hop shares on its uplink
-// (docs/0005 §5.6), as the network's priority classes: first-hop messages
-// go on the wire at once, everything else waits until the uplink is idle, so
-// a first-hop share waits behind at most the one message already on the
-// wire. `network` must have an egress
+// Strict priority on each node's uplink for the messages it sends at high
+// priority, which are its own first-hop shares and its chunk requests
+// (docs/0005 §5.6), as the network's priority classes: they go on the wire
+// at once, everything else waits until the uplink is idle, so a first-hop
+// share waits behind at most the one message already on the wire. `network`
+// must have an egress
 pub fn first_hop_priority(network: Network<NodeId, SimMessage>) -> Network<NodeId, SimMessage> {
-    network.priority(|message: &SimMessage| u8::from(!message.first_hop), 1)
+    network.priority(|message: &SimMessage| message.priority as u8, 1)
 }
 
 // validators placed over a region table: a node-level latency matrix with a

@@ -17,14 +17,11 @@ use std::collections::BTreeMap;
 
 use super::{
     chunk::{ChunkData, ProposalEnvelope, WireChunkId},
-    types::{NodeId, SignedProposalHeader},
+    types::{NodeId, Outbound, SignedProposalHeader},
 };
 
 // recipients in send order, which decides delivery times
-pub struct Dissemination {
-    pub to: Vec<NodeId>,
-    pub envelope: ProposalEnvelope,
-}
+pub type Dissemination = Outbound<ProposalEnvelope, Vec<NodeId>>;
 
 pub(crate) struct ChunkEgress {
     released: bool,
@@ -54,19 +51,17 @@ impl ChunkEgress {
         }
         if let Some(last) = self.pending.last_mut()
             && last.to == recipients
-            && last.envelope.header() == header
+            && last.message.header() == header
         {
             // merge with existing envelop
-            last.envelope.insert(chunk_id, data);
+            last.message.insert(chunk_id, data);
             return;
         }
 
         let chunks = BTreeMap::from([(chunk_id, data)]);
         let envelope = ProposalEnvelope::new(header.clone(), chunks);
-        self.pending.push(Dissemination {
-            to: recipients,
-            envelope,
-        });
+        let dissemination = Dissemination::multicast(recipients, envelope);
+        self.pending.push(dissemination);
     }
 
     pub(crate) fn enqueue_header(
@@ -78,10 +73,7 @@ impl ChunkEgress {
             return;
         }
         let envelope = ProposalEnvelope::from_header(header.clone());
-        let dissemination = Dissemination {
-            to: recipients,
-            envelope,
-        };
+        let dissemination = Dissemination::multicast(recipients, envelope);
         self.pending.push(dissemination);
     }
 
@@ -137,7 +129,7 @@ mod tests {
         let messages = egress.drain();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].to, to([2, 3]));
-        assert_eq!(messages[0].envelope.chunk_data().len(), 2);
+        assert_eq!(messages[0].message.chunk_data().len(), 2);
         assert!(egress.drain().is_empty());
     }
 
@@ -156,8 +148,8 @@ mod tests {
 
         let messages = egress.drain();
         assert_eq!(messages.len(), 4);
-        for message in &messages {
-            assert_eq!(message.envelope.chunk_data().len(), 1);
+        for dissemination in &messages {
+            assert_eq!(dissemination.message.chunk_data().len(), 1);
         }
     }
 

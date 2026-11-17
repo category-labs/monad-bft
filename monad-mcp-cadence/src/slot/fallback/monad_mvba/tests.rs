@@ -2047,6 +2047,17 @@ mod toy_value {
         })
     }
 
+    // the messages that the outputs send
+    fn sent<M, T>(outputs: Vec<MVBAOutput<M, T>>) -> Vec<M> {
+        let mut sent = Vec::new();
+        for output in outputs {
+            if let MVBAOutput::Send(outbound) = output {
+                sent.push(outbound.message);
+            }
+        }
+        sent
+    }
+
     /// The happy path at a value type that is not a metablock: a proposal is
     /// accepted, prepare and commit quorums form over the projection, and the
     /// decision hands back the value itself
@@ -2072,10 +2083,10 @@ mod toy_value {
             &leader.keypair(),
         );
         instance.handle_message_from(leader, MvbaMessage::PrePrepare(proposal));
+        let prepares = sent(drain(&mut instance));
+        let mut prepares = prepares.iter();
         assert!(
-            drain(&mut instance)
-                .into_iter()
-                .any(|output| matches!(output, MVBAOutput::Broadcast(MvbaMessage::Prepare(_)))),
+            prepares.any(|message| matches!(message, MvbaMessage::Prepare(_))),
             "an accepted proposal is voted to prepare"
         );
 
@@ -2087,10 +2098,10 @@ mod toy_value {
             );
             instance.handle_message_from(node, MvbaMessage::Prepare(msg));
         }
+        let commits = sent(drain(&mut instance));
+        let mut commits = commits.iter();
         assert!(
-            drain(&mut instance)
-                .into_iter()
-                .any(|output| matches!(output, MVBAOutput::Broadcast(MvbaMessage::Commit(_)))),
+            commits.any(|message| matches!(message, MvbaMessage::Commit(_))),
             "a prepare certificate over the projection is voted to commit"
         );
 

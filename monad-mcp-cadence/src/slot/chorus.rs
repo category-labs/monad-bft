@@ -20,7 +20,7 @@ use alloy_rlp::{Decodable, Encodable};
 
 pub use super::fast::{BatchVoteMsg, Entry};
 use super::{
-    SlotConsensus, SlotOutput,
+    Outbound, SlotConsensus, SlotOutput,
     fallback::{
         FallbackCommitQc, MVBAOutput, Metablock, Mvba as _, monad_mvba,
         monad_mvba::{MonadMvba, MvbaContext},
@@ -31,8 +31,8 @@ use super::{
     },
     types::{
         HeaderAuth, KeyPair, Lane, Lanes, NodeId, ProposalId, ProposerSchedule, ProposerSet,
-        SignatureCollection, SignedProposalHeader, Slot, SlotScoped, TimestampDelta, ValidatorData,
-        ValidatorSet,
+        RepeatUntil, SignatureCollection, SignedProposalHeader, Slot, SlotScoped, TimestampDelta,
+        ValidatorData, ValidatorSet,
     },
 };
 
@@ -560,7 +560,13 @@ impl Chorus {
 
     // helpers mostly for documentation purpose
     fn broadcast(&mut self, msg: impl Into<ChorusMessage>) {
-        self.push(SlotOutput::Broadcast(msg.into()));
+        self.send(Outbound::broadcast(msg.into()));
+    }
+
+    // Each message of the slot is repeated until the slot commits.
+    fn send(&mut self, outbound: Outbound<ChorusMessage>) {
+        let outbound = outbound.repeat_until(RepeatUntil::Commit(self.slot));
+        self.push(SlotOutput::Send(outbound));
     }
 
     fn schedule_timer(&mut self, delta: TimestampDelta, event: TimerEvent) {
@@ -595,11 +601,7 @@ impl Chorus {
         // which holds the decide-broadcast certificate
         while let Some(output) = self.fallback.poll() {
             match output {
-                MVBAOutput::Broadcast(message) => self.broadcast(message),
-                MVBAOutput::Unicast { to, message } => self.push(SlotOutput::Unicast {
-                    to,
-                    message: message.into(),
-                }),
+                MVBAOutput::Send(outbound) => self.send(outbound.map(Into::into)),
                 MVBAOutput::ScheduleTimer {
                     duration,
                     timer_event,
@@ -785,7 +787,10 @@ mod tests {
         voter.handle_deadline();
         let batch_vote = std::iter::from_fn(|| voter.poll())
             .find_map(|output| match output {
-                SlotOutput::Broadcast(message @ ChorusMessage::BatchVote(_)) => Some(message),
+                SlotOutput::Send(Outbound {
+                    message: message @ ChorusMessage::BatchVote(_),
+                    ..
+                }) => Some(message),
                 _ => None,
             })
             .expect("the deadline casts a batch vote");

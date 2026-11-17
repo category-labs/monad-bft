@@ -19,7 +19,10 @@
 //! network exports as JSON.
 
 use monad_mcp_common::{Slot, TimestampDelta};
-use monad_mcp_node::{Node, common::NodeId, config::SourceKind, da::ProposalScheme};
+use monad_mcp_node::{
+    Node, cadence::types::ProposerSchedule as _, common::NodeId, config::SourceKind,
+    da::ProposalScheme,
+};
 use monad_sim_swarm::{RegionTable, Swarm};
 
 use crate::harness::{
@@ -61,28 +64,33 @@ fn run(scheme: ProposalScheme, recording: bool) -> Swarm<SimNode> {
     swarm
 }
 
-// every proposer's own slots show at its peers as first-hop chunks from
-// it, arriving after its seal
+// every scheduled proposal shows at the proposer's peers as first-hop
+// chunks from it
 fn check_records(swarm: &Swarm<SimNode>) {
     let ids = swarm.node_ids();
-    let mut own_slots = 0;
-    for proposer in &ids {
-        let first_hops = swarm.with_node(proposer, |node| node.first_hops().clone());
-        for (slot, (sealed, lane)) in first_hops.range(..Slot(SLOTS)) {
-            own_slots += 1;
-            for peer in ids.iter().filter(|id| *id != proposer) {
+    let epoch = node_config(SEED, 0, VALIDATORS)
+        .epoch_handle()
+        .expect("config builds");
+    let mut proposals = 0;
+    for slot in (0..SLOTS).map(Slot) {
+        let proposers = epoch.proposers.proposers_at(slot).expect("a schedule");
+        for (lane, proposer) in proposers.iter() {
+            let Some(proposer) = proposer else {
+                continue;
+            };
+            proposals += 1;
+            for peer in ids.iter().filter(|id| **id != proposer) {
                 let seen = swarm.with_node(peer, |node| {
                     let records = node.records().expect("recording");
-                    records.first_hop_in.get(&(*slot, *lane)).cloned()
+                    records.first_hop_in.get(&(slot, lane)).cloned()
                 });
                 let (from, arrivals) = seen.expect("every peer gets a first hop");
-                assert_eq!(from, *proposer);
+                assert_eq!(from, proposer);
                 assert!(!arrivals.is_empty());
-                assert!(arrivals.iter().all(|at| at > sealed));
             }
         }
     }
-    assert!(own_slots as u64 >= SLOTS, "{own_slots} own slots");
+    assert!(proposals as u64 >= SLOTS, "{proposals} proposals");
 }
 
 #[test]

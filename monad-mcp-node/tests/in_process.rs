@@ -27,12 +27,12 @@ use monad_mcp_cadence::ledger::{FinalizationPath, LedgerReader, LedgerWriter, Tx
 use monad_mcp_common::{Proposal, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, FinalizedSlot, Node, NodeOutput, NodeRouter, Router,
-    cadence::slot::chorus::ChorusMessage,
+    cadence::{Recipients, slot::chorus::ChorusMessage},
     common::NodeId,
     component::{Proposing, ProposingComponent, ProposingInput, ProposingOutput},
     config::{NodeConfig, SourceKind},
     ledger::new_block,
-    network::{NodeInbound, NodeMessage, NodeOutbound},
+    network::{NodeInbound, NodeMessage},
 };
 
 const GENESIS_MS: u64 = 1_000_000;
@@ -68,7 +68,7 @@ impl<R: Router> Harness<R> {
     // what the rpc sends: a tx frame under a validator's id
     fn deliver(&mut self, tx: &Tx) {
         let inbound = NodeInbound {
-            from: NodeId::dummy(0),
+            sender: NodeId::dummy(0),
             message: NodeMessage::Tx(tx.to_rlp()),
         };
         self.node.handle(self.now, inbound);
@@ -101,10 +101,10 @@ impl<R: Router> Harness<R> {
         while let Some(output) = self.node.poll() {
             match output {
                 NodeOutput::Ledger(finalized) => self.finalized.push(finalized),
-                NodeOutput::Network(NodeOutbound::Unicast(to, message), _) if to == self_id => {
+                NodeOutput::Network(outbound) if outbound.to == Recipients::Node(self_id) => {
                     let inbound = NodeInbound {
-                        from: self_id,
-                        message,
+                        sender: self_id,
+                        message: outbound.message,
                     };
                     self.node.handle(self.now, inbound);
                 }

@@ -19,7 +19,10 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use super::{
     super::{
-        super::types::{Slot, TimestampDelta},
+        super::{
+            super::message::Outbound,
+            types::{Slot, TimestampDelta},
+        },
         MVBAOutput, ValidateInput, Votable,
     },
     TimerEvent,
@@ -113,14 +116,12 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
     where
         M: From<BlockRequestMsg<V::Entries>>,
     {
+        let request = BlockRequestMsg {
+            slot: self.slot,
+            entries: entries.clone(),
+        };
         [
-            MVBAOutput::Broadcast(
-                BlockRequestMsg {
-                    slot: self.slot,
-                    entries: entries.clone(),
-                }
-                .into(),
-            ),
+            MVBAOutput::Send(Outbound::broadcast(request.into())),
             MVBAOutput::ScheduleTimer {
                 duration: self.retransmit_timeout,
                 timer_event: TimerEvent::BlockRetransmit(entries.clone()),

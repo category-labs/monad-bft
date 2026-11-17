@@ -39,9 +39,7 @@ pub use egress::Dissemination;
 pub use encoding_scheme::{InvalidEncoding, Resolved};
 pub use env::ProposalKeyPair;
 pub use header::{InvalidProposalHeader, header_auth};
-pub use runtime::{
-    ChunkRecoveryRequest, DAConfig, DAOutput, DARuntime, EpochHandle, ProposalScheme,
-};
+pub use runtime::{ChunkPull, DAConfig, DAOutput, DARuntime, EpochHandle, ProposalScheme};
 #[cfg(feature = "enable_hollow")]
 pub use wire::nominal_len;
 pub use wire::{

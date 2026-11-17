@@ -31,12 +31,12 @@ use crate::{
     config::{NodeConfig, SourceKind},
     da::DARuntime,
     finalization::{FinalizationCollector, FinalizedSlot},
-    network::{NodeInbound, NodeOutbound, OutboundClass},
+    network::{NodeInbound, NodeOutbound},
     router::{Effect, NodeRouter, Routed, Router, Sink},
 };
 
 pub enum NodeOutput {
-    Network(NodeOutbound, OutboundClass),
+    Network(NodeOutbound),
     Ledger(FinalizedSlot),
 }
 
@@ -235,9 +235,7 @@ impl Sink<Routed> for NodeSink<'_> {
                     repeater.handle(now, input);
                 }
             }
-            Routed::Network(outbound, class) => {
-                self.outbox.push_back(NodeOutput::Network(outbound, class));
-            }
+            Routed::Network(outbound) => self.outbox.push_back(NodeOutput::Network(outbound)),
             Routed::Ledger(finalized) => self.outbox.push_back(NodeOutput::Ledger(finalized)),
         }
     }

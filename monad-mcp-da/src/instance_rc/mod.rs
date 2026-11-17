@@ -293,8 +293,8 @@ mod tests {
     // the wire ids in the drained messages, sorted
     fn sent(egress: &mut ChunkEgress) -> Vec<WireChunkId> {
         let mut ids = Vec::new();
-        for message in egress.drain() {
-            ids.extend(message.envelope.chunk_data().keys().copied());
+        for dissemination in egress.drain() {
+            ids.extend(dissemination.message.chunk_data().keys().copied());
         }
         ids.sort();
         ids
@@ -464,8 +464,8 @@ mod tests {
         let [reply] = replies.as_slice() else {
             panic!("one reply");
         };
-        assert!(reply.envelope.header_only());
-        assert_eq!(reply.envelope.header(), &header);
+        assert!(reply.message.header_only());
+        assert_eq!(reply.message.header(), &header);
         assert_eq!(reply.to, [NodeId::dummy(3)]);
     }
 

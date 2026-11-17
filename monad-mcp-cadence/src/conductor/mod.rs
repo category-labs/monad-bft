@@ -30,7 +30,10 @@ pub mod dummy;
 use acs::Acs;
 pub use deadline_agreement::{DeadlineAgreementManager, DeadlineAgreementMessage};
 
-use super::types::{self, NodeId, Slot, Timestamp, TimestampDelta, WindowId};
+use super::{
+    message::Outbound,
+    types::{self, NodeId, Slot, Timestamp, TimestampDelta, WindowId},
+};
 
 pub trait Conductor
 where
@@ -128,7 +131,7 @@ pub enum ConductorOutput<C>
 where
     C: Conductor,
 {
-    Broadcast(C::Message),
+    Send(Outbound<C::Message>),
     ScheduleAlarm(Timestamp, C::Alarm),
 
     // Open a batch of slots each with its deadline.
@@ -419,10 +422,9 @@ where
         }
         if let Some(cap) = self.completion_tracker.advance_on_completion(slot)? {
             self.outputs.push_back(ConductorOutput::CloseSlots { cap });
-            self.outputs
-                .push_back(ConductorOutput::Broadcast(ConductorMessage::CapAdvance(
-                    CapAdvance { cap },
-                )));
+            let message = ConductorMessage::CapAdvance(CapAdvance { cap });
+            let outbound = Outbound::broadcast(message);
+            self.outputs.push_back(ConductorOutput::Send(outbound));
         }
 
         self.try_run_deadline_agreement(slot_completion)
@@ -475,8 +477,10 @@ where
     }
 
     fn poll_deadline_agreement(&mut self) -> Result<(), ConductorError> {
-        while let Some(output) = self.deadline_agreement_manager.poll() {
-            self.outputs.push_back(output);
+        while let Some(message) = self.deadline_agreement_manager.poll() {
+            let message = ConductorMessage::DeadlineAgreement(message);
+            let outbound = Outbound::broadcast(message);
+            self.outputs.push_back(ConductorOutput::Send(outbound));
         }
 
         // The decision always targets the window at the open-window cap: the
@@ -731,9 +735,10 @@ mod tests {
         outputs
             .iter()
             .filter_map(|output| match output {
-                ConductorOutput::Broadcast(ConductorMessage::CapAdvance(CapAdvance { cap })) => {
-                    Some(*cap)
-                }
+                ConductorOutput::Send(Outbound {
+                    message: ConductorMessage::CapAdvance(CapAdvance { cap }),
+                    ..
+                }) => Some(*cap),
                 _ => None,
             })
             .collect()

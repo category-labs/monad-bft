@@ -21,8 +21,8 @@ use std::{
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use super::{
-    SlotConsensus, SlotOutput,
-    types::{IsVote, KeyPair, NodeId, Slot, SlotScoped, VoteMsg},
+    Outbound, SlotConsensus, SlotOutput,
+    types::{IsVote, KeyPair, NodeId, RepeatUntil, Slot, SlotScoped, VoteMsg},
 };
 use crate::spec::vote::{SigningDomain, assert_signing_prefix};
 
@@ -95,7 +95,9 @@ impl SlotConsensus for DummySlotConsensus {
 
     fn handle_deadline(&mut self) {
         let vote = VoteMsg::new_signed(self.slot, DummyVote, &self.key);
-        self.outputs.push_back(SlotOutput::Broadcast(vote));
+        let outbound = Outbound::broadcast(vote);
+        let outbound = outbound.repeat_until(RepeatUntil::Commit(self.slot));
+        self.outputs.push_back(SlotOutput::Send(outbound));
     }
 
     fn handle_timer(&mut self, _timer: Self::Timer) {

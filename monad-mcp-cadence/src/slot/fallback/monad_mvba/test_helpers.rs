@@ -26,6 +26,7 @@ pub(super) use super::super::super::super::test_utils::dummy_index;
 use super::{
     super::{
         super::{
+            super::message::{Outbound, Recipients},
             fast::{CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry},
             types::{
                 HeaderAuth, IsVote, Lane, Lanes, NodeId, ProposalId, ProposalScope, Slot, StrongQc,
@@ -378,8 +379,12 @@ pub(super) fn broadcasts(outputs: &[Output]) -> Vec<&Message> {
     outputs
         .iter()
         .filter_map(|output| match output {
-            MVBAOutput::Broadcast(message) => Some(message),
-            MVBAOutput::Unicast { .. } | MVBAOutput::ScheduleTimer { .. } => None,
+            MVBAOutput::Send(Outbound {
+                to: Recipients::Everyone,
+                message,
+                ..
+            }) => Some(message),
+            _ => None,
         })
         .collect()
 }
@@ -388,8 +393,12 @@ pub(super) fn unicasts(outputs: &[Output]) -> Vec<(NodeId, &Message)> {
     outputs
         .iter()
         .filter_map(|output| match output {
-            MVBAOutput::Unicast { to, message } => Some((*to, message)),
-            MVBAOutput::Broadcast(_) | MVBAOutput::ScheduleTimer { .. } => None,
+            MVBAOutput::Send(Outbound {
+                to: Recipients::Node(to),
+                message,
+                ..
+            }) => Some((*to, message)),
+            _ => None,
         })
         .collect()
 }
@@ -399,7 +408,7 @@ pub(super) fn scheduled_timers(outputs: &[Output]) -> Vec<TimerEvent> {
         .iter()
         .filter_map(|output| match output {
             MVBAOutput::ScheduleTimer { timer_event, .. } => Some(timer_event.clone()),
-            MVBAOutput::Broadcast(_) | MVBAOutput::Unicast { .. } => None,
+            MVBAOutput::Send(_) => None,
         })
         .collect()
 }

@@ -28,7 +28,8 @@ use super::{
         encoding_scheme::{DAEncodingScheme, Decoder, Encoded, d33},
         runtime::{EpochHandle, ProposalScheme},
         types::{
-            EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
+            EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair,
+            SignedProposalHeader, WirePriority,
         },
     },
     signed_bytes,
@@ -170,15 +171,15 @@ impl AuthoredProposal {
             let data = self.encoded.chunk_data(chunk_id);
             let mut envelope = ProposalEnvelope::from_header(self.header.clone());
             envelope.insert(chunk_id.to_wire(), data);
-            let to = [*recipient].into();
-            disseminations.push(Dissemination { to, envelope });
+            let dissemination = Dissemination::multicast(vec![*recipient], envelope);
+            disseminations.push(dissemination.with_priority(WirePriority::High));
         }
 
         for node_index in self.header_only {
             let node = self.assignment.node(node_index);
             let envelope = ProposalEnvelope::from_header(self.header.clone());
-            let to = [*node].into();
-            disseminations.push(Dissemination { to, envelope });
+            let dissemination = Dissemination::multicast(vec![*node], envelope);
+            disseminations.push(dissemination.with_priority(WirePriority::High));
         }
 
         disseminations
@@ -238,9 +239,9 @@ mod tests {
     // the first hop as the runtime puts it on the wire
     fn packets(proposal: AuthoredProposal) -> Vec<(NodeId, Bytes)> {
         let mut packets = Vec::new();
-        for Dissemination { to, envelope } in proposal.into_disseminations() {
-            for node in to {
-                for packet in write_envelope(&envelope) {
+        for dissemination in proposal.into_disseminations() {
+            for node in dissemination.to {
+                for packet in write_envelope(&dissemination.message) {
                     packets.push((node, packet));
                 }
             }
@@ -300,9 +301,10 @@ mod tests {
     // the first hop as (recipient, envelope), in send order
     fn sends(disseminations: Vec<Dissemination>) -> Vec<(NodeId, ProposalEnvelope)> {
         let mut sends = Vec::new();
-        for Dissemination { to, envelope } in disseminations {
-            for node in to {
-                sends.push((node, envelope.clone()));
+        for dissemination in disseminations {
+            assert_eq!(dissemination.qos.priority, WirePriority::High);
+            for node in dissemination.to {
+                sends.push((node, dissemination.message.clone()));
             }
         }
         sends

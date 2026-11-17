@@ -21,8 +21,8 @@ use bytes::Bytes;
 pub use monad_mcp_common::containers::{ValidatorIndex, ValidatorMap, ValidatorSet};
 use monad_mcp_common::spec::{KeyPair as _, Stake as _};
 pub(crate) use monad_mcp_common::{
-    Lane, Lanes, MAX_PROPOSER_SET_SIZE, ProposalScope, Slot, SlotScoped, Timestamp, TimestampDelta,
-    WindowId,
+    Lane, Lanes, MAX_PROPOSER_SET_SIZE, ProposalScope, RepeatUntil, Slot, SlotScoped, Timestamp,
+    TimestampDelta, WindowId,
 };
 
 // the environment this module subtree is instantiated.

@@ -14,23 +14,20 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_mcp_cadence::{ledger::Tx, spec::Serializable as _};
-use monad_mcp_common::Timestamp;
+use monad_mcp_common::{Outbound, ProposalScope, Timestamp, WirePriority};
 
 use crate::{
-    cadence::{CadenceMessage, Outbound, SlotLifecycle, slot::chorus::ChorusMessage},
+    cadence::{self, CadenceMessage, Recipients, SlotLifecycle, slot::chorus::ChorusMessage},
     common::NodeId,
     component::{
         CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, FinalizationInput, ProposingInput,
-        ProposingOutput, Recipients, RepeaterInput, RepeaterOutput,
+        ProposingOutput, RepeaterInput, RepeaterOutput,
     },
     config::NodeConfig,
-    da::{
-        ChunkRecoveryRequest, DAOutput, Dissemination, ProposalScheme, read_envelope,
-        write_envelope,
-    },
+    da::{ChunkPull, DAOutput, Dissemination, ProposalScheme, read_envelope, write_envelope},
     epoch::EpochHandle,
     finalization::FinalizedSlot,
-    network::{NodeInbound, NodeMessage, NodeOutbound, OutboundClass},
+    network::{NodeInbound, NodeMessage, NodeOutbound},
 };
 
 // everything the wiring takes in, named by where it comes from
@@ -50,7 +47,7 @@ pub enum Routed {
     Finalization(FinalizationInput),
     Proposing(ProposingInput),
     Repeater(RepeaterInput<ChorusMessage>),
-    Network(NodeOutbound, OutboundClass),
+    Network(NodeOutbound),
     // todo: the ledger / execution boundary
     Ledger(FinalizedSlot),
 }
@@ -152,28 +149,24 @@ impl NodeRouter {
 
     fn route_cadence_outbound(
         &mut self,
-        event: Outbound<CadenceWireMsg>,
+        outbound: cadence::Outbound<CadenceWireMsg>,
         sink: &mut impl Sink<Routed>,
     ) {
-        match event {
-            Outbound::Broadcast(message) => {
-                record(Recipients::Everyone, &message, sink);
-                let node_message = NodeMessage::Cadence(message.serialize());
-                let outbound = Outbound::Broadcast(node_message);
-                sink.send(Routed::Network(outbound, OutboundClass::Standard));
-                self.loopback(message, sink);
-            }
+        let Outbound { to, message, qos } = outbound;
+        if to == Recipients::Node(self.epoch_handle.self_id) {
+            self.loopback(message, sink);
+            return;
+        }
 
-            Outbound::Unicast(to, message) => {
-                if to == self.epoch_handle.self_id {
-                    self.loopback(message, sink);
-                    return;
-                }
-                record(Recipients::Node(to), &message, sink);
-                let node_message = NodeMessage::Cadence(message.serialize());
-                let outbound = Outbound::Unicast(to, node_message);
-                sink.send(Routed::Network(outbound, OutboundClass::Standard));
-            }
+        record(to, &message, sink);
+        let outbound = NodeOutbound {
+            to,
+            message: NodeMessage::Cadence(message.serialize()),
+            qos: qos.priority,
+        };
+        sink.send(Routed::Network(outbound));
+        if to == Recipients::Everyone {
+            self.loopback(message, sink);
         }
     }
 
@@ -228,61 +221,62 @@ fn route_inbound(
 ) {
     use monad_mcp_cadence::spec::Deserializable as _;
 
-    let NodeInbound { from, message } = inbound;
+    let NodeInbound { sender, message } = inbound;
     match message {
         NodeMessage::Cadence(bytes) => {
             let Ok(message) = CadenceWireMsg::deserialize(&bytes) else {
-                tracing::debug!(?from, "malformed cadence message");
+                tracing::debug!(?sender, "malformed cadence message");
                 return;
             };
             if observe_votes {
-                observe_vote(now, from, &message, sink);
+                observe_vote(now, sender, &message, sink);
             }
             // todo: signature checks for a transport that does
             // not authenticate the sender.
 
             // todo: verify slot number against current state
-            sink.send(Routed::Cadence(CadenceInput::Message(from, message)));
+            sink.send(Routed::Cadence(CadenceInput::Message(sender, message)));
         }
 
         NodeMessage::Chunk(bytes) => {
             let Ok(envelope) = read_envelope(bytes) else {
-                tracing::debug!(?from, "malformed chunk packet");
+                tracing::debug!(?sender, "malformed chunk packet");
                 return;
             };
-            sink.send(Routed::DA(DAInput::Envelope(from, envelope)));
+            sink.send(Routed::DA(DAInput::Envelope(sender, envelope)));
         }
 
         NodeMessage::ChunkRequest(bytes) => {
-            let Ok(request) = ChunkRecoveryRequest::deserialize(&bytes) else {
-                tracing::debug!(?from, "malformed chunk request");
+            let Ok(request) = ChunkPull::deserialize(&bytes) else {
+                tracing::debug!(?sender, "malformed chunk request");
                 return;
             };
-            sink.send(Routed::DA(DAInput::ChunkRequest(from, request)));
+            sink.send(Routed::DA(DAInput::ChunkRequest(sender, request)));
         }
 
         NodeMessage::Tx(bytes) => {
             let tx = match Tx::decode_exact(&bytes) {
                 Ok(tx) => tx,
                 Err(error) => {
-                    tracing::debug!(?from, %error, "malformed tx");
+                    tracing::debug!(?sender, %error, "malformed tx");
                     return;
                 }
             };
-            let input = ProposingInput::Tx { at: now, from, tx }; // demo(tx-timeline)
-            sink.send(Routed::Proposing(input));
+            let from = sender;
+            let proposal = ProposingInput::Tx { at: now, from, tx }; // demo(tx-timeline)
+            sink.send(Routed::Proposing(proposal));
         }
     }
 }
 
 fn route_repeat((to, message): RepeaterOutput<ChorusMessage>, sink: &mut impl Sink<Routed>) {
     let message: CadenceWireMsg = CadenceMessage::Slot(message);
-    let node_message = NodeMessage::Cadence(message.serialize());
-    let outbound = match to {
-        Recipients::Everyone => Outbound::Broadcast(node_message),
-        Recipients::Node(to) => Outbound::Unicast(to, node_message),
+    let outbound = NodeOutbound {
+        to,
+        message: NodeMessage::Cadence(message.serialize()),
+        qos: WirePriority::Regular,
     };
-    sink.send(Routed::Network(outbound, OutboundClass::Standard));
+    sink.send(Routed::Network(outbound));
 }
 
 fn route_proposal(
@@ -314,11 +308,11 @@ fn route_da(now: Timestamp, output: DAOutput, sink: &mut impl Sink<Routed>) {
             sink.send(Routed::Cadence(CadenceInput::DAEvent(slot, event)));
         }
         DAOutput::Resolved {
-            slot,
-            lane,
+            scope,
             pid,
             message,
         } => {
+            let ProposalScope { slot, lane } = scope;
             let input = FinalizationInput::Resolved {
                 at: now, // demo(tx-timeline)
                 slot,
@@ -328,30 +322,23 @@ fn route_da(now: Timestamp, output: DAOutput, sink: &mut impl Sink<Routed>) {
             };
             sink.send(Routed::Finalization(input));
         }
-        DAOutput::Disseminate(dissemination) => {
-            route_dissemination(dissemination, OutboundClass::Standard, sink);
-        }
-        DAOutput::FirstHop(dissemination) => {
-            route_dissemination(dissemination, OutboundClass::FirstHop, sink);
-        }
-        DAOutput::RecoveryRequest { to, request } => {
-            let message = NodeMessage::ChunkRequest(request.serialize());
-            let outbound = Outbound::Unicast(to, message);
-            sink.send(Routed::Network(outbound, OutboundClass::Standard));
+        DAOutput::Send(dissemination) => route_dissemination(dissemination, sink),
+        DAOutput::Pull(Outbound { to, message, qos }) => {
+            let message = NodeMessage::ChunkRequest(message.serialize());
+            let outbound = NodeOutbound::unicast(to, message).with_qos(qos.priority);
+            sink.send(Routed::Network(outbound));
         }
     }
 }
 
-fn route_dissemination(
-    Dissemination { to, envelope }: Dissemination,
-    class: OutboundClass,
-    sink: &mut impl Sink<Routed>,
-) {
-    let packets = write_envelope(&envelope);
+fn route_dissemination(dissemination: Dissemination, sink: &mut impl Sink<Routed>) {
+    let Dissemination { to, message, qos } = dissemination;
+    let packets = write_envelope(&message);
     for node in to {
         for packet in &packets {
             let message = NodeMessage::Chunk(packet.clone());
-            sink.send(Routed::Network(Outbound::Unicast(node, message), class));
+            let outbound = NodeOutbound::unicast(node, message).with_qos(qos.priority);
+            sink.send(Routed::Network(outbound));
         }
     }
 }
@@ -404,7 +391,7 @@ mod tests {
 
     fn inbound(message: NodeMessage) -> Effect {
         Effect::Network(NodeInbound {
-            from: NodeId::dummy(0),
+            sender: NodeId::dummy(0),
             message,
         })
     }

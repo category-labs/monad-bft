@@ -19,7 +19,10 @@ pub mod dummy;
 pub mod fallback;
 mod fast;
 
-use super::types::{self, NodeId, Slot, SlotScoped, TimestampDelta};
+use super::{
+    message::Outbound,
+    types::{self, NodeId, Slot, SlotScoped, TimestampDelta},
+};
 
 /// A single-slot consensus algorithm
 pub trait SlotConsensus: Sized {
@@ -59,13 +62,9 @@ pub enum SlotOutput<S: SlotConsensus> {
     /// wins.
     ScheduleTimer(TimestampDelta, S::Timer),
 
-    /// Broadcast a message to all peer validators (including self)
-    /// The message is expected to be looped back to self via
-    /// SlotConsensusInput.
-    Broadcast(S::Message),
-
-    /// Send a message to a single peer validator
-    Unicast { to: NodeId, message: S::Message },
+    /// Send a message to validators of the slot. A recipient can be this
+    /// validator: the message then comes back through handle_message.
+    Send(Outbound<S::Message>),
 
     /// Effect directed at a local component
     Local(S::LocalOut),

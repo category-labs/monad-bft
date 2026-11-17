@@ -89,6 +89,110 @@ pub trait SlotScoped {
     fn slot(&self) -> Slot;
 }
 
+// A message on its way out, with its recipients and delivery contract.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Outbound<M, R, Q = Qos> {
+    pub to: R,
+    pub message: M,
+    pub qos: Q,
+}
+
+impl<M, R, Q> Outbound<M, R, Q> {
+    pub fn with_qos(self, qos: Q) -> Self {
+        Self { qos, ..self }
+    }
+
+    pub fn map<N>(self, wrap: impl FnOnce(M) -> N) -> Outbound<N, R, Q> {
+        Outbound {
+            to: self.to,
+            message: wrap(self.message),
+            qos: self.qos,
+        }
+    }
+}
+
+// todo: name the recipients by slot and validator index
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Recipients<N> {
+    Everyone,
+    Node(N),
+}
+
+impl<M, N, Q> Outbound<M, Recipients<N>, Q> {
+    pub fn broadcast(message: M) -> Self
+    where
+        Q: Default,
+    {
+        let to = Recipients::Everyone;
+        let qos = Q::default();
+        Self { to, message, qos }
+    }
+
+    pub fn unicast(to: N, message: M) -> Self
+    where
+        Q: Default,
+    {
+        let to = Recipients::Node(to);
+        let qos = Q::default();
+        Self { to, message, qos }
+    }
+}
+
+impl<M, N, Q> Outbound<M, Vec<N>, Q> {
+    // recipients in send order
+    pub fn multicast(to: Vec<N>, message: M) -> Self
+    where
+        Q: Default,
+    {
+        let qos = Q::default();
+        Self { to, message, qos }
+    }
+}
+
+// A message with its authenticated sender.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Inbound<M, S> {
+    pub sender: S,
+    pub message: M,
+}
+
+// The delivery contract of a message.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Qos {
+    pub priority: WirePriority,
+    // None: the message is sent once
+    pub repeat_until: Option<RepeatUntil>,
+}
+
+// The priority values of the authenticated udp transport.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum WirePriority {
+    High = 0,
+    #[default]
+    Regular = 1,
+}
+
+// The event that ends the repeats of a message.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RepeatUntil {
+    // the slot commits
+    Commit(Slot),
+    // the cap is past the slot
+    CapAdvanced(Slot),
+}
+
+impl<M, R> Outbound<M, R, Qos> {
+    pub fn with_priority(mut self, priority: WirePriority) -> Self {
+        self.qos.priority = priority;
+        self
+    }
+
+    pub fn repeat_until(mut self, event: RepeatUntil) -> Self {
+        self.qos.repeat_until = Some(event);
+        self
+    }
+}
+
 // the max number of lanes we currently permit
 pub const MAX_PROPOSER_SET_SIZE: usize = 5;
 

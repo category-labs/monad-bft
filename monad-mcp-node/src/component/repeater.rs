@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, VecDeque};
 use monad_mcp_common::{Slot, SlotScoped, Timestamp, TimestampDelta};
 
 use super::Component;
-use crate::common::NodeId;
+use crate::cadence::Recipients;
 
 #[derive(Clone, Copy)]
 pub struct RepeaterConfig {
@@ -31,12 +31,6 @@ pub struct RepeaterConfig {
     /// A finalized slot's certificate is repeated until slot < cap -
     /// retention, and always at least once however fast the cap moves
     pub certificate_retention: u64,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Recipients {
-    Everyone,
-    Node(NodeId),
 }
 
 #[derive(Clone, PartialEq)]
@@ -211,6 +205,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::NodeId;
 
     const INTERVAL: TimestampDelta = TimestampDelta::from_millis(5_000);
 

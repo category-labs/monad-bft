@@ -27,9 +27,9 @@ use super::{
     header::InvalidProposalHeader,
     slot_rc::SlotRaptorcast,
     types::{
-        ChorusDACommand, ChorusDAEvent, HeaderAuth, Lane, NodeId, Proposal, ProposalId,
-        ProposalKeyPair, ProposerSchedule, Slot, SlotLifecycle, Timestamp, TimestampDelta,
-        ValidatorData, unix_seconds,
+        ChorusDACommand, ChorusDAEvent, HeaderAuth, Lane, NodeId, Outbound, Proposal, ProposalId,
+        ProposalKeyPair, ProposalScope, ProposerSchedule, Qos, Slot, SlotLifecycle, Timestamp,
+        TimestampDelta, ValidatorData, WirePriority, unix_seconds,
     },
     wire::proposal::AuthoredProposal,
 };
@@ -107,7 +107,7 @@ pub struct DARuntime<S> {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ChunkRecoveryRequest {
+pub struct ChunkPull {
     pub slot: Slot,
     pub lane: Lane,
     pub request: ChunkRequest,
@@ -175,7 +175,7 @@ where
             None => authored.into_disseminations(),
         };
         for dissemination in disseminations {
-            self.outbox.push_back(DAOutput::FirstHop(dissemination));
+            self.outbox.push_back(DAOutput::Send(dissemination));
         }
     }
 
@@ -193,13 +193,17 @@ where
         };
 
         let mut outputs = Vec::new();
-        for (to, request) in slot_raptorcast.drain_requests() {
-            outputs.push(DAOutput::RecoveryRequest { to, request });
+        for (to, message) in slot_raptorcast.drain_requests() {
+            let qos = Qos {
+                priority: WirePriority::High,
+                repeat_until: None,
+            };
+            outputs.push(DAOutput::Pull(Outbound { to, message, qos }));
         }
         for (lane, pid, message) in slot_raptorcast.drain_resolved() {
+            let scope = ProposalScope::new(slot, lane);
             outputs.push(DAOutput::Resolved {
-                slot,
-                lane,
+                scope,
                 pid,
                 message,
             });
@@ -208,7 +212,7 @@ where
             outputs.push(DAOutput::Consensus(slot, event));
         }
         for message in slot_raptorcast.drain_messages() {
-            outputs.push(DAOutput::Disseminate(message));
+            outputs.push(DAOutput::Send(message));
         }
         self.outbox.extend(outputs);
     }
@@ -228,13 +232,8 @@ where
         ));
     }
 
-    pub fn handle_chunk_request(
-        &mut self,
-        req: ChunkRecoveryRequest,
-        from: &NodeId,
-        now: Timestamp,
-    ) {
-        let ChunkRecoveryRequest {
+    pub fn handle_chunk_request(&mut self, req: ChunkPull, from: &NodeId, now: Timestamp) {
+        let ChunkPull {
             slot,
             lane,
             request,
@@ -304,24 +303,16 @@ pub enum DAOutput {
     // the message of the proposal (slot, lane, pid), or why it has none,
     // for the layer that recovers proposals
     Resolved {
-        slot: Slot,
-        lane: Lane,
+        scope: ProposalScope,
         pid: ProposalId,
         message: Resolved,
     },
 
     // deliver a proposal's chunks (possibly only its header) to peers
-    Disseminate(Dissemination),
-
-    // the first hop of our own proposal: the same, tagged so the transport
-    // can send it ahead of other traffic
-    FirstHop(Dissemination),
+    Send(Dissemination),
 
     // request chunks from a peer
-    RecoveryRequest {
-        to: NodeId,
-        request: ChunkRecoveryRequest,
-    },
+    Pull(Outbound<ChunkPull, NodeId>),
 }
 
 #[cfg(test)]
@@ -422,13 +413,12 @@ mod tests {
         for (i, output) in outputs(&mut runtime).iter().enumerate() {
             match output {
                 DAOutput::Resolved {
-                    slot,
-                    lane,
+                    scope,
                     pid,
                     message,
                 } => {
                     assert_eq!(
-                        (*slot, *lane, *pid),
+                        (scope.slot, scope.lane, *pid),
                         (SLOT, Lane::new_unchecked(0), header.pid())
                     );
                     assert_eq!(message, &Ok(Bytes::from(vec![1u8; MESSAGE_LEN])));
@@ -440,19 +430,15 @@ mod tests {
                         consensus_decoded_at = Some(i);
                     }
                 }
-                DAOutput::Disseminate(dissemination) => {
+                DAOutput::Send(dissemination) => {
+                    // we did not propose, so nothing is prioritized
+                    assert_eq!(dissemination.qos, Qos::default());
                     // our chunk 2 on arrival and 6 once derivable, one message
-                    let ids: Vec<_> = dissemination
-                        .envelope
-                        .chunk_data()
-                        .keys()
-                        .copied()
-                        .collect();
+                    let ids: Vec<_> = dissemination.message.chunk_data().keys().copied().collect();
                     assert_eq!(ids, [2, 6]);
                     disseminated_at.push(i);
                 }
-                DAOutput::RecoveryRequest { .. } => panic!("nothing to recover"),
-                DAOutput::FirstHop(_) => panic!("we did not propose"),
+                DAOutput::Pull(_) => panic!("nothing to recover"),
             }
         }
 
@@ -470,7 +456,7 @@ mod tests {
         open(&mut runtime, [0, 1]);
         let (header, _) = proposal_chunks(&epoch_handle, 1);
 
-        let unknown_slot = ChunkRecoveryRequest {
+        let unknown_slot = ChunkPull {
             slot: Slot(7),
             lane: Lane::new_unchecked(0),
             request: ChunkRequest::all(header.pid(), ChunkRequestType::YourChunks),
@@ -510,12 +496,13 @@ mod tests {
         runtime.handle_tick(at(200));
         let mut peers = Vec::new();
         for output in outputs(&mut runtime) {
-            let DAOutput::RecoveryRequest { to, request } = output else {
+            let DAOutput::Pull(outbound) = output else {
                 continue;
             };
+            let request = outbound.message;
             assert_eq!((request.slot, request.lane), (SLOT, Lane::new_unchecked(0)));
             assert_eq!(request.request.pid, header.pid());
-            peers.push(to);
+            peers.push(outbound.to);
         }
         peers.sort();
         assert_eq!(

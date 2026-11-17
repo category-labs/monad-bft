@@ -16,7 +16,7 @@
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use super::{
-    CadenceConductor, ConductorConfig, ConductorError, ConductorMessage, ConductorOutput,
+    ConductorConfig, ConductorError,
     acs::{Acs, AcsOutput},
     types::{NodeId, Slot, Timestamp, WindowId},
 };
@@ -150,10 +150,8 @@ where
         self.active_round.handle_message(sender, message);
     }
 
-    pub fn poll(&mut self) -> Option<ConductorOutput<CadenceConductor<A>>> {
-        self.active_round
-            .poll()
-            .map(|message| ConductorOutput::Broadcast(ConductorMessage::DeadlineAgreement(message)))
+    pub fn poll(&mut self) -> Option<DeadlineAgreementMessage<A::Message>> {
+        self.active_round.poll()
     }
 
     pub fn decision(&self) -> Option<Timestamp> {
@@ -289,16 +287,16 @@ mod tests {
             .handle_completion_cap_advance(&config, Slot(8), Timestamp::from_nanos(1_000))
             .unwrap();
         match manager.poll() {
-            Some(ConductorOutput::Broadcast(message)) => {
+            Some(message) => {
                 assert_eq!(
                     message,
-                    ConductorMessage::DeadlineAgreement(DeadlineAgreementMessage {
+                    DeadlineAgreementMessage {
                         window: WindowId(1),
                         acs_message: genesis_plus(100),
-                    })
+                    }
                 );
             }
-            _ => panic!("expected conductor broadcast"),
+            None => panic!("expected a message"),
         }
         assert!(manager.poll().is_none());
         assert_eq!(manager.decision(), Some(genesis_plus(100)));
@@ -309,16 +307,16 @@ mod tests {
             .handle_completion_cap_advance(&config, Slot(18), Timestamp::from_nanos(2_000))
             .unwrap();
         match manager.poll() {
-            Some(ConductorOutput::Broadcast(message)) => {
+            Some(message) => {
                 assert_eq!(
                     message,
-                    ConductorMessage::DeadlineAgreement(DeadlineAgreementMessage {
+                    DeadlineAgreementMessage {
                         window: WindowId(2),
                         acs_message: genesis_plus(200),
-                    })
+                    }
                 );
             }
-            _ => panic!("expected conductor broadcast"),
+            None => panic!("expected a message"),
         }
         assert_eq!(manager.decision(), Some(genesis_plus(200)));
     }

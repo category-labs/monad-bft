@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use cadence::{Outbound, Runtime, proposing::ProposalPlanner};
+use cadence::{Outbound, Recipients, Runtime, proposing::ProposalPlanner};
 // choose stub cadence for implementation
 use monad_mcp_cadence::stub as cadence;
 use monad_mcp_common::{Timestamp, stub::NodeId};
@@ -261,17 +261,15 @@ where
 
     fn interpret(&mut self, event: Outbound<R::Message>, ctx: &mut Ctx) {
         let now = ctx.now();
-        match event {
-            Outbound::Broadcast(message) => {
-                let net = self.net.expect("node not wired");
-                let message = SimMessage::Cadence(message);
+        let net = self.net.expect("node not wired");
+        let message = SimMessage::Cadence(event.message);
+        match event.to {
+            Recipients::Everyone => {
                 ctx.schedule(net, now, StepLabel::source("broadcast"), move |net, ctx| {
                     net.broadcast(ctx, message)
                 });
             }
-            Outbound::Unicast(to, message) => {
-                let net = self.net.expect("node not wired");
-                let message = SimMessage::Cadence(message);
+            Recipients::Node(to) => {
                 ctx.schedule(net, now, StepLabel::source("unicast"), move |net, ctx| {
                     net.send(ctx, to, message)
                 });

@@ -21,10 +21,8 @@ use bytes::Bytes;
 use super::{conductor::Conductor, slot::SlotConsensus, types::NodeId};
 use crate::spec::{Deserializable, Serializable};
 
-pub enum Outbound<M> {
-    Broadcast(M),
-    Unicast(NodeId, M),
-}
+pub type Recipients = monad_mcp_common::Recipients<NodeId>;
+pub type Outbound<M> = monad_mcp_common::Outbound<M, Recipients>;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CadenceMessage<SM, CM> {

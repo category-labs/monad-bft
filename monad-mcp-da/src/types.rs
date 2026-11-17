@@ -15,7 +15,8 @@
 
 use bytes::Bytes;
 pub(crate) use monad_mcp_common::{
-    Lane, Lanes, MAX_PROPOSER_SET_SIZE, Slot, Timestamp, TimestampDelta,
+    Lane, Lanes, MAX_PROPOSER_SET_SIZE, Outbound, ProposalScope, Qos, Slot, Timestamp,
+    TimestampDelta, WirePriority,
 };
 
 pub(crate) use super::common::{NodeId, PubKey, Stake};

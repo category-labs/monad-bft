@@ -176,11 +176,7 @@ where
 }
 
 pub enum MVBAOutput<M, T> {
-    Broadcast(M),
-    Unicast {
-        to: NodeId,
-        message: M,
-    },
+    Send(Outbound<M>),
     /// (Re-)schedule `timer_event` to fire once after `duration`. Arming an
     /// event already pending replaces it -- the last arm wins, as in
     /// [`super::SlotOutput::ScheduleTimer`]
@@ -225,12 +221,7 @@ where
     fn drain(&mut self, now: Timestamp) {
         while let Some(output) = self.mvba.poll() {
             match output {
-                MVBAOutput::Broadcast(message) => {
-                    self.outbox.push_back(Outbound::Broadcast(message));
-                }
-                MVBAOutput::Unicast { to, message } => {
-                    self.outbox.push_back(Outbound::Unicast(to, message));
-                }
+                MVBAOutput::Send(outbound) => self.outbox.push_back(outbound),
                 MVBAOutput::ScheduleTimer {
                     duration,
                     timer_event,

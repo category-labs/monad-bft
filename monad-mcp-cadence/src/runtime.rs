@@ -162,15 +162,9 @@ where
                 self.timers
                     .schedule(now + delta, PendingWake::SlotTimer(slot, timer));
             }
-            SlotOutput::Broadcast(message) => {
-                debug_assert_eq!(message.slot(), slot);
-                let message = CadenceMessage::Slot(message);
-                self.outbox.push_back(Outbound::Broadcast(message));
-            }
-            SlotOutput::Unicast { to, message } => {
-                debug_assert_eq!(message.slot(), slot);
-                let message = CadenceMessage::Slot(message);
-                self.outbox.push_back(Outbound::Unicast(to, message));
+            SlotOutput::Send(outbound) => {
+                debug_assert_eq!(outbound.message.slot(), slot);
+                self.outbox.push_back(outbound.map(CadenceMessage::Slot));
             }
             SlotOutput::Local(command) => {
                 self.outputs.push_back(CadenceOutput::Local(slot, command));
@@ -199,9 +193,9 @@ where
 
     fn handle_conductor_output(&mut self, out: ConductorOutput<C>) {
         match out {
-            ConductorOutput::Broadcast(message) => {
-                let message = CadenceMessage::Conductor(message);
-                self.outbox.push_back(Outbound::Broadcast(message));
+            ConductorOutput::Send(outbound) => {
+                let outbound = outbound.map(CadenceMessage::Conductor);
+                self.outbox.push_back(outbound);
             }
             ConductorOutput::ScheduleAlarm(at, alarm) => {
                 self.timers.schedule(at, PendingWake::Alarm(alarm));

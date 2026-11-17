@@ -23,7 +23,7 @@ use super::{
     encoding_scheme::Resolved,
     header::InvalidProposalHeader,
     proposer_rc::ProposerRaptorcast,
-    runtime::{ChunkRecoveryRequest, EpochHandle, Timing},
+    runtime::{ChunkPull, EpochHandle, Timing},
     types::{
         ChorusDACommand, ChorusDAEvent, Lane, Lanes, NodeId, ProposalId, ProposerSchedule,
         SignedProposalHeader, Slot, Timestamp,
@@ -48,7 +48,7 @@ pub struct SlotRaptorcast {
     // events pending delivery since the last drain
     out_events: Vec<ChorusDAEvent>,
     // recovery requests pending delivery since the last drain
-    out_requests: Vec<(NodeId, ChunkRecoveryRequest)>,
+    out_requests: Vec<(NodeId, ChunkPull)>,
 }
 
 impl SlotRaptorcast {
@@ -92,7 +92,7 @@ impl SlotRaptorcast {
         std::mem::take(&mut self.out_events)
     }
 
-    pub(crate) fn drain_requests(&mut self) -> Vec<(NodeId, ChunkRecoveryRequest)> {
+    pub(crate) fn drain_requests(&mut self) -> Vec<(NodeId, ChunkPull)> {
         std::mem::take(&mut self.out_requests)
     }
 
@@ -171,7 +171,7 @@ impl SlotRaptorcast {
                 let requests =
                     raptorcast.add_decoded_holders(&holders, &pid, now, &self.epoch_handle);
                 for (to, request) in requests {
-                    let request = ChunkRecoveryRequest {
+                    let request = ChunkPull {
                         slot: self.slot,
                         lane: j,
                         request,
@@ -199,7 +199,7 @@ impl SlotRaptorcast {
                 let requests = raptorcast.pull_header(missing, &self.epoch_handle.validator_data);
 
                 for (to, request) in requests {
-                    let request = ChunkRecoveryRequest {
+                    let request = ChunkPull {
                         slot: self.slot,
                         lane: j,
                         request,
@@ -224,7 +224,7 @@ impl SlotRaptorcast {
             };
             let requests = raptorcast.poll_chunk_requests(now, &self.epoch_handle);
             for (to, request) in requests {
-                let request = ChunkRecoveryRequest {
+                let request = ChunkPull {
                     slot: self.slot,
                     lane: j,
                     request,
@@ -297,8 +297,8 @@ mod tests {
     // the wire ids carried by the messages, sorted
     fn chunk_ids<'a>(messages: impl IntoIterator<Item = &'a Dissemination>) -> Vec<WireChunkId> {
         let mut ids = Vec::new();
-        for message in messages {
-            ids.extend(message.envelope.chunk_data().keys().copied());
+        for dissemination in messages {
+            ids.extend(dissemination.message.chunk_data().keys().copied());
         }
         ids.sort();
         ids
@@ -507,8 +507,8 @@ mod tests {
         messages: Vec<(NodeId, Dissemination)>,
         lost: &BTreeSet<NodeId>,
     ) {
-        for (sender, message) in messages {
-            for to in &message.to {
+        for (sender, dissemination) in messages {
+            for to in &dissemination.to {
                 if lost.contains(to) {
                     continue;
                 }
@@ -516,8 +516,8 @@ mod tests {
                 else {
                     continue;
                 };
-                node.ingest(&sender, message.envelope.clone())
-                    .expect("valid");
+                let envelope = dissemination.message.clone();
+                node.ingest(&sender, envelope).expect("valid");
             }
         }
     }

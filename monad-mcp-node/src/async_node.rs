@@ -134,9 +134,9 @@ impl Sink<Routed> for Tasks {
             Routed::Repeater(input) if let Some(repeater) = &mut self.repeater => {
                 repeater.send(input);
             }
-            // the stub transport has one queue: the class is not acted on
+            // the stub transport has one queue: the priority is not acted on
             // (production priority, pacing and batching are out of scope)
-            Routed::Network(outbound, _class) if let Some(network) = &mut self.network => {
+            Routed::Network(outbound) if let Some(network) = &mut self.network => {
                 network.send(outbound)
             }
             Routed::Ledger(finalized) if let Some(logger) = &mut self.finalization => {

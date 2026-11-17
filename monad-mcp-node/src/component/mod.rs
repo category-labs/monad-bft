@@ -39,7 +39,7 @@ pub use self::{
         MempoolProposing, Proposing, ProposingComponent, ProposingInput, ProposingOutput,
         RandomProposing,
     },
-    repeater::{Recipients, Repeater, RepeaterConfig, RepeaterInput, RepeaterOutput},
+    repeater::{Repeater, RepeaterConfig, RepeaterInput, RepeaterOutput},
 };
 use crate::clock::Clock;
 

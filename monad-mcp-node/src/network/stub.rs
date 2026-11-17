@@ -26,7 +26,7 @@ use tokio::{net::UdpSocket, task::JoinHandle};
 use tracing::Span;
 
 use super::{NodeInbound, NodeMessage, NodeOutbound};
-use crate::{common::NodeId, component::Link};
+use crate::{cadence::Recipients, common::NodeId, component::Link};
 
 const CADENCE: u8 = 1;
 const CHUNK: u8 = 2;
@@ -93,15 +93,13 @@ impl UdpNetwork {
             tracing::debug!(?sender, %from, "unknown sender");
             return;
         }
-        link.send(NodeInbound {
-            from: sender,
-            message,
-        });
+        link.send(NodeInbound { sender, message });
     }
 
     async fn send(&self, outbound: NodeOutbound) {
-        match outbound {
-            NodeOutbound::Broadcast(message) => {
+        let message = outbound.message;
+        match outbound.to {
+            Recipients::Everyone => {
                 let Some(frame) = self.frame(&message) else {
                     return;
                 };
@@ -114,7 +112,7 @@ impl UdpNetwork {
                     }
                 }
             }
-            NodeOutbound::Unicast(to, message) => {
+            Recipients::Node(to) => {
                 let Some(address) = self.peers.get(&to) else {
                     tracing::debug!(?to, "unknown recipient");
                     return;
@@ -255,7 +253,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(inbound.from, NodeId::dummy(1));
+        assert_eq!(inbound.sender, NodeId::dummy(1));
         let NodeMessage::Tx(body) = inbound.message else {
             panic!("a tx message");
         };

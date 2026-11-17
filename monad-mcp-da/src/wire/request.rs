@@ -26,7 +26,7 @@ use monad_mcp_cadence::spec::{Deserializable, Serializable};
 
 use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset, WireChunkId},
-    runtime::ChunkRecoveryRequest,
+    runtime::ChunkPull,
     types::{Lane, ProposalId, Slot},
 };
 
@@ -111,7 +111,7 @@ impl Decodable for ChunksSubset {
     }
 }
 
-impl Encodable for ChunkRecoveryRequest {
+impl Encodable for ChunkPull {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         let kind = kind_tag(self.request.kind);
         let fields: [&dyn Encodable; 5] = [
@@ -137,7 +137,7 @@ impl Encodable for ChunkRecoveryRequest {
     }
 }
 
-impl Decodable for ChunkRecoveryRequest {
+impl Decodable for ChunkPull {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let slot = Slot::decode(&mut payload)?;
@@ -157,13 +157,13 @@ impl Decodable for ChunkRecoveryRequest {
     }
 }
 
-impl Serializable<Bytes> for ChunkRecoveryRequest {
+impl Serializable<Bytes> for ChunkPull {
     fn serialize(&self) -> Bytes {
         alloy_rlp::encode(self).into()
     }
 }
 
-impl Deserializable<Bytes> for ChunkRecoveryRequest {
+impl Deserializable<Bytes> for ChunkPull {
     type ReadError = alloy_rlp::Error;
 
     fn deserialize(message: &Bytes) -> Result<Self, Self::ReadError> {
@@ -180,8 +180,8 @@ mod tests {
         *,
     };
 
-    fn request(subset: ChunksSubset) -> ChunkRecoveryRequest {
-        ChunkRecoveryRequest {
+    fn request(subset: ChunksSubset) -> ChunkPull {
+        ChunkPull {
             slot: Slot(7),
             lane: Lane::new_unchecked(3),
             request: ChunkRequest {
@@ -200,14 +200,14 @@ mod tests {
         for original in [all, narrowed, header_only] {
             let bytes: Bytes = original.serialize();
             assert_eq!(bytes.len(), original.length());
-            assert_eq!(ChunkRecoveryRequest::deserialize(&bytes).unwrap(), original);
+            assert_eq!(ChunkPull::deserialize(&bytes).unwrap(), original);
 
             for end in 0..bytes.len() {
-                assert!(ChunkRecoveryRequest::deserialize(&bytes.slice(..end)).is_err());
+                assert!(ChunkPull::deserialize(&bytes.slice(..end)).is_err());
             }
             let mut extra = bytes.to_vec();
             extra.push(0);
-            assert!(ChunkRecoveryRequest::deserialize(&Bytes::from(extra)).is_err());
+            assert!(ChunkPull::deserialize(&Bytes::from(extra)).is_err());
         }
     }
 
@@ -225,6 +225,6 @@ mod tests {
         let kind_at = bytes.len() - 3;
         assert_eq!(bytes[kind_at], YOUR_CHUNKS);
         bytes[kind_at] = 9;
-        assert!(ChunkRecoveryRequest::deserialize(&Bytes::from(bytes)).is_err());
+        assert!(ChunkPull::deserialize(&Bytes::from(bytes)).is_err());
     }
 }
