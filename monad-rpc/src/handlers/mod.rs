@@ -643,7 +643,7 @@ async fn eth_createAccessList(
     let mut params: MonadCreateAccessListParams =
         serde_json::from_str(params.get()).invalid_params()?;
     if let Some(caller) = &app_state.caller {
-        caller.run_as_signer(&mut params.transaction);
+        caller.restrict_call(&mut params.transaction, &params.state_overrides)?;
     }
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
