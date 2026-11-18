@@ -108,15 +108,20 @@ impl EthTxPoolBridgeState {
 
         match self.status.entry(hash) {
             Entry::Occupied(mut o) => {
-                let mut receiver = o.get_mut().subscribe();
+                let status = *o.get().borrow();
 
-                let known = match &*receiver.borrow() {
+                let known = match status {
                     TxStatus::Unknown => false,
-                    TxStatus::Tracked
-                    | TxStatus::Dropped { .. }
-                    | TxStatus::Evicted { .. }
-                    | TxStatus::Committed => true,
+                    // The drop or eviction may no longer apply, so the txpool decides on the
+                    // resubmission. Receivers of the old channel keep the status they were sent.
+                    TxStatus::Dropped { .. } | TxStatus::Evicted { .. } => {
+                        o.insert(tokio::sync::watch::channel(TxStatus::Unknown).0);
+                        false
+                    }
+                    TxStatus::Tracked | TxStatus::Committed => true,
                 };
+
+                let mut receiver = o.get().subscribe();
 
                 if known {
                     receiver.mark_changed();
@@ -379,6 +384,58 @@ mod test {
         assert!(tx_status_recv2.has_changed().unwrap());
 
         assert_eq!(tx_status_recv2.borrow().to_owned(), TxStatus::Committed);
+    }
+
+    #[tokio::test]
+    async fn test_add_dead_tx_resubmits() {
+        for dead in [
+            EthTxPoolEventType::Drop {
+                reason: EthTxPoolDropReason::PoolFull,
+            },
+            EthTxPoolEventType::Evict {
+                reason: EthTxPoolEvictReason::Expired,
+            },
+        ] {
+            let (state, state_view, mut eviction_queue, tx) = setup();
+            let event = |action| EthTxPoolEvent {
+                tx_hash: *tx.tx_hash(),
+                action,
+            };
+
+            let (tx_status_recv_send0, mut tx_status_recv_recv0) = tokio::sync::oneshot::channel();
+            assert!(state.add_tx(&mut eviction_queue, &tx, tx_status_recv_send0));
+            let mut tx_status_recv0 = tx_status_recv_recv0.try_recv().unwrap();
+
+            state.handle_events(&mut eviction_queue, vec![event(dead)]);
+            let dead_status = state_view.get_status_by_hash(tx.tx_hash()).unwrap();
+
+            let (tx_status_recv_send, mut tx_status_recv_recv) = tokio::sync::oneshot::channel();
+            assert!(state.add_tx(&mut eviction_queue, &tx, tx_status_recv_send));
+            assert_eq!(eviction_queue.len(), 1);
+            assert_eq!(
+                state_view.get_status_by_hash(tx.tx_hash()),
+                Some(TxStatus::Unknown)
+            );
+
+            tx_status_recv0.changed().await.unwrap();
+            assert_eq!(tx_status_recv0.borrow_and_update().to_owned(), dead_status);
+
+            let tx_status_recv = tx_status_recv_recv.try_recv().unwrap();
+            assert!(!tx_status_recv.has_changed().unwrap());
+
+            state.handle_events(
+                &mut eviction_queue,
+                vec![event(EthTxPoolEventType::Insert {
+                    address: tx.recover_signer().unwrap(),
+                    owned: true,
+                    tx: tx.clone(),
+                })],
+            );
+            assert!(tx_status_recv.has_changed().unwrap());
+            assert_eq!(tx_status_recv.borrow().to_owned(), TxStatus::Tracked);
+
+            assert!(!state.add_tx(&mut eviction_queue, &tx, tokio::sync::oneshot::channel().0));
+        }
     }
 
     #[tokio::test]
