@@ -331,7 +331,7 @@ async fn domain_route_rejects_state_overrides() {
     let call = json!({"to": "0x0000000000000000000000000000000000000002", "data": "0x00"});
     let overrides = json!({ hex_address(&operator_signer()): {"balance": "0x1"} });
 
-    for method in ["eth_call", "eth_estimateGas"] {
+    for method in ["eth_call", "eth_estimateGas", "eth_createAccessList"] {
         let with_overrides = json!([call, "latest", overrides]);
         let resp = call_domain(&app, Some(user_token()), method, with_overrides.clone()).await;
         assert_eq!(
