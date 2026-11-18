@@ -362,8 +362,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     }
 
     let sender = tx.from.unwrap_or_default();
-    let tx_chain_id = tx.chain_id.expect("chain id must be populated").to::<u64>();
-    let ethcall_chain_id = parse_ethcall_chain_id(tx_chain_id)?;
+    let ethcall_chain_id = parse_ethcall_chain_id(eth_call_handler_config.execution_chain_id)?;
     let protocol_gas_limit = header.header.gas_limit;
     let (block_number, block_id) = block_key_to_parts(block_key);
 
@@ -436,7 +435,7 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
     chain_id: u64,
     params: MonadEthFillTransactionParams,
 ) -> JsonRpcResult<FillTransactionResult> {
-    let ethcall_chain_id = parse_ethcall_chain_id(chain_id)?;
+    let ethcall_chain_id = parse_ethcall_chain_id(eth_call_handler_config.execution_chain_id)?;
     let from = params.tx.from.unwrap_or_default();
     let state_override = fill_transaction_state_overrides(from);
 
@@ -1119,6 +1118,7 @@ mod tests {
             provider_gas_limit_eth_simulate: 0,
             provider_max_calls_eth_simulate: 0,
             provider_max_blocks_eth_simulate: 0,
+            execution_chain_id: 0,
         }
     }
 

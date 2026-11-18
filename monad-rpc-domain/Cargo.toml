@@ -1,0 +1,20 @@
+[package]
+name = "monad-rpc-domain"
+description = "JSON-RPC API server of a Monad private domain"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-chain-config = { workspace = true }
+monad-ethcall = { workspace = true }
+monad-rpc = { workspace = true }
+monad-triedb-utils = { workspace = true }
+
+actix-web = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["raw_value"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing = { workspace = true }
+tracing-actix-web = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }

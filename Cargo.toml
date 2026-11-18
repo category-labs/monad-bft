@@ -52,6 +52,7 @@ monad-raptor = { path = "./monad-raptor" }
 monad-raptorcast = { path = "./monad-raptorcast" }
 monad-router-multi = { path = "./monad-router-multi" }
 monad-router-scheduler = { path = "./monad-router-scheduler" }
+monad-rpc = { path = "./monad-rpc" }
 monad-rpc-docs = { path = "./monad-rpc/monad-rpc-docs" }
 monad-rpc-docs-derive = { path = "./monad-rpc/monad-rpc-docs/monad-rpc-docs-derive" }
 monad-secp = { path = "./monad-secp" }

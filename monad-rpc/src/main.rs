@@ -293,6 +293,7 @@ async fn main() -> std::io::Result<()> {
                 provider_gas_limit_eth_simulate: args.eth_simulate_gas_limit,
                 provider_max_calls_eth_simulate: args.eth_simulate_max_calls,
                 provider_max_blocks_eth_simulate: args.eth_simulate_max_blocks,
+                execution_chain_id: node_config.chain_id,
             },
             triedb_path,
         )

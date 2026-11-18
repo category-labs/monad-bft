@@ -646,8 +646,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     check_value_transfer_balance(triedb_env, block_key, &tx, &state_overrides).await?;
 
     let sender = tx.from.unwrap_or_default();
-    let tx_chain_id = tx.chain_id.expect("chain_id was set above").to::<u64>();
-    let ethcall_chain_id = parse_ethcall_chain_id(tx_chain_id)?;
+    let ethcall_chain_id = parse_ethcall_chain_id(eth_call_handler_config.execution_chain_id)?;
     let txn: TxEnvelope = tx.try_into()?;
     let (block_number, block_id) = match block_key {
         BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),

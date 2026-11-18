@@ -6197,6 +6197,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-rpc-domain"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "bytes",
+ "clap",
+ "monad-chain-config",
+ "monad-ethcall",
+ "monad-rpc",
+ "monad-triedb-utils",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-actix-web",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monad-secp"
 version = "0.1.0"
 dependencies = [
