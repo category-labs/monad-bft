@@ -474,7 +474,10 @@ impl Decodable for NameRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Capability {}
+pub enum Capability {
+    /// WireAuth TCP frames are accepted on the ordinary TCP port.
+    EncryptedTcp = 0,
+}
 
 #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable, Eq)]
 pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
@@ -946,11 +949,6 @@ pub trait PeerDiscoveryAlgo {
     ) -> Option<SocketAddrV4>;
 
     fn get_udp_addr_by_id(
-        &self,
-        id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
-    ) -> Option<SocketAddrV4>;
-
-    fn get_tcp_addr_by_id(
         &self,
         id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
     ) -> Option<SocketAddrV4>;

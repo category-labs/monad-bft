@@ -1897,15 +1897,6 @@ where
             .and_then(|name_record| name_record.udp_address())
     }
 
-    fn get_tcp_addr_by_id(
-        &self,
-        id: &NodeId<CertificateSignaturePubKey<ST>>,
-    ) -> Option<SocketAddrV4> {
-        self.routing_info
-            .get(id)
-            .map(|name_record| name_record.name_record.tcp_socket())
-    }
-
     fn get_ip_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<Ipv4Addr> {
         self.routing_info
             .get(id)
@@ -2501,13 +2492,10 @@ mod tests {
             state.get_udp_addr_by_id(&peer1_pubkey),
             peer1_record.udp_address()
         );
+        let record = state.get_name_record(&peer1_pubkey).unwrap();
         assert_eq!(
-            state.get_tcp_addr_by_id(&peer1_pubkey),
-            Some(peer1_record.name_record.tcp_socket())
-        );
-        assert_ne!(
-            state.get_udp_addr_by_id(&peer1_pubkey),
-            state.get_tcp_addr_by_id(&peer1_pubkey)
+            record.name_record.tcp_socket(),
+            SocketAddrV4::new(ip, tcp_port)
         );
         assert_eq!(state.get_ip_by_id(&peer1_pubkey), Some(ip));
     }
@@ -2530,10 +2518,6 @@ mod tests {
         assert_eq!(name_record.udp_address(), None);
         assert_eq!(state.get_udp_addr_by_id(&peer1_pubkey), None);
         assert_eq!(state.get_ip_by_id(&peer1_pubkey), Some(ip));
-        assert_eq!(
-            state.get_tcp_addr_by_id(&peer1_pubkey),
-            Some(name_record.name_record.tcp_socket())
-        );
         assert_eq!(
             name_record.authenticated_udp_address(),
             SocketAddrV4::new(ip, auth_port)
