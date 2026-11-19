@@ -16,8 +16,8 @@
 use std::{convert::TryFrom, net::SocketAddr, time::Duration};
 
 use monad_wireauth::{
-    messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet},
-    Config, Context, TestContext, API, DEFAULT_METRICS, DEFAULT_RETRY_ATTEMPTS,
+    messages::{DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet},
+    Config, Context, TestContext, API, DEFAULT_METRICS, DEFAULT_RETRY_ATTEMPTS, RETRY_ALWAYS,
 };
 use secp256k1::rand::rng;
 use tracing_subscriber::EnvFilter;
@@ -230,150 +230,92 @@ fn test_encrypt_by_pubkey_and_socket() {
     assert_eq!(decrypted2, b"by socket");
 }
 
-#[test]
-fn test_cookie_reply_on_init() {
-    init_tracing();
-    // 1. create managers with zero unverified budget to trigger an immediate cookie reply
+#[rstest::rstest]
+#[case::cookies_required(0, false, false, DEFAULT_RETRY_ATTEMPTS)]
+#[case::unlimited_retries(0, false, false, RETRY_ALWAYS)]
+#[case::cached_simultaneous(1, true, true, DEFAULT_RETRY_ATTEMPTS)]
+#[case::cached_reconnect(1, true, false, DEFAULT_RETRY_ATTEMPTS)]
+fn test_cookie_handshake_burst(
+    #[case] unverified_budget: u64,
+    #[case] cached: bool,
+    #[case] simultaneous: bool,
+    #[case] retries: u64,
+) {
     let config = Config {
-        handshake_cookie_unverified_rate_limit: 0,
-        handshake_cookie_verified_rate_limit: 10,
-        session_timeout_jitter: Duration::ZERO, // to avoid randomness in tests
+        handshake_cookie_unverified_rate_limit: unverified_budget,
+        session_timeout_jitter: Duration::ZERO,
         ..Config::default()
     };
-    let session_timeout = config.session_timeout;
+    let mut alice = LimitPeer::new("192.0.2.1:8001", config.clone());
+    let mut bob = LimitPeer::new("192.0.2.2:8002", config);
 
-    let mut rng = rng();
-    let keypair1 = monad_secp::KeyPair::generate(&mut rng);
-    let context1 = TestContext::new();
-    let mut peer1 = API::new(DEFAULT_METRICS, config.clone(), keypair1, context1.clone());
+    if cached {
+        // Spend the unverified budgets, then obtain cookies without completing a handshake.
+        let mut third = LimitPeer::new("192.0.2.3:8003", Config::default());
+        for peer in [&mut alice, &mut bob] {
+            third.api.connect(peer.public_key, peer.addr, 0).unwrap();
+            peer.receive(collect::<HandshakeInitiation>(&mut third.api), third.addr)
+                .unwrap();
+            collect::<HandshakeResponse>(&mut peer.api);
+        }
+        alice
+            .api
+            .connect(bob.public_key, bob.addr, retries)
+            .unwrap();
+        bob.api
+            .connect(alice.public_key, alice.addr, retries)
+            .unwrap();
+        alice.exchange(&mut bob);
+        alice.api.disconnect(&bob.public_key);
+        bob.api.disconnect(&alice.public_key);
+        for peer in [&mut alice, &mut bob] {
+            peer.context.advance_time(Duration::from_secs(15));
+            peer.api.tick();
+        }
+    }
 
-    let keypair2 = monad_secp::KeyPair::generate(&mut rng);
-    let public_key2 = keypair2.pubkey();
-    let context2 = TestContext::new();
-    let mut peer2 = API::new(DEFAULT_METRICS, config, keypair2, context2);
-
-    let peer1_addr: SocketAddr = "192.0.0.1:8001".parse().unwrap();
-    let peer2_addr: SocketAddr = "192.0.0.2:8002".parse().unwrap();
-
-    // 2. peer1 initiates again and peer2 immediately sends a cookie reply
-    peer1
-        .connect(public_key2, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+    alice
+        .api
+        .connect(bob.public_key, bob.addr, retries)
         .unwrap();
-    let init2 = collect::<HandshakeInitiation>(&mut peer1);
-    dispatch(&mut peer2, &init2, peer1_addr);
+    if simultaneous {
+        bob.api
+            .connect(alice.public_key, alice.addr, retries)
+            .unwrap();
+    }
+    for _ in 0..80 {
+        alice.exchange(&mut bob);
+        if alice.api.is_connected_public_key(&bob.public_key)
+            && bob.api.is_connected_public_key(&alice.public_key)
+        {
+            break;
+        }
+        for peer in [&mut alice, &mut bob] {
+            peer.context.advance_time(Duration::from_millis(100));
+            peer.api.tick();
+        }
+    }
+    assert!(alice.api.is_connected_public_key(&bob.public_key));
+    assert!(bob.api.is_connected_public_key(&alice.public_key));
 
-    // 3. peer2 sends cookie reply, peer1 receives and caches it
-    let cookie = collect::<CookieReply>(&mut peer2);
-    dispatch(&mut peer1, &cookie, peer2_addr);
-
-    // 4. advance time past session timeout, tick triggers retry with cached cookie
-    context1.advance_time(session_timeout);
-    peer1.tick();
-
-    // 5. peer1 sends init with valid mac2 (using cached cookie)
-    let init3 = collect::<HandshakeInitiation>(&mut peer1);
-    dispatch(&mut peer2, &init3, peer1_addr);
-    let _resp2 = collect::<HandshakeResponse>(&mut peer2);
-}
-
-#[test]
-fn test_connect_reuses_cookie_from_cache_after_disconnect() {
-    init_tracing();
-    let config = Config {
-        handshake_cookie_unverified_rate_limit: 0,
-        handshake_cookie_verified_rate_limit: 10,
-        ..Config::default()
-    };
-
-    let mut rng = rng();
-    let keypair1 = monad_secp::KeyPair::generate(&mut rng);
-    let context1 = TestContext::new();
-    let mut peer1 = API::new(DEFAULT_METRICS, config.clone(), keypair1, context1);
-
-    let keypair2 = monad_secp::KeyPair::generate(&mut rng);
-    let peer2_pubkey = keypair2.pubkey();
-    let context2 = TestContext::new();
-    let mut peer2 = API::new(DEFAULT_METRICS, config, keypair2, context2);
-
-    let peer1_addr: SocketAddr = "192.0.0.1:8001".parse().unwrap();
-    let peer2_addr: SocketAddr = "192.0.0.2:8002".parse().unwrap();
-
-    peer1
-        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
-        .unwrap();
-    let init = collect::<HandshakeInitiation>(&mut peer1);
-    dispatch(&mut peer2, &init, peer1_addr);
-
-    let cookie = collect::<CookieReply>(&mut peer2);
-    dispatch(&mut peer1, &cookie, peer2_addr);
-
-    peer1.disconnect(&peer2_pubkey);
-
-    peer1
-        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
-        .unwrap();
-    let init = collect::<HandshakeInitiation>(&mut peer1);
-    dispatch(&mut peer2, &init, peer1_addr);
-
-    let _response = collect::<HandshakeResponse>(&mut peer2);
-}
-
-#[test]
-fn test_handshake_response_reuses_cached_cookie_without_session_state() {
-    init_tracing();
-    let config = Config {
-        handshake_cookie_unverified_rate_limit: 0,
-        handshake_cookie_verified_rate_limit: 10,
-        ..Config::default()
-    };
-
-    let mut rng = rng();
-    let keypair1 = monad_secp::KeyPair::generate(&mut rng);
-    let peer1_pubkey = keypair1.pubkey();
-    let context1 = TestContext::new();
-    let mut peer1 = API::new(DEFAULT_METRICS, config.clone(), keypair1, context1);
-
-    let keypair2 = monad_secp::KeyPair::generate(&mut rng);
-    let peer2_pubkey = keypair2.pubkey();
-    let context2 = TestContext::new();
-    let mut peer2 = API::new(DEFAULT_METRICS, config, keypair2, context2);
-
-    let peer1_addr: SocketAddr = "192.0.0.1:8001".parse().unwrap();
-    let peer2_addr: SocketAddr = "192.0.0.2:8002".parse().unwrap();
-
-    peer1
-        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
-        .unwrap();
-    let init = collect::<HandshakeInitiation>(&mut peer1);
-    dispatch(&mut peer2, &init, peer1_addr);
-    let cookie = collect::<CookieReply>(&mut peer2);
-    dispatch(&mut peer1, &cookie, peer2_addr);
-    peer1.disconnect(&peer2_pubkey);
-
-    peer2
-        .connect(peer1_pubkey, peer1_addr, DEFAULT_RETRY_ATTEMPTS)
-        .unwrap();
-    let init = collect::<HandshakeInitiation>(&mut peer2);
-    dispatch(&mut peer1, &init, peer2_addr);
-    let cookie = collect::<CookieReply>(&mut peer1);
-    dispatch(&mut peer2, &cookie, peer1_addr);
-    peer2.disconnect(&peer1_pubkey);
-
-    peer1
-        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
-        .unwrap();
-    let init = collect::<HandshakeInitiation>(&mut peer1);
-    dispatch(&mut peer2, &init, peer1_addr);
-    let response = collect::<HandshakeResponse>(&mut peer2);
-    dispatch(&mut peer1, &response, peer2_addr);
-
-    let confirm = collect::<DataPacketHeader>(&mut peer1);
-    dispatch(&mut peer2, &confirm, peer1_addr);
-
-    let mut plaintext = b"cached response cookie".to_vec();
-    let packet = encrypt(&mut peer1, &peer2_pubkey, &mut plaintext);
-    let decrypted = decrypt(&mut peer2, &packet, peer1_addr);
-    assert_eq!(decrypted, b"cached response cookie");
+    if cached && !simultaneous {
+        alice.api.disconnect(&bob.public_key);
+        bob.api.disconnect(&alice.public_key);
+        for peer in [&mut alice, &mut bob] {
+            peer.context.advance_time(Duration::from_secs(1));
+            peer.api.tick();
+        }
+        alice
+            .api
+            .connect(bob.public_key, bob.addr, retries)
+            .unwrap();
+        alice.exchange(&mut bob);
+        assert!(alice.api.is_connected_public_key(&bob.public_key));
+        assert!(bob.api.is_connected_public_key(&alice.public_key));
+    }
+    for peer in [&alice, &bob] {
+        assert_eq!(peer.metric(DEFAULT_METRICS.enqueued_cookie_reply), 1);
+    }
 }
 
 #[test]
@@ -1620,6 +1562,24 @@ impl LimitPeer {
             Packet::Control(control) => self.api.dispatch_control(control, from),
             Packet::Data(data) => self.api.decrypt(data, from).map(|_| ()),
         }
+    }
+
+    fn exchange(&mut self, other: &mut Self) {
+        for _ in 0..16 {
+            let packets = (self.api.next_packet(), other.api.next_packet());
+            if packets.0.is_none() && packets.1.is_none() {
+                return;
+            }
+            if let Some((addr, packet)) = packets.0 {
+                assert_eq!(addr, other.addr);
+                other.receive(packet.to_vec(), self.addr).unwrap();
+            }
+            if let Some((addr, packet)) = packets.1 {
+                assert_eq!(addr, self.addr);
+                self.receive(packet.to_vec(), other.addr).unwrap();
+            }
+        }
+        panic!("packet exchange did not settle");
     }
 
     fn finish(&mut self, responder: &mut Self) -> monad_wireauth::Result<()> {

@@ -15,7 +15,7 @@
 
 use std::{
     net::{IpAddr, SocketAddr},
-    num::NonZeroUsize,
+    num::{NonZeroU32, NonZeroUsize},
     time::Duration,
 };
 
@@ -50,8 +50,10 @@ pub struct Filter {
     handshake_cookie_unverified_rate_limit: u64,
     handshake_cookie_verified_rate_limit: u64,
     handshake_rate_reset_interval: Duration,
+    // GCRA theoretical arrival time: the time at which all consumed tokens have refilled.
     ip_request_history: LruCache<IpAddr, Duration>,
     ip_rate_limit_window: Duration,
+    ip_burst_tolerance: Duration,
     total_transport_sessions: usize,
     max_pending_accepted_sessions: usize,
     metrics: ExecutorMetrics,
@@ -69,6 +71,7 @@ impl Filter {
         handshake_cookie_verified_rate_limit: u64,
         handshake_rate_reset_interval: Duration,
         ip_rate_limit_window: Duration,
+        ip_rate_limit_burst: NonZeroU32,
         ip_history_capacity: usize,
         total_transport_sessions: usize,
         max_pending_accepted_sessions: usize,
@@ -82,6 +85,7 @@ impl Filter {
             handshake_rate_reset_interval,
             ip_request_history: LruCache::new(NonZeroUsize::new(ip_history_capacity).unwrap()),
             ip_rate_limit_window,
+            ip_burst_tolerance: ip_rate_limit_window.saturating_mul(ip_rate_limit_burst.get() - 1),
             total_transport_sessions,
             max_pending_accepted_sessions,
             metrics: init_filter_executor_metrics(metric_names),
@@ -229,22 +233,30 @@ impl Filter {
             return FilterAction::Drop;
         }
 
-        self.ip_request_history
-            .put(remote_addr.ip(), duration_since_start);
         self.metrics
             .gauge(self.metric_names.filter_ip_request_history_size)
             .set(self.ip_request_history.len() as u64);
         FilterAction::Pass
     }
 
-    // TODO(dshulyak): Consider a per-IP token bucket with a small burst allowance for
-    // peers behind a shared NAT or restarting quickly.
     fn check_ip_rate_limit(&mut self, ip: IpAddr, duration_since_start: Duration) -> bool {
-        let window_start = duration_since_start.saturating_sub(self.ip_rate_limit_window);
-        matches!(
-            self.ip_request_history.peek(&ip),
-            Some(last_time) if *last_time >= window_start
-        )
+        let arrival_time = self
+            .ip_request_history
+            .peek(&ip)
+            .copied()
+            .unwrap_or(duration_since_start);
+        if duration_since_start < arrival_time.saturating_sub(self.ip_burst_tolerance) {
+            // Rejected requests neither consume tokens nor refresh LRU recency.
+            return true;
+        }
+
+        self.ip_request_history.put(
+            ip,
+            arrival_time
+                .max(duration_since_start)
+                .saturating_add(self.ip_rate_limit_window),
+        );
+        false
     }
 
     fn record_metric(&mut self, action: FilterAction) {
@@ -259,6 +271,8 @@ impl Filter {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
     use crate::{
         config::Config,
@@ -273,10 +287,153 @@ mod tests {
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             100,
             100,
         )
+    }
+
+    fn configured_filter(config: &Config) -> Filter {
+        Filter::new(
+            DEFAULT_METRICS,
+            config.handshake_cookie_unverified_rate_limit,
+            config.handshake_cookie_verified_rate_limit,
+            config.handshake_rate_reset_interval,
+            config.ip_rate_limit_window,
+            config.ip_rate_limit_burst,
+            config.ip_history_capacity,
+            config.total_transport_sessions,
+            config.max_pending_accepted_sessions,
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn prop_few_ips_cannot_starve_verified_budget(
+            ip_count in 1u16..250,
+            rounds in prop::collection::vec(
+                (
+                    prop_oneof![
+                        Just(0u64),
+                        999_999_999u64..=1_000_000_000,
+                        9_999_999_999u64..=10_000_000_001,
+                        0u64..=50_000_000_000,
+                    ],
+                    any::<u16>(),
+                    any::<bool>(),
+                ),
+                1..16,
+            ),
+        ) {
+            const TOKEN_COST: u64 = 10_000_000_000;
+            let config = Config {
+                ip_history_capacity: usize::from(ip_count) + 1,
+                cookie_cache_capacity: 1,
+                ..Config::default()
+            };
+            let mut filter = configured_filter(&config);
+            let state = State::new(DEFAULT_METRICS, config.cookie_cache_capacity);
+            let mut now = Duration::ZERO;
+            // Every IP receives the same traffic, so one token balance models them all.
+            let mut credit = 4 * TOKEN_COST;
+
+            for (elapsed, port, response) in std::iter::once((0, 0, false)).chain(rounds) {
+                now += Duration::from_nanos(elapsed);
+                filter.tick(now);
+                credit = (credit + elapsed).min(4 * TOKEN_COST);
+                let allowed = credit / TOKEN_COST;
+                credit %= TOKEN_COST;
+                let kind = if response {
+                    HandshakeKind::Response
+                } else {
+                    HandshakeKind::Initiation
+                };
+
+                // Exhaust the unverified budget before flooding cookie-valid requests.
+                let attacker = SocketAddr::from(([10, 0, 0, 0], port));
+                for _ in 0..500 {
+                    filter.apply(&state, kind, attacker, now, false);
+                }
+                prop_assert_eq!(
+                    filter.apply(&state, kind, attacker, now, false),
+                    FilterAction::SendCookie,
+                );
+
+                for ip in 0..ip_count {
+                    let addr = SocketAddr::from(([10, 0, 0, ip as u8], port));
+                    // Together the IPs offer more than the 1,000-message verified budget.
+                    for request in 0..=1_000 / u64::from(ip_count) {
+                        let expected = if request < allowed {
+                            FilterAction::Pass
+                        } else {
+                            FilterAction::Drop
+                        };
+                        prop_assert_eq!(filter.apply(&state, kind, addr, now, true), expected);
+                    }
+                }
+                prop_assert!(filter.cookie_verified_counter <= 4 * u64::from(ip_count));
+            }
+
+            // Even after the flood, four slots remain for a fresh honest IP in this window.
+            let honest = SocketAddr::from(([10, 1, 0, 0], 8080));
+            for _ in 0..4 {
+                prop_assert_eq!(
+                    filter.apply(&state, HandshakeKind::Initiation, honest, now, true),
+                    FilterAction::Pass,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_global_drop_does_not_spend_ip_burst() {
+        let config = Config {
+            handshake_cookie_verified_rate_limit: 1,
+            ip_rate_limit_window: Duration::from_secs(10),
+            ..Config::default()
+        };
+        let mut filter = configured_filter(&config);
+        let state = State::new(DEFAULT_METRICS, config.cookie_cache_capacity);
+        let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let other = SocketAddr::from(([127, 0, 0, 2], 8080));
+        let apply = |filter: &mut Filter, addr, now| {
+            filter.apply(&state, HandshakeKind::Initiation, addr, now, true)
+        };
+        assert_eq!(
+            apply(&mut filter, other, Duration::ZERO),
+            FilterAction::Pass
+        );
+        assert_eq!(apply(&mut filter, addr, Duration::ZERO), FilterAction::Drop);
+        // Admit one message per global reset; the earlier global rejection spent no token.
+        for second in 1..=4 {
+            let now = Duration::from_secs(second);
+            filter.tick(now);
+            assert_eq!(apply(&mut filter, addr, now), FilterAction::Pass);
+        }
+    }
+
+    #[test]
+    fn test_zero_ip_refill_interval_disables_limit() {
+        let config = Config {
+            ip_rate_limit_window: Duration::ZERO,
+            ..Config::default()
+        };
+        let mut filter = configured_filter(&config);
+        let state = State::new(DEFAULT_METRICS, config.cookie_cache_capacity);
+        let addr = "127.0.0.1:8080".parse().unwrap();
+        for _ in 0..10 {
+            assert_eq!(
+                filter.apply(
+                    &state,
+                    HandshakeKind::Initiation,
+                    addr,
+                    Duration::ZERO,
+                    true
+                ),
+                FilterAction::Pass
+            );
+        }
     }
 
     #[test]
@@ -303,6 +460,7 @@ mod tests {
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             total_transport_sessions,
             100,
@@ -332,6 +490,7 @@ mod tests {
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             100,
             max_pending_accepted_sessions,
@@ -360,6 +519,7 @@ mod tests {
             2,
             Duration::from_secs(60),
             Duration::from_secs(10),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             1,
             1,
@@ -414,6 +574,7 @@ mod tests {
             100,
             Duration::from_secs(60),
             Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             100,
             100,
@@ -451,6 +612,7 @@ mod tests {
             verified_rate_limit,
             Duration::from_secs(60),
             Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             100,
             100,
@@ -499,39 +661,47 @@ mod tests {
         assert_eq!(action, FilterAction::SendCookie);
     }
 
-    #[test]
-    fn test_handshake_cookie_verified_rate_limit_drops() {
-        let verified_rate_limit = 5;
-        let mut filter = Filter::new(
-            DEFAULT_METRICS,
-            100,
-            verified_rate_limit,
-            Duration::from_secs(60),
-            Duration::from_secs(60),
-            1_000,
-            100,
-            100,
-        );
-        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
-        for i in 0..verified_rate_limit {
-            let addr: SocketAddr = format!("127.0.0.{}:8080", i + 2).parse().unwrap();
-            let action = filter.apply(
+    #[rstest::rstest]
+    #[case::headroom(249, FilterAction::Pass)]
+    #[case::exhausted(250, FilterAction::Drop)]
+    fn test_verified_budget_starvation_boundary(
+        #[case] ip_count: u16,
+        #[case] honest_action: FilterAction,
+    ) {
+        let config = Config {
+            ip_history_capacity: usize::from(ip_count) + 1,
+            cookie_cache_capacity: 1,
+            ..Config::default()
+        };
+        let mut filter = configured_filter(&config);
+        let state = State::new(DEFAULT_METRICS, config.cookie_cache_capacity);
+        for ip in 0..ip_count {
+            let addr = SocketAddr::from(([10, 0, 0, ip as u8], 8080));
+            for _ in 0..4 {
+                assert_eq!(
+                    filter.apply(
+                        &state,
+                        HandshakeKind::Initiation,
+                        addr,
+                        Duration::ZERO,
+                        true
+                    ),
+                    FilterAction::Pass
+                );
+            }
+        }
+        assert_eq!(filter.cookie_verified_counter, 4 * u64::from(ip_count));
+        let honest = SocketAddr::from(([10, 1, 0, 0], 8080));
+        assert_eq!(
+            filter.apply(
                 &state,
                 HandshakeKind::Initiation,
-                addr,
-                Duration::from_secs(61),
-                true,
-            );
-            assert_eq!(action, FilterAction::Pass);
-        }
-        let action = filter.apply(
-            &state,
-            HandshakeKind::Initiation,
-            "127.0.0.100:8080".parse().unwrap(),
-            Duration::from_secs(61),
-            true,
+                honest,
+                Duration::ZERO,
+                true
+            ),
+            honest_action
         );
-        assert_eq!(action, FilterAction::Drop);
     }
 
     #[test]
@@ -542,6 +712,7 @@ mod tests {
             0, // verified
             Duration::from_secs(60),
             Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             100,
             100,
@@ -590,6 +761,7 @@ mod tests {
             handshake_rate_limit,
             Duration::from_secs(1),
             Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             100,
             100,
@@ -625,6 +797,7 @@ mod tests {
             handshake_rate_limit,
             Duration::from_secs(10),
             Duration::from_secs(60),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             100,
             100,
@@ -652,122 +825,6 @@ mod tests {
     }
 
     #[test]
-    fn test_verified_rate_limit_remains_available_after_unverified_limit() {
-        let handshake_rate_limit = 5;
-        let mut filter = Filter::new(
-            DEFAULT_METRICS,
-            handshake_rate_limit,
-            handshake_rate_limit,
-            Duration::from_secs(60),
-            Duration::from_secs(60),
-            1_000,
-            100,
-            100,
-        );
-        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
-        let addr = "127.0.0.1:8080".parse().unwrap();
-        for _ in 0..handshake_rate_limit {
-            filter.apply(
-                &state,
-                HandshakeKind::Initiation,
-                addr,
-                Duration::ZERO,
-                false,
-            );
-        }
-        assert_eq!(
-            filter.apply(
-                &state,
-                HandshakeKind::Initiation,
-                addr,
-                Duration::ZERO,
-                false
-            ),
-            FilterAction::SendCookie
-        );
-        for i in 0..handshake_rate_limit {
-            let verified_addr: SocketAddr = format!("127.0.0.{}:8080", i + 2).parse().unwrap();
-            assert_eq!(
-                filter.apply(
-                    &state,
-                    HandshakeKind::Initiation,
-                    verified_addr,
-                    Duration::from_secs(61),
-                    true,
-                ),
-                FilterAction::Pass
-            );
-        }
-        assert_eq!(
-            filter.apply(
-                &state,
-                HandshakeKind::Initiation,
-                "127.0.0.100:8080".parse().unwrap(),
-                Duration::from_secs(61),
-                true,
-            ),
-            FilterAction::Drop
-        );
-    }
-
-    #[test]
-    fn test_ip_rate_limit_only_applies_to_verified_requests() {
-        let mut filter = Filter::new(
-            DEFAULT_METRICS,
-            100,
-            100,
-            Duration::from_secs(60),
-            Duration::from_secs(5),
-            1_000,
-            100,
-            100,
-        );
-        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
-        let addr = "127.0.0.1:8080".parse().unwrap();
-
-        assert_eq!(
-            filter.apply(
-                &state,
-                HandshakeKind::Initiation,
-                addr,
-                Duration::ZERO,
-                false
-            ),
-            FilterAction::Pass
-        );
-        assert_eq!(
-            filter.apply(
-                &state,
-                HandshakeKind::Initiation,
-                addr,
-                Duration::from_secs(1),
-                false
-            ),
-            FilterAction::Pass
-        );
-        assert_eq!(
-            filter.apply(
-                &state,
-                HandshakeKind::Initiation,
-                addr,
-                Duration::from_secs(2),
-                true
-            ),
-            FilterAction::Pass
-        );
-        assert_eq!(
-            filter.apply(
-                &state,
-                HandshakeKind::Initiation,
-                addr,
-                Duration::from_secs(3),
-                true
-            ),
-            FilterAction::Drop
-        );
-    }
-
-    #[test]
     fn test_drop_does_not_increment_verified_counter() {
         let mut filter = Filter::new(
             DEFAULT_METRICS,
@@ -775,6 +832,7 @@ mod tests {
             2,
             Duration::from_secs(60),
             Duration::from_secs(10),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             100,
             100,
@@ -833,6 +891,7 @@ mod tests {
             100,
             Duration::from_secs(60),
             Duration::from_secs(10),
+            NonZeroU32::new(1).unwrap(),
             1_000,
             100,
             100,
@@ -883,6 +942,7 @@ mod tests {
             100,
             Duration::from_secs(60),
             Duration::from_secs(30),
+            NonZeroU32::new(1).unwrap(),
             2,
             100,
             100,
