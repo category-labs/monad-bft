@@ -39,7 +39,7 @@ use crate::{
         get_block_key_from_tag_or_hash, DataProvider,
     },
     handlers::{
-        debug::{decode_call_frame, TracerDescriptor, TracerObject},
+        debug::{decode_call_frame, prestate_trace_to_json, TracerDescriptor, TracerObject},
         eth::{CallResult, FailureCallResult, SuccessCallResult},
         parse_ethcall_chain_id,
     },
@@ -808,15 +808,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         }
 
         TracerDescriptor::PreStateTracer | TracerDescriptor::StateDiffTracer => {
-            // reject on the approximated encoded length before serialization
-            if raw_payload.len() > max_response_size {
-                return Err(JsonRpcError::max_response_size_exceeded());
-            }
-            let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
-                .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
-            serde_json::value::to_raw_value(&v).map_err(|e| {
-                JsonRpcError::internal_error(format!("json serialization error: {}", e))
-            })
+            prestate_trace_to_json(&raw_payload, &tracer_params.config, max_response_size)
         }
 
         TracerDescriptor::AccessListTracer => Err(JsonRpcError::invalid_params()),
