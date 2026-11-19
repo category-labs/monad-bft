@@ -43,6 +43,7 @@ use self::{
     dispatch::{rpc_handler, DomainRpc},
 };
 
+mod access;
 mod auth;
 mod cli;
 mod dispatch;
@@ -78,7 +79,9 @@ async fn main() -> std::io::Result<()> {
 
     info!(
         domain_chain_id = args.domain_chain_id,
-        l1_chain_id, "serving the triedb of a private domain"
+        l1_chain_id,
+        operators = ?args.operators,
+        "serving the triedb of a private domain"
     );
 
     let triedb_env = TriedbEnv::new(
@@ -127,7 +130,7 @@ async fn main() -> std::io::Result<()> {
         &args.triedb_path,
     );
 
-    let rpc = web::Data::new(DomainRpc::new(MonadRpcResources {
+    let resources = MonadRpcResources {
         txpool_bridge_client: None,
         eth_call_handler: Some(eth_call_handler),
         chain_id: args.domain_chain_id,
@@ -147,7 +150,11 @@ async fn main() -> std::io::Result<()> {
         metrics: None,
         rpc_comparator: None,
         feehistory_limiter: Arc::new(Semaphore::new(args.feehistory_max_concurrent_requests)),
-    }));
+    };
+    let rpc = web::Data::new(DomainRpc::new(
+        resources,
+        args.operators.iter().copied().collect(),
+    ));
 
     HttpServer::new(move || {
         App::new()

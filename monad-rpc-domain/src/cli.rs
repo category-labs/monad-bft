@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 
+use alloy_primitives::Address;
 use clap::{Parser, ValueEnum};
 use monad_chain_config::{MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID};
 
@@ -32,6 +33,11 @@ pub struct Cli {
     /// Set the path of the triedb that `monad-domain` writes
     #[arg(long)]
     pub triedb_path: PathBuf,
+
+    /// Set the accounts that operate the private domain, as a comma-separated list of
+    /// addresses. Operators are served every method
+    #[arg(long, value_delimiter = ',')]
+    pub operators: Vec<Address>,
 
     /// Set the address for RPC to bind to
     #[arg(long, default_value_t = String::from("127.0.0.1"))]
@@ -194,11 +200,35 @@ pub fn is_domain_of(domain_chain_id: u64, l1_chain_id: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use alloy_primitives::Address;
+    use clap::Parser;
     use monad_chain_config::{
         MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID,
     };
 
-    use super::is_domain_of;
+    use super::{is_domain_of, Cli};
+
+    #[test]
+    fn operators_are_a_comma_separated_list() {
+        let parse = |operators: &[&str]| {
+            let required = [
+                "monad-rpc-domain",
+                "--chain=monad_devnet",
+                "--domain-chain-id=85679",
+                "--triedb-path=triedb",
+            ];
+            Cli::try_parse_from(required.iter().chain(operators)).map(|cli| cli.operators)
+        };
+        let first = Address::repeat_byte(0x11);
+        let second = Address::repeat_byte(0x22);
+
+        assert!(parse(&[]).unwrap().is_empty());
+        assert_eq!(
+            parse(&["--operators", &format!("{first},{second}")]).unwrap(),
+            [first, second]
+        );
+        assert!(parse(&["--operators", &format!("{first},0x1234")]).is_err());
+    }
 
     #[test]
     fn domain_chain_id_ends_with_its_l1() {

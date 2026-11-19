@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::HashSet;
+
 use actix_web::{web, HttpRequest, HttpResponse};
+use alloy_primitives::Address;
 use monad_rpc::{
     handlers::{handle_request, resources::MonadRpcResources, rpc_select, RpcDispatcher},
     middleware::TimingRequestId,
@@ -23,51 +26,85 @@ use serde_json::value::RawValue;
 use tracing::debug;
 use tracing_actix_web::RootSpan;
 
-use crate::auth::authenticate;
+use crate::{
+    access::{Caller, Policy},
+    auth::authenticate,
+};
 
-/// The methods a private domain serves. Any other method is not found.
-const METHODS: &[&str] = &[
-    "eth_blockNumber",
-    "eth_call",
-    "eth_chainId",
-    "eth_createAccessList",
-    "eth_estimateGas",
-    "eth_feeHistory",
-    "eth_fillTransaction",
-    "eth_gasPrice",
-    "eth_getBalance",
-    "eth_getBlockByHash",
-    "eth_getBlockByNumber",
-    "eth_getBlockReceipts",
-    "eth_getBlockTransactionCountByHash",
-    "eth_getBlockTransactionCountByNumber",
-    "eth_getCode",
-    "eth_getLogs",
-    "eth_getStorageAt",
-    "eth_getTransactionByBlockHashAndIndex",
-    "eth_getTransactionByBlockNumberAndIndex",
-    "eth_getTransactionByHash",
-    "eth_getTransactionCount",
-    "eth_getTransactionReceipt",
-    "eth_maxPriorityFeePerGas",
-    "eth_syncing",
-    "net_version",
-    "web3_clientVersion",
+/// The methods a private domain serves and who each is served to. Any other method is not
+/// found.
+const METHODS: &[(&str, Policy)] = &[
+    // Chain metadata and fee queries, which reveal no account state.
+    ("eth_blockNumber", Policy::Open),
+    ("eth_chainId", Policy::Open),
+    ("eth_feeHistory", Policy::Open),
+    ("eth_gasPrice", Policy::Open),
+    ("eth_maxPriorityFeePerGas", Policy::Open),
+    ("eth_syncing", Policy::Open),
+    ("net_version", Policy::Open),
+    ("web3_clientVersion", Policy::Open),
+    // Blocks, and the code and storage of any account.
+    ("eth_getBlockByHash", Policy::OperatorOnly),
+    ("eth_getBlockByNumber", Policy::OperatorOnly),
+    ("eth_getBlockReceipts", Policy::OperatorOnly),
+    ("eth_getBlockTransactionCountByHash", Policy::OperatorOnly),
+    ("eth_getBlockTransactionCountByNumber", Policy::OperatorOnly),
+    ("eth_getCode", Policy::OperatorOnly),
+    ("eth_getStorageAt", Policy::OperatorOnly),
+    (
+        "eth_getTransactionByBlockHashAndIndex",
+        Policy::OperatorOnly,
+    ),
+    (
+        "eth_getTransactionByBlockNumberAndIndex",
+        Policy::OperatorOnly,
+    ),
+    // TODO: serve these to every account for its own balance, transactions, calls and logs.
+    ("eth_call", Policy::OperatorOnly),
+    ("eth_createAccessList", Policy::OperatorOnly),
+    ("eth_estimateGas", Policy::OperatorOnly),
+    ("eth_fillTransaction", Policy::OperatorOnly),
+    ("eth_getBalance", Policy::OperatorOnly),
+    ("eth_getLogs", Policy::OperatorOnly),
+    ("eth_getTransactionByHash", Policy::OperatorOnly),
+    ("eth_getTransactionCount", Policy::OperatorOnly),
+    ("eth_getTransactionReceipt", Policy::OperatorOnly),
 ];
 
 pub struct DomainRpc {
     resources: MonadRpcResources,
+    operators: HashSet<Address>,
 }
 
 impl DomainRpc {
-    pub fn new(resources: MonadRpcResources) -> Self {
-        Self { resources }
+    pub fn new(resources: MonadRpcResources, operators: HashSet<Address>) -> Self {
+        Self {
+            resources,
+            operators,
+        }
+    }
+
+    /// The dispatcher of the requests that `signer` makes.
+    fn on_behalf_of(&self, signer: Address) -> CallerRpc<'_> {
+        CallerRpc {
+            rpc: self,
+            caller: Caller {
+                signer,
+                operator: self.operators.contains(&signer),
+            },
+        }
     }
 }
 
-impl RpcDispatcher for DomainRpc {
+/// Answers the requests of one caller.
+struct CallerRpc<'a> {
+    rpc: &'a DomainRpc,
+    caller: Caller,
+}
+
+impl RpcDispatcher for CallerRpc<'_> {
     fn resources(&self) -> &MonadRpcResources {
-        &self.resources
+        &self.rpc.resources
     }
 
     async fn dispatch(
@@ -76,14 +113,17 @@ impl RpcDispatcher for DomainRpc {
         params: RequestParams<'_>,
         request_id: TimingRequestId,
     ) -> Result<Box<RawValue>, JsonRpcError> {
-        if !METHODS.contains(&method) {
-            return Err(JsonRpcError::new(ErrorCode::MethodNotFound));
-        }
-        rpc_select(&self.resources, method, params, request_id).await
+        let policy = METHODS
+            .iter()
+            .find_map(|&(name, policy)| (name == method).then_some(policy))
+            .ok_or_else(|| JsonRpcError::new(ErrorCode::MethodNotFound))?;
+        self.caller.authorize(policy)?;
+        rpc_select(&self.rpc.resources, method, params, request_id).await
     }
 }
 
-/// Answers the requests in an HTTP body if the HTTP request carries a valid access token.
+/// Answers the requests in an HTTP body on behalf of the account whose access token the HTTP
+/// request carries.
 pub async fn rpc_handler(
     root_span: RootSpan,
     req: HttpRequest,
@@ -91,16 +131,19 @@ pub async fn rpc_handler(
     rpc: web::Data<DomainRpc>,
     request_id: TimingRequestId,
 ) -> HttpResponse {
-    if let Err(err) = authenticate(&req, rpc.resources.chain_id) {
-        debug!(%err, "rejected unauthenticated request");
-        return HttpResponse::Ok().json(Response::from_error(err.into()));
-    }
-    handle_request(root_span, body, rpc.get_ref(), request_id).await
+    let signer = match authenticate(&req, rpc.resources.chain_id) {
+        Ok(signer) => signer,
+        Err(err) => {
+            debug!(%err, "rejected unauthenticated request");
+            return HttpResponse::Ok().json(Response::from_error(err.into()));
+        }
+    };
+    handle_request(root_span, body, &rpc.on_behalf_of(signer), request_id).await
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::HashSet, sync::Arc};
 
     use actix_web::{test, web, App};
     use alloy_primitives::B256;
@@ -119,10 +162,21 @@ mod tests {
     use tokio::sync::Semaphore;
     use tracing_actix_web::TracingLogger;
 
-    use super::{rpc_handler, DomainRpc};
-    use crate::auth::{sign_token, AUTH_HEADER, UNAUTHORIZED_ERROR_CODE};
+    use super::{rpc_handler, DomainRpc, METHODS};
+    use crate::{
+        access::{Policy, FORBIDDEN_ERROR_CODE},
+        auth::{sign_token, AUTH_HEADER, UNAUTHORIZED_ERROR_CODE},
+    };
 
     const DOMAIN_CHAIN_ID: u64 = (1 << 16) | MONAD_DEVNET_CHAIN_ID;
+
+    fn operator() -> PrivateKeySigner {
+        PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap()
+    }
+
+    fn user() -> PrivateKeySigner {
+        PrivateKeySigner::from_bytes(&B256::repeat_byte(0x22)).unwrap()
+    }
 
     fn resources() -> MonadRpcResources {
         MonadRpcResources {
@@ -148,10 +202,33 @@ mod tests {
         }
     }
 
+    fn rpc() -> DomainRpc {
+        DomainRpc::new(resources(), HashSet::from([operator().address()]))
+    }
+
+    /// The response to `method` over HTTP with `token` as the access token.
+    async fn response(method: &str, token: Option<String>) -> Value {
+        let app = test::init_service(
+            App::new()
+                .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .app_data(web::Data::new(rpc()))
+                .service(web::resource("/").route(web::post().to(rpc_handler))),
+        )
+        .await;
+        let request = test::TestRequest::post()
+            .uri("/")
+            .set_json(json!({"jsonrpc": "2.0", "method": method, "params": [], "id": 1}));
+        let request = match token {
+            Some(token) => request.insert_header((AUTH_HEADER, token)),
+            None => request,
+        };
+        test::call_and_read_body_json(&app, request.to_request()).await
+    }
+
     #[tokio::test]
     async fn serves_the_domain_chain_id() {
-        let rpc = DomainRpc::new(resources());
-        let chain_id = rpc
+        let chain_id = rpc()
+            .on_behalf_of(user().address())
             .dispatch(
                 "eth_chainId",
                 RequestParams::default(),
@@ -178,42 +255,42 @@ mod tests {
         .unwrap_err();
         assert_ne!(served.code, method_not_found);
 
-        let not_served = DomainRpc::new(resources)
+        let not_served = rpc()
+            .on_behalf_of(operator().address())
             .dispatch(method, RequestParams::default(), TimingRequestId::random())
             .await
             .unwrap_err();
         assert_eq!(not_served.code, method_not_found);
     }
-    /// The response to `eth_chainId` over HTTP with `token` as the access token.
-    async fn chain_id_response(token: Option<String>) -> Value {
-        let app = test::init_service(
-            App::new()
-                .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
-                .app_data(web::Data::new(DomainRpc::new(resources())))
-                .service(web::resource("/").route(web::post().to(rpc_handler))),
-        )
-        .await;
-        let request = test::TestRequest::post()
-            .uri("/")
-            .set_json(json!({"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}));
-        let request = match token {
-            Some(token) => request.insert_header((AUTH_HEADER, token)),
-            None => request,
-        };
-        test::call_and_read_body_json(&app, request.to_request()).await
-    }
 
     #[actix_web::test]
     async fn requires_an_access_token() {
-        let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+        let response_to = |token| response("eth_chainId", token);
 
-        let response = chain_id_response(Some(sign_token(&signer, DOMAIN_CHAIN_ID))).await;
-        assert_eq!(response["result"], format!("{DOMAIN_CHAIN_ID:#x}"));
+        let served = response_to(Some(sign_token(&user(), DOMAIN_CHAIN_ID))).await;
+        assert_eq!(served["result"], format!("{DOMAIN_CHAIN_ID:#x}"));
 
-        for token in [None, Some(sign_token(&signer, DOMAIN_CHAIN_ID + 1))] {
-            let response = chain_id_response(token).await;
-            assert_eq!(response["error"]["code"], UNAUTHORIZED_ERROR_CODE);
-            assert!(response.get("result").is_none());
+        for token in [None, Some(sign_token(&user(), DOMAIN_CHAIN_ID + 1))] {
+            let rejected = response_to(token).await;
+            assert_eq!(rejected["error"]["code"], UNAUTHORIZED_ERROR_CODE);
+            assert!(rejected.get("result").is_none());
+        }
+    }
+
+    #[actix_web::test]
+    async fn serves_operator_only_methods_to_operators_only() {
+        for &(method, policy) in METHODS {
+            let to_user = response(method, Some(sign_token(&user(), DOMAIN_CHAIN_ID))).await;
+            let to_operator =
+                response(method, Some(sign_token(&operator(), DOMAIN_CHAIN_ID))).await;
+
+            let forbidden = |response: &Value| response["error"]["code"] == FORBIDDEN_ERROR_CODE;
+            assert_eq!(
+                forbidden(&to_user),
+                policy == Policy::OperatorOnly,
+                "{method}"
+            );
+            assert!(!forbidden(&to_operator), "{method}");
         }
     }
 }
