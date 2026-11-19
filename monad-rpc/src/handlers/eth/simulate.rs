@@ -76,12 +76,19 @@ async fn fill_simulation_gas_params<T: Triedb>(
     block_key: BlockKey,
     calls: &mut [CallRequest],
     header: &mut Header,
+    parent_base_fee: &U256,
     overrides: (&BlockOverride, &StateOverrideSet),
     call_gas_limit: u64,
     validation: bool,
-) -> JsonRpcResult<()> {
+) -> JsonRpcResult<U256> {
     let (block_override, state_overrides) = overrides;
-    let base_fee = block_override.base_fee_per_gas.unwrap_or_default();
+    // Mirrors the executor: with validation, a block without a base fee
+    // override inherits its parent's base fee.
+    let base_fee = block_override.base_fee_per_gas.unwrap_or(if validation {
+        *parent_base_fee
+    } else {
+        U256::ZERO
+    });
     if let Some(gas_limit) = block_override.gas_limit {
         header.gas_limit = gas_limit.to();
     }
@@ -98,7 +105,7 @@ async fn fill_simulation_gas_params<T: Triedb>(
         }
     }
 
-    Ok(())
+    Ok(base_fee)
 }
 
 #[rpc(
@@ -200,12 +207,14 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
 
     let mut accumulated_gas: U256 = U256::ZERO;
     let mut simulation_header = header.header.clone();
+    let mut parent_base_fee = U256::from(header.header.base_fee_per_gas.unwrap_or_default());
     for (call_list, &block_overrides) in calls.iter_mut().zip(overrides.iter()) {
-        fill_simulation_gas_params(
+        let base_fee = fill_simulation_gas_params(
             &data_provider.triedb_env,
             block_key,
             call_list,
             &mut simulation_header,
+            &parent_base_fee,
             block_overrides,
             call_gas_limit,
             params.simulation.validation,
@@ -220,6 +229,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
                 )));
             }
         }
+        parent_base_fee = base_fee;
     }
 
     let calls: Vec<Vec<TxEnvelope>> = calls
@@ -319,6 +329,7 @@ mod tests {
             gas_limit: 1000,
             ..Default::default()
         };
+        let parent_base_fee = U256::from(parent_header.base_fee_per_gas.unwrap());
         let state_overrides = StateOverrideSet::default();
 
         for base_fee_override in [
@@ -331,9 +342,13 @@ mod tests {
                 base_fee_per_gas: base_fee_override,
                 ..Default::default()
             };
-            let base_fee = base_fee_override.unwrap_or_default();
 
             for validation in [false, true] {
+                let base_fee = base_fee_override.unwrap_or(if validation {
+                    parent_base_fee
+                } else {
+                    U256::ZERO
+                });
                 let mut header = parent_header.clone();
                 let mut calls = [
                     CallRequest::default(),
@@ -356,11 +371,12 @@ mod tests {
                     },
                 ];
 
-                fill_simulation_gas_params(
+                let resolved_base_fee = fill_simulation_gas_params(
                     &triedb,
                     block_key,
                     &mut calls,
                     &mut header,
+                    &parent_base_fee,
                     (&block_override, &state_overrides),
                     100,
                     validation,
@@ -368,6 +384,7 @@ mod tests {
                 .await
                 .unwrap();
 
+                assert_eq!(resolved_base_fee, base_fee);
                 assert_eq!(calls[0].max_fee_per_gas(), Some(base_fee));
                 assert_eq!(calls[1].max_fee_per_gas(), Some(base_fee + U256::from(5)));
                 assert_eq!(calls[2].max_fee_per_gas(), Some(base_fee));
@@ -429,6 +446,7 @@ mod tests {
                             block_key,
                             &mut calls,
                             &mut header,
+                            &U256::from(1000),
                             (&block_override, &state_overrides),
                             call_gas_limit,
                             validation,
@@ -465,39 +483,54 @@ mod tests {
         let triedb = MockTriedb::default();
         let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(0)));
         let state_overrides = StateOverrideSet::default();
-        let mut header = Header {
-            base_fee_per_gas: Some(1000),
-            gas_limit: 1000,
-            ..Default::default()
-        };
 
-        for (base_fee, gas_limit, expected_fee, expected_gas) in [
-            (Some(10), Some(100), 10, 100),
-            (None, None, 0, 100),
-            (Some(20), None, 20, 100),
-            (None, Some(200), 0, 200),
-        ] {
-            let block_override = BlockOverride {
-                base_fee_per_gas: base_fee.map(U256::from),
-                gas_limit: gas_limit.map(U64::from),
+        for validation in [false, true] {
+            let mut header = Header {
+                base_fee_per_gas: Some(1000),
+                gas_limit: 1000,
                 ..Default::default()
             };
-            let mut calls = [CallRequest::default()];
+            let mut parent_base_fee = U256::from(header.base_fee_per_gas.unwrap());
 
-            fill_simulation_gas_params(
-                &triedb,
-                block_key,
-                &mut calls,
-                &mut header,
-                (&block_override, &state_overrides),
-                1000,
-                true,
-            )
-            .await
-            .unwrap();
+            // (base fee override, gas limit override,
+            //  (expected fee without validation, expected fee with validation), expected gas)
+            for (base_fee, gas_limit, (no_validation_fee, validation_fee), expected_gas) in [
+                (None, None, (0, 1000), 1000),
+                (Some(10), Some(100), (10, 10), 100),
+                (None, None, (0, 10), 100),
+                (Some(20), None, (20, 20), 100),
+                (None, Some(200), (0, 20), 200),
+            ] {
+                let block_override = BlockOverride {
+                    base_fee_per_gas: base_fee.map(U256::from),
+                    gas_limit: gas_limit.map(U64::from),
+                    ..Default::default()
+                };
+                let mut calls = [CallRequest::default()];
+                let expected_fee = U256::from(if validation {
+                    validation_fee
+                } else {
+                    no_validation_fee
+                });
 
-            assert_eq!(calls[0].max_fee_per_gas(), Some(U256::from(expected_fee)));
-            assert_eq!(calls[0].gas, Some(U256::from(expected_gas)));
+                let resolved_base_fee = fill_simulation_gas_params(
+                    &triedb,
+                    block_key,
+                    &mut calls,
+                    &mut header,
+                    &parent_base_fee,
+                    (&block_override, &state_overrides),
+                    1000,
+                    validation,
+                )
+                .await
+                .unwrap();
+                parent_base_fee = resolved_base_fee;
+
+                assert_eq!(resolved_base_fee, expected_fee);
+                assert_eq!(calls[0].max_fee_per_gas(), Some(expected_fee));
+                assert_eq!(calls[0].gas, Some(U256::from(expected_gas)));
+            }
         }
     }
 
