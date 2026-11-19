@@ -161,10 +161,8 @@ where
 
     pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
         loop {
-            let timer = AuthenticatedTimerFuture {
-                auth_protocol: &mut self.auth_protocol,
-                auth_timer: &mut self.auth_timer,
-            };
+            let timer =
+                AuthenticatedTimerFuture::new(&mut self.auth_protocol, &mut self.auth_timer);
 
             tokio::select! {
                 () = timer => {
@@ -225,16 +223,13 @@ where
     }
 
     pub fn flush(&mut self) {
-        while let Some((addr, packet)) = self.auth_protocol.next_packet() {
+        while let Some((addr, packet, _)) = self.auth_protocol.next_packet() {
             self.enqueue_packet(addr, packet, UdpPriority::High);
         }
     }
 
     pub fn timer(&mut self) -> AuthenticatedTimerFuture<'_, AP> {
-        AuthenticatedTimerFuture {
-            auth_protocol: &mut self.auth_protocol,
-            auth_timer: &mut self.auth_timer,
-        }
+        AuthenticatedTimerFuture::new(&mut self.auth_protocol, &mut self.auth_timer)
     }
 
     pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
@@ -253,7 +248,7 @@ where
             WriteRoute::Buffer(public_key) => {
                 let len = plaintext.len();
                 self.auth_protocol
-                    .buffer_message(public_key, plaintext)
+                    .buffer_message(public_key, plaintext, None)
                     .map_err(|err| warn!(?public_key, error=?err, "failed to buffer message"))?;
                 self.metrics
                     .gauge(self.bytes_written_metric)
@@ -456,6 +451,18 @@ where
 pub struct AuthenticatedTimerFuture<'a, AP: AuthenticationProtocol> {
     auth_protocol: &'a mut AP,
     auth_timer: &'a mut Option<(Pin<Box<Sleep>>, Instant)>,
+}
+
+impl<'a, AP: AuthenticationProtocol> AuthenticatedTimerFuture<'a, AP> {
+    pub(super) fn new(
+        auth_protocol: &'a mut AP,
+        auth_timer: &'a mut Option<(Pin<Box<Sleep>>, Instant)>,
+    ) -> Self {
+        Self {
+            auth_protocol,
+            auth_timer,
+        }
+    }
 }
 
 impl<AP: AuthenticationProtocol> Future for AuthenticatedTimerFuture<'_, AP> {

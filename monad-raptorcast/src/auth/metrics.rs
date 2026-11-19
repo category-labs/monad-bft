@@ -35,6 +35,7 @@ monad_executor::metric_consts! {
 }
 
 monad_wireauth::define_metric_names!(UDP_METRICS, "udp");
+monad_wireauth::define_metric_names!(TCP_METRICS, "tcp");
 monad_wireauth::define_metric_names!(DIRECT_UDP_METRICS, "direct_udp");
 
 pub(crate) fn init_socket_executor_metrics() -> ExecutorMetrics {
