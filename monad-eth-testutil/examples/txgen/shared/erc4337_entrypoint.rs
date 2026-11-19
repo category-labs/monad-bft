@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702};
 use alloy_eips::{eip2718::Encodable2718, eip7702::SignedAuthorization};
 use alloy_primitives::{
     aliases::U192,
@@ -25,6 +25,7 @@ use alloy_rpc_client::ReqwestClient;
 use alloy_sol_macro::sol;
 use alloy_sol_types::{SolCall, SolValue};
 use eyre::Result;
+use monad_transaction::TxEnvelope;
 use serde::Deserialize;
 
 use crate::{

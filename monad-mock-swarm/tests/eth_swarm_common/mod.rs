@@ -20,7 +20,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{Transaction, TxEnvelope};
+use alloy_consensus::Transaction;
 use alloy_primitives::Address;
 use monad_bls::BlsSignatureCollection;
 use monad_chain_config::{
@@ -45,6 +45,7 @@ use monad_mock_swarm::{
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_secp::{PubKey, SecpSignature};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
+use monad_transaction::TxEnvelope;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{

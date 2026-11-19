@@ -18,13 +18,14 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
-use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
+use alloy_consensus::{Header, SignableTransaction, TxEip1559, TxEip7702, TxLegacy};
 use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64, U8};
 use alloy_rpc_types::{AccessList, AccessListItem};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{overrides::StateOverrideSet, EthCallRequest, EthCallResult, MonadExecutor};
 use monad_rpc_docs::rpc;
+use monad_transaction::TxEnvelope;
 use monad_triedb_utils::triedb_env::{
     BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
 };
@@ -107,6 +108,26 @@ impl schemars::JsonSchema for CallRequest {
 }
 
 impl CallRequest {
+    /// Check the caller's native caps before gas filling can reduce them to an effective price.
+    fn validate_native_fee_bounds(&self) -> Result<(), JsonRpcError> {
+        if self.transaction_type == Some(U8::from(monad_transaction::MONAD_TX_TYPE)) {
+            let GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } = self.gas_price_details
+            else {
+                return Err(JsonRpcError::invalid_params());
+            };
+            for fee in [max_fee_per_gas, max_priority_fee_per_gas]
+                .into_iter()
+                .flatten()
+            {
+                u128::try_from(fee).map_err(|_| JsonRpcError::invalid_params())?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn max_fee_per_gas(&self) -> Option<U256> {
         match self.gas_price_details {
             GasPriceDetails::Legacy { gas_price } => Some(gas_price),
@@ -119,6 +140,7 @@ impl CallRequest {
     }
 
     pub fn fill_gas_prices(&mut self, base_fee: U256) -> Result<(), JsonRpcError> {
+        self.validate_native_fee_bounds()?;
         match self.gas_price_details {
             GasPriceDetails::Legacy { gas_price } => {
                 if gas_price < base_fee {
@@ -207,13 +229,14 @@ impl Default for GasPriceDetails {
 impl TryFrom<CallRequest> for TxEnvelope {
     type Error = JsonRpcError;
     fn try_from(call_request: CallRequest) -> Result<Self, JsonRpcError> {
+        call_request.validate_native_fee_bounds()?;
         let CallRequest {
-            from,
+            from: _,
             to,
             gas,
             gas_price_details,
             value,
-            input: CallInput { input, data },
+            input: CallInput { input, data: _ },
             nonce,
             chain_id,
             access_list,
@@ -238,6 +261,50 @@ impl TryFrom<CallRequest> for TxEnvelope {
 
         // default signature as eth_call doesn't require it
         let signature = Signature::new(U256::ZERO, U256::ZERO, false);
+
+        if transaction_type == Some(U8::from(monad_transaction::MONAD_TX_TYPE)) {
+            if authorization_list.is_some()
+                || max_fee_per_blob_gas.is_some()
+                || blob_versioned_hashes.is_some()
+            {
+                return Err(JsonRpcError::invalid_params());
+            }
+            let GasPriceDetails::Eip1559 {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            } = gas_price_details
+            else {
+                return Err(JsonRpcError::invalid_params());
+            };
+            let chain_id = chain_id.unwrap_or_default().to::<u64>();
+            if chain_id != monad_transaction::MONAD_DEVNET_CHAIN_ID || nonce == u64::MAX {
+                return Err(JsonRpcError::invalid_params());
+            }
+            let max_fee_per_gas = u128::try_from(max_fee_per_gas.unwrap_or_default())
+                .map_err(|_| JsonRpcError::invalid_params())?;
+            let max_priority_fee_per_gas =
+                u128::try_from(max_priority_fee_per_gas.unwrap_or_default())
+                    .map_err(|_| JsonRpcError::invalid_params())?;
+            if max_priority_fee_per_gas > max_fee_per_gas {
+                return Err(JsonRpcError::invalid_params());
+            }
+            if to.is_none() {
+                check_contract_creation_size(Some(&input))?;
+            }
+            return Ok(monad_transaction::TxMonad {
+                chain_id,
+                nonce,
+                gas_limit,
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+                to: to.map(TxKind::Call).unwrap_or(TxKind::Create),
+                value,
+                input,
+                access_list,
+            }
+            .into_signed(signature)
+            .into());
+        }
 
         match gas_price_details {
             GasPriceDetails::Legacy { gas_price } => {
@@ -1008,7 +1075,7 @@ pub async fn monad_admin_ethCallStatistics(
 mod tests {
     use std::collections::HashMap;
 
-    use alloy_consensus::{Header, TxEnvelope};
+    use alloy_consensus::Header;
     use alloy_primitives::{Address, Bytes, B256, U256};
     use alloy_rpc_types::{AccessList, AccessListItem};
     use monad_chain_config::execution_revision::MonadExecutionRevision;
@@ -1016,6 +1083,7 @@ mod tests {
         overrides::{StateOverrideObject, StateOverrideSet},
         EthCallResult, MonadTracer,
     };
+    use monad_transaction::TxEnvelope;
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
         triedb_env::{BlockKey, FinalizedBlockKey},
@@ -1797,3 +1865,116 @@ mod tests {
         assert!(result.is_ok());
     }
 }
+
+#[cfg(test)]
+mod native_request_tests {
+    use alloy_consensus::Transaction;
+
+    use super::*;
+
+    fn native_request() -> CallRequest {
+        serde_json::from_value(serde_json::json!({
+            "type": "0x40", "chainId": "0x4eaf", "nonce": "0x0", "gas": "0x5208",
+            "to": "0x0000000000000000000000000000000000000002",
+            "maxFeePerGas": "0xffffffffffffffffffffffffffffffff",
+            "maxPriorityFeePerGas": "0x1", "value": "0x0", "input": "0x"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn native_request_retains_type_fee_width_and_optional_access_list_presence() {
+        let request = native_request();
+        let tx = TxEnvelope::try_from(request.clone()).unwrap();
+        assert!(tx.is_monad());
+        assert_eq!(tx.max_fee_per_gas(), u128::MAX);
+        assert!(tx.access_list().is_none());
+        let mut empty = request;
+        empty.access_list = Some(Default::default());
+        let empty_tx = TxEnvelope::try_from(empty).unwrap();
+        assert!(empty_tx.access_list().unwrap().is_empty());
+        assert_ne!(tx.signature_hash(), empty_tx.signature_hash());
+    }
+
+    #[test]
+    fn native_request_rejects_other_fee_auth_blob_and_chain_semantics() {
+        let mut request = native_request();
+        request.authorization_list = Some(vec![]);
+        assert!(TxEnvelope::try_from(request).is_err());
+        let mut request = native_request();
+        request.blob_versioned_hashes = Some(vec![]);
+        assert!(TxEnvelope::try_from(request).is_err());
+        let mut request = native_request();
+        request.gas_price_details = GasPriceDetails::Legacy {
+            gas_price: U256::ONE,
+        };
+        assert!(TxEnvelope::try_from(request).is_err());
+        let mut request = native_request();
+        request.chain_id = Some(U64::from(143));
+        assert!(TxEnvelope::try_from(request).is_err());
+        let mut request = native_request();
+        request.nonce = Some(U64::MAX);
+        assert!(TxEnvelope::try_from(request).is_err());
+        let mut request = native_request();
+        request.gas_price_details = GasPriceDetails::Eip1559 {
+            max_fee_per_gas: Some(U256::MAX),
+            max_priority_fee_per_gas: Some(U256::ONE),
+        };
+        assert!(TxEnvelope::try_from(request).is_err());
+        let mut request = native_request();
+        request.to = None;
+        request.input.input = Some(Bytes::from(vec![
+            1;
+            2 * MonadExecutionRevision::LATEST
+                .execution_chain_params()
+                .max_code_size
+                + 1
+        ]));
+        assert!(TxEnvelope::try_from(request).is_err());
+    }
+
+    #[test]
+    fn native_fee_overflow_is_rejected_before_gas_filling() {
+        for (cap, tip) in [
+            (U256::ONE << 128, U256::ONE),
+            (U256::from(u128::MAX), U256::ONE << 128),
+        ] {
+            let mut request = native_request();
+            request.gas_price_details = GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(cap),
+                max_priority_fee_per_gas: Some(tip),
+            };
+            assert_eq!(
+                TxEnvelope::try_from(request.clone()),
+                Err(JsonRpcError::invalid_params())
+            );
+            assert_eq!(
+                request.fill_gas_prices(U256::ONE),
+                Err(JsonRpcError::invalid_params())
+            );
+            assert_eq!(request.max_fee_per_gas(), Some(cap));
+        }
+        let mut request = native_request();
+        request.gas_price_details = GasPriceDetails::Eip1559 {
+            max_fee_per_gas: Some(U256::from(u128::MAX)),
+            max_priority_fee_per_gas: Some(U256::from(u128::MAX)),
+        };
+        request.value = Some(U256::MAX);
+        request.fill_gas_prices(U256::ONE).unwrap();
+        let tx = TxEnvelope::try_from(request).unwrap();
+        assert_eq!(tx.max_fee_per_gas(), u128::MAX);
+        assert_eq!(tx.value(), U256::MAX);
+    }
+
+    #[test]
+    fn native_request_preserves_contract_creation() {
+        let mut request = native_request();
+        request.to = None;
+        let tx = TxEnvelope::try_from(request).unwrap();
+        assert!(tx.is_monad());
+        assert!(tx.is_create());
+    }
+}
+
+#[cfg(test)]
+mod ethereum_rpc_compat;

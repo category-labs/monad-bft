@@ -15,11 +15,14 @@
 
 use std::sync::{atomic::Ordering, Arc};
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{BlockHash, Bloom, TxHash};
-use alloy_rpc_types::{Block, BlockTransactions, Transaction, TransactionReceipt};
+use alloy_rpc_types::BlockTransactions;
 use dashmap::DashMap;
 use monad_eth_types::{BlockHeader, ReceiptWithLogIndex, TxEnvelopeWithSender};
+use monad_transaction::{
+    rpc::{Block, Transaction, TransactionReceipt},
+    TxEnvelope,
+};
 use tracing::error;
 
 use super::{BlockBufferBlockStates, BlockBufferTxLoc};

@@ -713,9 +713,12 @@ mod tests {
             "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
         );
 
-        let snapshot =
-            SnapshotEventRing::new_from_zstd_bytes(SNAPSHOT_NAME, SNAPSHOT_ZSTD_BYTES, None)
-                .unwrap();
+        let snapshot = SnapshotEventRing::new_from_zstd_bytes(
+            SNAPSHOT_NAME,
+            &monad_exec_events::test_utils::upgrade_legacy_snapshot(SNAPSHOT_ZSTD_BYTES),
+            None,
+        )
+        .unwrap();
 
         let event_server_client =
             EventServer::start_for_testing_with_delay(snapshot, Duration::from_secs(1));

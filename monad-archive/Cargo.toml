@@ -33,6 +33,7 @@ mongodb-integration-tests = []
 monad-compress = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-metrics = { workspace = true }
+monad-transaction = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 

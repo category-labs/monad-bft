@@ -19,10 +19,8 @@ use std::{
 };
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS,
-    proofs::calculate_transaction_root,
-    transaction::{Recovered, Transaction},
-    TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+    constants::EMPTY_WITHDRAWALS, proofs::calculate_transaction_root, transaction::Recovered,
+    Transaction, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::U256;
@@ -55,6 +53,7 @@ use monad_eth_types::{
 use monad_execution_state_read::ExecutionStateRead;
 use monad_secp::RecoverableAddress;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
+use monad_transaction::TxEnvelope;
 use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
@@ -624,7 +623,7 @@ where
 mod test {
     use std::{collections::BTreeMap, time::Duration};
 
-    use alloy_consensus::{transaction::SignerRecoverable, Signed};
+    use alloy_consensus::Signed;
     use alloy_eips::eip7702::SignedAuthorization;
     use alloy_primitives::{Address, FixedBytes, Signature, B256, U256};
     use itertools::{FoldWhile, Itertools};

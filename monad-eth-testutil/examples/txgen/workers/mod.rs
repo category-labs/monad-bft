@@ -18,8 +18,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering::SeqCst},
 };
 
-use alloy_consensus::TxEnvelope;
 use futures::{stream::FuturesUnordered, StreamExt};
+use monad_transaction::TxEnvelope;
 
 use crate::{prelude::*, shared::eth_json_rpc::EthJsonRpc};
 

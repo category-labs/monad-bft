@@ -22,10 +22,10 @@ use std::{
 };
 
 use alloy_primitives::{BlockHash, TxHash};
-use alloy_rpc_types::{Block, Transaction, TransactionReceipt};
 use dashmap::DashMap;
 use itertools::Itertools;
 use monad_exec_events::BlockCommitState;
+use monad_transaction::rpc::{Block, Transaction, TransactionReceipt};
 use tracing::{error, warn};
 
 pub use self::view::BlockBufferView;
@@ -249,13 +249,13 @@ mod tests {
     use std::sync::Arc;
 
     use alloy_consensus::{
-        transaction::Recovered, Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom,
-        SignableTransaction, TxEip1559, TxEnvelope,
+        transaction::Recovered, Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction,
+        TxEip1559,
     };
     use alloy_primitives::{Address, Bloom, TxKind, B256};
-    use alloy_rpc_types::TransactionReceipt;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
+    use monad_transaction::{rpc::TransactionReceipt, ReceiptEnvelope, TxEnvelope};
     use monad_types::BlockId;
 
     use super::*;
@@ -560,7 +560,7 @@ mod tests {
                 let transaction_hash = *tx_envelope.tx_hash();
                 let tx_recovered = Recovered::new_unchecked(tx_envelope, signer.address());
 
-                let tx = alloy_rpc_types::Transaction {
+                let tx = monad_transaction::rpc::Transaction {
                     inner: tx_recovered,
                     block_hash: Some(block_hash),
                     block_number: Some(height),

@@ -13,10 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_primitives::{hex, Address, Bytes, TxKind, B256, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::LocalSigner;
+use monad_transaction::TxEnvelope;
 
 use crate::{config::SystemCallType, prelude::*};
 

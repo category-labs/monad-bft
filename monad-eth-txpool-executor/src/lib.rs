@@ -23,7 +23,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::Decodable2718;
 use alloy_primitives::Address;
 use bytes::Bytes;
@@ -52,6 +52,7 @@ use monad_execution_state_read::ExecutionStateRead;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_peer_score::{ema, StdClock};
 use monad_secp::RecoverableAddress;
+use monad_transaction::TxEnvelope;
 use monad_types::{
     DropTimer, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round, SeqNum,
     MAX_FORWARDED_TXS_PER_MESSAGE,
@@ -794,7 +795,6 @@ mod test {
         time::Duration,
     };
 
-    use alloy_consensus::transaction::SignerRecoverable;
     use alloy_primitives::TxHash;
     use futures::StreamExt;
     use monad_chain_config::{revision::MockChainRevision, ChainConfig, MockChainConfig};

@@ -35,6 +35,7 @@ monad-node-config = { workspace = true, features = ["crypto"] }
 monad-pprof = { workspace = true }
 monad-rpc-docs = { workspace = true }
 monad-tracing-timing = { workspace = true }
+monad-transaction = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 monad-version = { workspace = true }
@@ -92,6 +93,7 @@ monad-version = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
+monad-exec-events = { workspace = true, features = ["test-utils"] }
 
 actix-test = { workspace = true }
 alloy-consensus = { workspace = true, features = ["arbitrary", "k256"] }

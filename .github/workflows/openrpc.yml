@@ -70,7 +70,7 @@ jobs:
           git submodule update --init --recursive
           cargo run --bin monad-rpc-docs | python -m json.tool > openrpc-master.json
 
-      - name: Comment on PR
+      - name: Summarize OpenRPC changes
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v6
         with:
@@ -106,6 +106,14 @@ jobs:
                 '',
                 '</details>',
               ].join('\n');
+            }
+
+            await core.summary.addRaw(body).write();
+
+            // Fork pull requests have a read-only token; retain the diff in the job summary.
+            if (context.payload.pull_request.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.info('Skipping PR comment for a fork pull request. See the job summary and OpenRPC artifact.');
+              return;
             }
 
             const { data: comments } = await github.rest.issues.listComments({

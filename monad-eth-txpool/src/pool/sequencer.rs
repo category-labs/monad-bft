@@ -18,7 +18,7 @@ use std::{
     collections::{BTreeMap, BinaryHeap, VecDeque},
 };
 
-use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_consensus::{transaction::Recovered, Transaction};
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
 use alloy_primitives::Address;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
@@ -31,6 +31,7 @@ use monad_eth_block_policy::{
     EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
 use monad_eth_types::ValidatedTx;
+use monad_transaction::TxEnvelope;
 use monad_types::NodeId;
 use monad_validator::signature_collection::SignatureCollection;
 use rand::seq::SliceRandom;

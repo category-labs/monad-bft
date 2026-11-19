@@ -16,14 +16,13 @@
 use std::ops::{Div, Sub};
 
 use alloy_consensus::{
-    Header, SignableTransaction, Transaction, TxEip1559, TxEip2930, TxEip7702, TxEnvelope, TxLegacy,
+    Header, SignableTransaction, Transaction, TxEip1559, TxEip2930, TxEip7702, TxLegacy,
 };
 use alloy_eips::eip2718::{
     EIP1559_TX_TYPE_ID, EIP2930_TX_TYPE_ID, EIP4844_TX_TYPE_ID, EIP7702_TX_TYPE_ID,
     LEGACY_TX_TYPE_ID,
 };
 use alloy_primitives::{Address, Signature, TxKind, U256, U64, U8};
-use alloy_rpc_types::{FeeHistory, TransactionReceipt};
 use futures::stream::StreamExt;
 use itertools::Itertools;
 use monad_ethcall::{
@@ -31,6 +30,10 @@ use monad_ethcall::{
     EthCallRequest, MonadExecutor, MonadTracer,
 };
 use monad_rpc_docs::rpc;
+use monad_transaction::{
+    rpc::{FeeHistory, TransactionReceipt},
+    TxEnvelope,
+};
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use serde::Deserialize;
 use tracing::trace;
@@ -904,7 +907,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 
         gas_used_ratio_history.push((header.gas_used as f64).div(header.gas_limit as f64));
 
-        let txns: Vec<alloy_rpc_types::Transaction> =
+        let txns: Vec<monad_transaction::rpc::Transaction> =
             block.transactions.into_transactions().collect::<Vec<_>>();
 
         let receipts = receipts.into_iter().map(|r| r.0).collect::<Vec<_>>();
@@ -948,7 +951,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 }
 
 fn calculate_fee_history_rewards(
-    transactions: Vec<alloy_rpc_types::Transaction>,
+    transactions: Vec<monad_transaction::rpc::Transaction>,
     receipts: Vec<TransactionReceipt>,
     base_fee: u64,
     block_gas_used: u64,
@@ -1031,8 +1034,8 @@ mod tests {
     use std::sync::Arc;
 
     use alloy_consensus::{
-        transaction::Recovered, Block, Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom,
-        SignableTransaction, TxEip1559, TxEip2930,
+        transaction::Recovered, Block, Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction,
+        TxEip1559, TxEip2930,
     };
     use alloy_primitives::{Bloom, Bytes, FixedBytes, Log, LogData, B256};
     use alloy_rpc_types::{AccessList, AccessListItem};
@@ -1041,6 +1044,7 @@ mod tests {
     use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_eth_types::{EthAccount, ReceiptWithLogIndex};
     use monad_ethcall::EthCallResult;
+    use monad_transaction::ReceiptEnvelope;
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use super::*;
@@ -1288,16 +1292,16 @@ mod tests {
         use alloy_rpc_types::Log as RpcLog;
 
         TransactionReceipt {
-            inner: alloy_consensus::ReceiptEnvelope::Eip1559(alloy_consensus::ReceiptWithBloom::<
-                alloy_consensus::Receipt<RpcLog>,
-            >::new(
-                alloy_consensus::Receipt::<RpcLog> {
-                    logs: vec![],
-                    status: Eip658Value::Eip658(true),
-                    cumulative_gas_used: gas_used,
-                },
-                Bloom::default(),
-            )),
+            inner: monad_transaction::ReceiptEnvelope::Eip1559(
+                alloy_consensus::ReceiptWithBloom::<alloy_consensus::Receipt<RpcLog>>::new(
+                    alloy_consensus::Receipt::<RpcLog> {
+                        logs: vec![],
+                        status: Eip658Value::Eip658(true),
+                        cumulative_gas_used: gas_used,
+                    },
+                    Bloom::default(),
+                ),
+            ),
             transaction_hash: Default::default(),
             transaction_index: None,
             block_hash: None,
@@ -1338,7 +1342,7 @@ mod tests {
         assert_eq!(res.0.blob_gas_used_ratio, vec![0.0]);
         assert_eq!(res.0.gas_used_ratio, vec![0.0]);
         assert_eq!(res.0.base_fee_per_gas, vec![1_000, 1_000]);
-        assert_eq!(res.0.reward, Some(vec![vec![0, 0, 0, 0, 0]]));
+        assert_eq!(res.0.reward, Some(vec![vec![0; 5]]));
 
         // Fetch fee history for blocks that have 4 transactions.
         let mut txs = Vec::new();
@@ -1449,9 +1453,9 @@ mod tests {
         let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
         let from_addr = signer.address();
 
-        let transactions: Vec<alloy_rpc_types::Transaction> = txs
+        let transactions: Vec<monad_transaction::rpc::Transaction> = txs
             .into_iter()
-            .map(|tx| alloy_rpc_types::Transaction {
+            .map(|tx| monad_transaction::rpc::Transaction {
                 inner: Recovered::new_unchecked(tx, from_addr),
                 block_hash: None,
                 block_number: None,

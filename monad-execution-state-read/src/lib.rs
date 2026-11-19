@@ -15,12 +15,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthAccount, EthHeader};
+use monad_transaction::TxEnvelope;
 use monad_types::{BlockId, Epoch, Round, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 

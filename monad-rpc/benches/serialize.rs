@@ -16,7 +16,7 @@
 use std::hint::black_box;
 
 use alloy_primitives::B256;
-use alloy_rpc_types::{Block, BlockTransactions, Log, Transaction, TransactionReceipt};
+use alloy_rpc_types::{BlockTransactions, Log};
 use arbitrary::{Arbitrary, Unstructured};
 use criterion::{
     criterion_group, criterion_main, measurement::Measurement, BenchmarkGroup, Criterion,
@@ -27,6 +27,7 @@ use monad_rpc::types::{
     eth_json::{serialize_result, MonadBlock, MonadLog, MonadTransactionReceipt},
     jsonrpc::{RequestId, Response, ResponseWrapper},
 };
+use monad_transaction::rpc::Block;
 use serde::Serialize;
 
 fn serialize<T>(value: &T) -> String
@@ -87,7 +88,12 @@ fn bench(c: &mut Criterion) {
             transactions: BlockTransactions::Full(
                 (0..1_000u64)
                     .map(|idx| {
-                        Transaction::arbitrary(&mut Unstructured::new(&idx.to_le_bytes())).unwrap()
+                        let transaction: alloy_rpc_types::Transaction =
+                            alloy_rpc_types::Transaction::arbitrary(&mut Unstructured::new(
+                                &idx.to_le_bytes(),
+                            ))
+                            .unwrap();
+                        serde_json::from_value(serde_json::to_value(transaction).unwrap()).unwrap()
                     })
                     .collect(),
             ),
@@ -100,9 +106,13 @@ fn bench(c: &mut Criterion) {
         "block_receipts_1k",
         &(0..1_000u64)
             .map(|idx| {
+                let receipt: alloy_rpc_types::TransactionReceipt =
+                    alloy_rpc_types::TransactionReceipt::arbitrary(&mut Unstructured::new(
+                        &idx.to_le_bytes(),
+                    ))
+                    .unwrap();
                 MonadTransactionReceipt(
-                    TransactionReceipt::arbitrary(&mut Unstructured::new(&idx.to_le_bytes()))
-                        .unwrap(),
+                    serde_json::from_value(serde_json::to_value(receipt).unwrap()).unwrap(),
                 )
             })
             .collect_vec(),

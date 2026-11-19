@@ -13,8 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{Transaction, TxEnvelope};
+use alloy_consensus::Transaction;
 use monad_chain_config::{execution_revision::ExecutionChainParams, revision::ChainParams};
+use monad_transaction::TxEnvelope;
 use serde::{Deserialize, Serialize};
 
 // allow for more fine grain debugging if needed
@@ -49,6 +50,7 @@ pub enum StaticValidationError {
         proposal_gas_limit: u64,
     },
     InvalidSignature,
+    NonceExceedsMax,
     UnsupportedTransactionType,
     AuthorizationListEmpty,
     AuthorizationListLengthLimitExceeded,
@@ -63,6 +65,17 @@ pub fn static_validate_transaction(
 ) -> Result<(), StaticValidationError> {
     if tx.is_eip4844() {
         return Err(StaticValidationError::UnsupportedTransactionType);
+    }
+
+    if tx.is_monad() {
+        if chain_id != monad_transaction::MONAD_DEVNET_CHAIN_ID
+            || !execution_chain_params.prague_enabled
+        {
+            return Err(StaticValidationError::UnsupportedTransactionType);
+        }
+        if tx.nonce() == u64::MAX {
+            return Err(StaticValidationError::NonceExceedsMax);
+        }
     }
 
     TfmValidator::validate(tx, chain_params)?;
@@ -334,6 +347,105 @@ mod test {
         let secret_key = B256::repeat_byte(0xAu8).to_string();
         let signer = &secret_key.parse::<PrivateKeySigner>().unwrap();
         signer.sign_hash_sync(signature_hash).unwrap()
+    }
+
+    fn native_tx() -> monad_transaction::TxMonad {
+        monad_transaction::TxMonad {
+            chain_id: monad_transaction::MONAD_DEVNET_CHAIN_ID,
+            gas_limit: 21_000,
+            max_fee_per_gas: BASE_FEE.into(),
+            max_priority_fee_per_gas: 2_000_000_000,
+            to: TxKind::Call(Address::repeat_byte(1)),
+            ..Default::default()
+        }
+    }
+
+    fn validate_native(
+        tx: monad_transaction::TxMonad,
+        chain: u64,
+    ) -> Result<(), StaticValidationError> {
+        let signature = sign_tx(&tx.signature_hash());
+        static_validate_transaction(
+            &tx.into_signed(signature).into(),
+            chain,
+            &chain_params_with_gas_limit(TFM_MAX_GAS_LIMIT),
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        )
+    }
+
+    #[test]
+    fn native_activation_is_limited_to_devnet() {
+        assert_eq!(validate_native(native_tx(), 20143), Ok(()));
+        for chain in [143, 10143, 1, 31337] {
+            let mut tx = native_tx();
+            tx.chain_id = chain;
+            assert_eq!(
+                validate_native(tx, chain),
+                Err(StaticValidationError::UnsupportedTransactionType)
+            );
+        }
+        let mut tx = native_tx();
+        tx.chain_id = u64::MAX;
+        assert!(matches!(
+            validate_native(tx, 20143),
+            Err(StaticValidationError::InvalidChainId { .. })
+        ));
+    }
+
+    #[test]
+    fn native_fee_bounds_and_nonce_match_execution() {
+        let mut wide = native_tx();
+        wide.max_fee_per_gas = u128::MAX;
+        wide.max_priority_fee_per_gas = u128::MAX;
+        assert_eq!(validate_native(wide.clone(), 20143), Ok(()));
+        let signature = sign_tx(&wide.signature_hash());
+        let envelope = wide.into_signed(signature).into();
+        assert_eq!(
+            crate::compute_txn_max_gas_cost(&envelope, BASE_FEE),
+            alloy_primitives::U256::from(21_000) * alloy_primitives::U256::from(u128::MAX)
+        );
+        let mut tx = native_tx();
+        tx.nonce = u64::MAX;
+        assert_eq!(
+            validate_native(tx, 20143),
+            Err(StaticValidationError::NonceExceedsMax)
+        );
+    }
+
+    #[test]
+    fn native_uses_existing_call_creation_access_list_and_floor_gas_rules() {
+        let mut tx = native_tx();
+        tx.access_list = Some(Default::default());
+        assert_eq!(validate_native(tx.clone(), 20143), Ok(()));
+        tx.access_list = Some(alloy_eips::eip2930::AccessList(vec![
+            alloy_eips::eip2930::AccessListItem {
+                address: Address::repeat_byte(2),
+                storage_keys: vec![B256::ZERO],
+            },
+        ]));
+        tx.gas_limit = 25_300;
+        assert_eq!(validate_native(tx.clone(), 20143), Ok(()));
+        tx.gas_limit -= 1;
+        assert!(matches!(
+            validate_native(tx, 20143),
+            Err(StaticValidationError::GasLimitUnderIntrinsicGas { .. })
+        ));
+        let mut tx = native_tx();
+        tx.to = TxKind::Create;
+        tx.gas_limit = 53_000;
+        assert_eq!(validate_native(tx.clone(), 20143), Ok(()));
+        tx.gas_limit -= 1;
+        assert!(matches!(
+            validate_native(tx, 20143),
+            Err(StaticValidationError::GasLimitUnderIntrinsicGas { .. })
+        ));
+        let mut tx = native_tx();
+        tx.input = vec![1].into();
+        tx.gas_limit = 21_016;
+        assert!(matches!(
+            validate_native(tx, 20143),
+            Err(StaticValidationError::GasLimitUnderFloorDataGas { .. })
+        ));
     }
 
     #[test]

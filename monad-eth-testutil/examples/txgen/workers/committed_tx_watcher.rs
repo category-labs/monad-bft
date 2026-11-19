@@ -15,10 +15,12 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use alloy_network::ReceiptResponse;
 use alloy_primitives::Uint;
 use alloy_rlp::Encodable;
-use alloy_rpc_types::{Block, FilterChanges, TransactionReceipt};
+use alloy_rpc_types::{BlockTransactions, FilterChanges};
 use eyre::Context;
+use monad_transaction::rpc::{Block, TransactionReceipt};
 use serde_json::json;
 
 use super::*;
@@ -82,7 +84,7 @@ impl CommittedTxWatcher {
                     };
 
                     let mut ours = 0;
-                    for hash in block.transactions.hashes() {
+                    for hash in transaction_hashes(&block) {
                         if self.sent_txs.remove(&hash).is_some() {
                             ours += 1;
                         }
@@ -240,7 +242,7 @@ impl CommittedTxWatcher {
         let mut gas_consumed = U256::ZERO;
         let mut contract_addresses = Vec::new();
 
-        for hash in block.transactions.hashes() {
+        for hash in transaction_hashes(block) {
             rpc_calls += 1;
             let rx: TransactionReceipt =
                 match client.request("eth_getTransactionReceipt", [hash]).await {
@@ -274,5 +276,15 @@ impl CommittedTxWatcher {
             *x += gas_consumed;
         }
         Ok(())
+    }
+}
+
+fn transaction_hashes(block: &Block) -> Vec<TxHash> {
+    match &block.transactions {
+        BlockTransactions::Hashes(hashes) => hashes.clone(),
+        BlockTransactions::Full(transactions) => {
+            transactions.iter().map(|tx| *tx.inner.tx_hash()).collect()
+        }
+        BlockTransactions::Uncle => Vec::new(),
     }
 }

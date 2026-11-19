@@ -275,9 +275,9 @@ mod test {
     async fn testing_server() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             "TEST",
-            include_bytes!(
+            &monad_exec_events::test_utils::upgrade_legacy_snapshot(include_bytes!(
                 "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
-            ),
+            )),
             None,
         )
         .unwrap();
@@ -303,9 +303,9 @@ mod test {
     async fn json() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             "TEST",
-            include_bytes!(
+            &monad_exec_events::test_utils::upgrade_legacy_snapshot(include_bytes!(
                 "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
-            ),
+            )),
             None,
         )
         .unwrap();
@@ -348,14 +348,14 @@ mod test {
 
         let (tx_first, tx_first_receipt, tx_first_monad_logs) = transactions.first().unwrap();
 
-        assert_json::<_, alloy_rpc_types::Transaction>(
+        assert_json::<_, monad_transaction::rpc::Transaction>(
             &[&tx_first],
             include_str!(
                 "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.tx.0.json"
             ),
         );
 
-        assert_json::<_, alloy_rpc_types::TransactionReceipt>(
+        assert_json::<_, monad_transaction::rpc::TransactionReceipt>(
             &[&tx_first_receipt],
             include_str!(
                 "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.tx-receipt.0.json"
@@ -397,7 +397,11 @@ mod test {
             assert!(!str.contains("RawValue"));
             assert!(!str.contains("$serde_json::private::RawValue"));
 
-            assert_eq!(str, json);
+            // Object member order is not part of the RPC contract.
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&str).unwrap(),
+                serde_json::from_str::<serde_json::Value>(json).unwrap()
+            );
 
             let _: E = serde_json::from_str(&str).unwrap();
         }

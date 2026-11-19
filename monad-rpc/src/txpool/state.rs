@@ -19,10 +19,10 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash};
 use dashmap::{DashMap, Entry};
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolEventType, EthTxPoolSnapshot};
+use monad_transaction::TxEnvelope;
 use tokio::time::Instant;
 
 use super::TxStatus;
@@ -256,12 +256,12 @@ impl EthTxPoolBridgeState {
 mod test {
     use std::{collections::HashSet, time::Duration};
 
-    use alloy_consensus::{transaction::SignerRecoverable, TxEnvelope};
     use monad_eth_testutil::{make_legacy_tx, S1};
     use monad_eth_txpool_types::{
         EthTxPoolDropReason, EthTxPoolEvent, EthTxPoolEventType, EthTxPoolEvictReason,
         EthTxPoolSnapshot,
     };
+    use monad_transaction::TxEnvelope;
     use tokio::time::Instant;
 
     use super::EthTxPoolBridgeStateView;
