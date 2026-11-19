@@ -1752,6 +1752,79 @@ mod test {
         BlsSignatureCollection<CertificateSignaturePubKey<SignatureType>>;
     type ExecutionProtocolType = EthExecutionProtocol;
 
+    #[test]
+    fn message_headers_classify_all_variants_without_decoding_bodies() {
+        type M = MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
+
+        fn list(fields: &[&[u8]]) -> Vec<u8> {
+            let mut encoded = Vec::new();
+            Header {
+                list: true,
+                payload_length: fields.iter().map(|field| field.len()).sum(),
+            }
+            .encode(&mut encoded);
+            for field in fields {
+                encoded.extend_from_slice(field);
+            }
+            encoded
+        }
+
+        let version = alloy_rlp::encode(MonadVersion::version());
+        for (tag, protocol, name, count) in [
+            (1u8, Protocol::Consensus, "ProtocolMessage", 6),
+            (2, Protocol::BlockSyncRequest, "BlockSyncRequestMessage", 2),
+            (
+                3,
+                Protocol::BlockSyncResponse,
+                "BlockSyncResponseMessage",
+                2,
+            ),
+            (5, Protocol::StateSync, "StateSyncNetworkMessage", 5),
+        ] {
+            for message in 1u8..=count {
+                let named = list(&[
+                    &alloy_rlp::encode(name),
+                    &alloy_rlp::encode(message),
+                    &[0xff], // Deliberately invalid RLP in the body.
+                ]);
+                let body = if tag == 1 {
+                    let consensus = list(&[&alloy_rlp::encode(1u32), &named]);
+                    list(&[&consensus, &[0xff]])
+                } else {
+                    named
+                };
+                let encoded = list(&[&version, &alloy_rlp::encode(tag), &body]);
+                assert_eq!(
+                    M::decode_header(&encoded).unwrap(),
+                    MessageKind::new(protocol, message),
+                );
+                assert!(M::decode(&mut encoded.as_slice()).is_err());
+            }
+            let unknown = list(&[&alloy_rlp::encode(name), &alloy_rlp::encode(count + 1)]);
+            let body = if tag == 1 {
+                let consensus = list(&[&alloy_rlp::encode(1u32), &unknown]);
+                list(&[&consensus])
+            } else {
+                unknown
+            };
+            let encoded = list(&[&version, &alloy_rlp::encode(tag), &body]);
+            assert!(M::decode_header(&encoded).is_err());
+        }
+
+        // An actual encoded application message agrees with its classifier.
+        let forwarded = VerifiedMonadMessage::<
+            SignatureType,
+            SignatureCollectionType,
+            ExecutionProtocolType,
+        >::ForwardedTx(LimitedVec(vec![Bytes::from_static(b"tx")]));
+        let encoded = alloy_rlp::encode(forwarded);
+        assert_eq!(
+            M::decode_header(&encoded).unwrap(),
+            Protocol::ForwardedTx.into()
+        );
+        assert!(M::decode(&mut encoded.as_slice()).is_ok());
+    }
+
     fn get_forkpoint() -> (
         Forkpoint<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         Vec<ValidatorSetDataWithEpoch<SignatureCollectionType>>,
