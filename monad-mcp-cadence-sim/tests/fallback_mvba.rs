@@ -114,7 +114,7 @@ mod fixtures {
 
     /// A valid metablock whose entries are determined by `seed`, so two seeds
     /// give two metablocks that cannot be confused for one another
-    pub fn fast_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
+    pub fn fast_metablock(seed: u64, validator_data: &Arc<ValidatorData>) -> Metablock {
         Metablock::new(Lanes::new(NUM_LANES, |j| {
             let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
             CertifiedEntry::FastQc(strong_qc(
@@ -129,7 +129,7 @@ mod fixtures {
     /// Valid but *not* a fast metablock: its first entry rests on a fallback
     /// quorum. `entries()` matches [`metablock`] on the same seed, so the two
     /// differ only in their evidence
-    pub fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
+    pub fn mixed_evidence_metablock(seed: u64, validator_data: &Arc<ValidatorData>) -> Metablock {
         Metablock::new(Lanes::new(NUM_LANES, |j| {
             let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
             if j == Lane::new_unchecked(0) {
@@ -151,15 +151,19 @@ mod fixtures {
     }
 
     /// A genuine fallback certificate for this slot
-    pub fn enter_fallback_cert(validator_data: &ValidatorData) -> EnterFallbackCert {
+    pub fn enter_fallback_cert(validator_data: &Arc<ValidatorData>) -> EnterFallbackCert {
         strong_qc(SLOT, EnterFallbackVote, &quorum(), validator_data)
     }
 
-    fn vote_pool<V: IsVote>(scope: V::Scope, vote: V, signers: &[NodeId]) -> VotePool<V> {
+    fn vote_pool<V: IsVote>(
+        scope: V::Scope,
+        vote: V,
+        signers: &[NodeId],
+        validator_data: &Arc<ValidatorData>,
+    ) -> VotePool<V> {
         use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
-        let validator_data = validator_data();
-        let mut pool = VotePool::new(scope.clone());
+        let mut pool = VotePool::new(scope.clone(), validator_data.clone());
         for node in signers {
             pool.add_vote(
                 validator_data.index_of(node).expect("a validator"),
@@ -174,10 +178,10 @@ mod fixtures {
         scope: V::Scope,
         vote: V,
         signers: &[NodeId],
-        validator_data: &ValidatorData,
+        validator_data: &Arc<ValidatorData>,
     ) -> StrongQc<V> {
-        vote_pool(scope, vote, signers)
-            .tally(validator_data)
+        vote_pool(scope, vote, signers, validator_data)
+            .tally()
             .strong_qc()
             .expect("the signers hold a supermajority of stake")
     }
@@ -187,10 +191,10 @@ mod fixtures {
         scope: V::Scope,
         vote: V,
         signers: &[NodeId],
-        validator_data: &ValidatorData,
+        validator_data: &Arc<ValidatorData>,
     ) -> WeakQc<V> {
-        let pool = vote_pool(scope, vote, signers);
-        let mut qcs = pool.tally(validator_data).weak_qcs().into_iter();
+        let pool = vote_pool(scope, vote, signers, validator_data);
+        let mut qcs = pool.tally().weak_qcs().into_iter();
         match (qcs.next(), qcs.next()) {
             (Some(qc), None) => qc,
             (None, _) => panic!("the signers hold more than an honest threshold of stake"),

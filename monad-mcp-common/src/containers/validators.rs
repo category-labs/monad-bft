@@ -18,13 +18,8 @@
 
 use std::fmt;
 
-use super::index_vec::Idx;
-
-/// The most validators an epoch may have. Fixes the size of a
-/// [`ValidatorSet`].
-pub const MAX_VALIDATORS: usize = WORDS * 64;
-
-const WORDS: usize = 24;
+use super::dense::{DenseMap, DenseVec, Idx};
+use crate::MAX_VALIDATORS;
 
 /// A validator's position in one epoch's validator set, handed out by that
 /// epoch's validator data. Meaningless outside that epoch, and not the same
@@ -35,14 +30,22 @@ const WORDS: usize = 24;
 pub struct ValidatorIndex(u16);
 
 impl ValidatorIndex {
-    /// For the validator data that defines the indices; `None` from
-    /// [`MAX_VALIDATORS`] on.
-    pub const fn new(index: usize) -> Option<Self> {
-        if index < MAX_VALIDATORS {
+    /// An index from outside, as one of a set of `num_validators`; `None`
+    /// if the set has no such validator. `num_validators` is the size of a
+    /// validator set that the caller trusts, never a value from outside.
+    pub const fn new(index: usize, num_validators: usize) -> Option<Self> {
+        debug_assert!(num_validators <= MAX_VALIDATORS);
+        if index < num_validators {
             Some(Self(index as u16))
         } else {
             None
         }
+    }
+
+    /// For a caller that knows the index is one of its validator set.
+    pub const fn new_unchecked(index: usize) -> Self {
+        debug_assert!(index < MAX_VALIDATORS);
+        Self(index as u16)
     }
 
     pub const fn get(self) -> usize {
@@ -57,14 +60,18 @@ impl fmt::Debug for ValidatorIndex {
 }
 
 impl Idx for ValidatorIndex {
+    const MAX: usize = MAX_VALIDATORS;
+
     fn new(index: usize) -> Self {
-        Self::new(index).expect("validator index in range")
+        Self::new_unchecked(index)
     }
 
     fn index(self) -> usize {
         self.get()
     }
 }
+
+const WORDS: usize = MAX_VALIDATORS.div_ceil(64);
 
 /// A set of validators of one epoch: a fixed-size bitset, so it never
 /// allocates, and union, intersection and test-and-set are a few word
@@ -73,6 +80,9 @@ impl Idx for ValidatorIndex {
 pub struct ValidatorSet {
     words: [u64; WORDS],
 }
+
+// a set is passed and combined by value
+const _: () = assert!(size_of::<ValidatorSet>() == 40);
 
 impl ValidatorSet {
     pub const fn new() -> Self {
@@ -149,6 +159,17 @@ impl ValidatorSet {
             .all(|(word, other)| word & !other == 0)
     }
 
+    /// The member with the highest index.
+    pub fn last(&self) -> Option<ValidatorIndex> {
+        for (word, bits) in self.words.iter().enumerate().rev() {
+            if *bits != 0 {
+                let index = word * 64 + bits.ilog2() as usize;
+                return Some(ValidatorIndex(index as u16));
+            }
+        }
+        None
+    }
+
     /// In index order.
     pub fn iter(&self) -> Iter<'_> {
         Iter {
@@ -219,136 +240,16 @@ impl Iterator for Iter<'_> {
     }
 }
 
-/// A value per validator of one epoch, for some of them. Iterates in index
-/// order. Sized by the highest index inserted so far, so it suits values
-/// held for most validators, such as votes.
-// todo: box the values, or keep them dense behind a u16 slot index, once a
-// value type is large (a BLS signature is 96 bytes)
-#[derive(Clone)]
-pub struct ValidatorMap<T> {
-    slots: Vec<Option<T>>,
-    len: usize,
-}
+/// A value for each validator of one epoch, in index order.
+pub type ValidatorVec<V> = DenseVec<ValidatorIndex, V>;
 
-impl<T> ValidatorMap<T> {
-    pub const fn new() -> Self {
-        Self {
-            slots: Vec::new(),
-            len: 0,
-        }
-    }
+/// A value for some validators of one epoch, in index order.
+pub type ValidatorMap<V> = DenseMap<ValidatorIndex, V>;
 
-    /// Room for validators below `validators` without reallocating.
-    pub fn with_capacity(validators: usize) -> Self {
-        Self {
-            slots: Vec::with_capacity(validators),
-            len: 0,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    pub fn get(&self, validator: ValidatorIndex) -> Option<&T> {
-        self.slots.get(validator.get())?.as_ref()
-    }
-
-    pub fn get_mut(&mut self, validator: ValidatorIndex) -> Option<&mut T> {
-        self.slots.get_mut(validator.get())?.as_mut()
-    }
-
-    pub fn contains_key(&self, validator: ValidatorIndex) -> bool {
-        self.get(validator).is_some()
-    }
-
-    /// The value it replaces, if any.
-    pub fn insert(&mut self, validator: ValidatorIndex, value: T) -> Option<T> {
-        let index = validator.get();
-        if index >= self.slots.len() {
-            self.slots.resize_with(index + 1, || None);
-        }
-        let previous = self.slots[index].replace(value);
-        if previous.is_none() {
-            self.len += 1;
-        }
-        previous
-    }
-
-    pub fn remove(&mut self, validator: ValidatorIndex) -> Option<T> {
-        let removed = self.slots.get_mut(validator.get())?.take();
-        if removed.is_some() {
-            self.len -= 1;
-        }
-        removed
-    }
-
-    pub fn clear(&mut self) {
-        self.slots.clear();
-        self.len = 0;
-    }
-
+impl<V> ValidatorMap<V> {
     /// The validators with a value.
     pub fn keys(&self) -> ValidatorSet {
         self.iter().map(|(validator, _)| validator).collect()
-    }
-
-    /// In index order.
-    pub fn iter(&self) -> impl Iterator<Item = (ValidatorIndex, &T)> {
-        self.slots.iter().enumerate().filter_map(|(index, slot)| {
-            let value = slot.as_ref()?;
-            Some((ValidatorIndex(index as u16), value))
-        })
-    }
-
-    /// In index order.
-    pub fn values(&self) -> impl Iterator<Item = &T> {
-        self.slots.iter().flatten()
-    }
-}
-
-impl<T> Default for ValidatorMap<T> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// by content: maps with the same entries are equal however far their slots
-// were grown
-impl<T: PartialEq> PartialEq for ValidatorMap<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.len == other.len && self.iter().eq(other.iter())
-    }
-}
-
-impl<T: Eq> Eq for ValidatorMap<T> {}
-
-impl<T: fmt::Debug> fmt::Debug for ValidatorMap<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_map().entries(self.iter()).finish()
-    }
-}
-
-/// Panics if the validator has no value.
-impl<T> std::ops::Index<ValidatorIndex> for ValidatorMap<T> {
-    type Output = T;
-
-    fn index(&self, validator: ValidatorIndex) -> &T {
-        self.get(validator).expect("validator has a value")
-    }
-}
-
-impl<T> FromIterator<(ValidatorIndex, T)> for ValidatorMap<T> {
-    fn from_iter<I: IntoIterator<Item = (ValidatorIndex, T)>>(iter: I) -> Self {
-        let mut map = Self::new();
-        for (validator, value) in iter {
-            map.insert(validator, value);
-        }
-        map
     }
 }
 
@@ -361,14 +262,28 @@ mod tests {
     use super::*;
 
     fn index(i: u16) -> ValidatorIndex {
-        ValidatorIndex::new(usize::from(i)).unwrap()
+        ValidatorIndex::new_unchecked(usize::from(i))
     }
 
     #[test]
-    fn indices_stop_below_the_maximum() {
-        assert_eq!(MAX_VALIDATORS, 1536);
-        assert!(ValidatorIndex::new(MAX_VALIDATORS - 1).is_some());
-        assert!(ValidatorIndex::new(MAX_VALIDATORS).is_none());
+    #[cfg(debug_assertions)]
+    #[should_panic]
+    fn a_set_has_at_most_the_maximum_of_validators() {
+        ValidatorIndex::new(0, MAX_VALIDATORS + 1);
+    }
+
+    #[test]
+    fn an_index_is_below_the_size_of_its_set() {
+        assert_eq!(ValidatorIndex::new(2, 3), Some(index(2)));
+        assert_eq!(ValidatorIndex::new(3, 3), None);
+        assert_eq!(ValidatorIndex::new(0, 0), None);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic]
+    fn an_unchecked_index_stops_below_the_maximum() {
+        ValidatorIndex::new_unchecked(MAX_VALIDATORS);
     }
 
     #[test]
@@ -428,6 +343,7 @@ mod tests {
             prop_assert_eq!(set.iter().collect::<Vec<_>>(), members(&reference));
             prop_assert_eq!(set.len(), reference.len());
             prop_assert_eq!(set.is_empty(), reference.is_empty());
+            prop_assert_eq!(set.last(), members(&reference).last().copied());
             prop_assert_eq!(set.contains(index(probe)), reference.contains(&probe));
             prop_assert_eq!(set, members(&reference).into_iter().collect::<ValidatorSet>());
         }
@@ -450,7 +366,7 @@ mod tests {
             ops in prop::collection::vec((validator(), any::<Option<u8>>()), 0..200),
             probe in validator(),
         ) {
-            let mut map = ValidatorMap::new();
+            let mut map = ValidatorMap::new(MAX_VALIDATORS);
             let mut reference = BTreeMap::new();
             for (i, value) in ops {
                 match value {
@@ -467,7 +383,10 @@ mod tests {
             prop_assert_eq!(map.is_empty(), reference.is_empty());
             prop_assert_eq!(map.get(index(probe)), reference.get(&probe));
             prop_assert_eq!(map.keys(), reference.keys().map(|i| index(*i)).collect());
-            let rebuilt: ValidatorMap<u8> = entries.iter().map(|(i, v)| (*i, **v)).collect();
+            let mut rebuilt = ValidatorMap::new(MAX_VALIDATORS);
+            for (i, value) in entries {
+                rebuilt.insert(i, *value);
+            }
             prop_assert!(map == rebuilt);
         }
     }

@@ -489,7 +489,7 @@ fn a_formed_commit_certificate_is_final_against_later_votes() {
     let block = metablock(1, &validator_data);
     let other = metablock(2, &validator_data);
 
-    let mut collectors = ViewCollectors::new(SLOT, view(1));
+    let mut collectors = ViewCollectors::new(SLOT, view(1), &validator_data);
     for node in quorum() {
         let msg = VoteMsg::new_signed(
             MvbaScope::new(SLOT, view(1)),
@@ -499,7 +499,7 @@ fn a_formed_commit_certificate_is_final_against_later_votes() {
         collectors.store_commit_vote(dummy_index(node), msg);
     }
     let first = collectors
-        .try_form_commit_qc(&validator_data)
+        .try_form_commit_qc()
         .expect("a supermajority forms the certificate");
 
     // a late vote, even one for other entries, changes nothing: the pool is
@@ -513,7 +513,7 @@ fn a_formed_commit_certificate_is_final_against_later_votes() {
     collectors.store_commit_vote(dummy_index(late), msg);
 
     assert_eq!(
-        collectors.try_form_commit_qc(&validator_data),
+        collectors.try_form_commit_qc(),
         Some(first),
         "the sealed certificate is what every later call returns"
     );
@@ -527,7 +527,7 @@ fn timeouts_claiming_different_locks_aggregate_into_one_certificate() {
     let locked = metablock(2, &validator_data);
     let qc = prepare_qc(view(1), &locked.entries(), &validator_data);
 
-    let mut collectors = ViewCollectors::new(SLOT, view(2));
+    let mut collectors = ViewCollectors::new(SLOT, view(2), &validator_data);
     for (i, node) in quorum().into_iter().enumerate() {
         // one of the three holds the lock; the other two hold none
         let carried = (i == 2).then(|| qc.clone());
@@ -538,7 +538,7 @@ fn timeouts_claiming_different_locks_aggregate_into_one_certificate() {
     }
 
     let tc = collectors
-        .try_form_tc(&validator_data)
+        .try_form_tc()
         .expect("three of four is a supermajority however they are split");
 
     assert_eq!(tc.groups.len(), 2, "one signature collection per claim");
@@ -556,7 +556,7 @@ fn timeouts_claiming_different_locks_aggregate_into_one_certificate() {
 fn a_timeout_signed_with_garbage_is_left_out_of_the_certificate() {
     let validator_data = validator_data();
 
-    let mut collectors = ViewCollectors::new(SLOT, view(2));
+    let mut collectors = ViewCollectors::new(SLOT, view(2), &validator_data);
     for node in nodes() {
         let mut msg = TimeoutMsg::new_signed(SLOT, view(2), None, &node.keypair());
         if node == nodes()[3] {
@@ -566,7 +566,7 @@ fn a_timeout_signed_with_garbage_is_left_out_of_the_certificate() {
     }
 
     let tc = collectors
-        .try_form_tc(&validator_data)
+        .try_form_tc()
         .expect("the three honest timeouts are a supermajority on their own");
 
     assert_eq!(tc.groups.len(), 1);
@@ -586,7 +586,7 @@ fn a_later_timeout_claiming_a_higher_lock_replaces_the_first() {
     let locked = metablock(2, &validator_data);
     let qc = prepare_qc(view(1), &locked.entries(), &validator_data);
 
-    let mut collectors = ViewCollectors::new(SLOT, view(2));
+    let mut collectors = ViewCollectors::new(SLOT, view(2), &validator_data);
     for node in quorum() {
         collectors.store_timeout(
             dummy_index(node),
@@ -601,7 +601,7 @@ fn a_later_timeout_claiming_a_higher_lock_replaces_the_first() {
     );
 
     let tc = collectors
-        .try_form_tc(&validator_data)
+        .try_form_tc()
         .expect("the three senders are a supermajority however they are split");
 
     assert_eq!(
@@ -629,7 +629,7 @@ fn a_later_timeout_replaces_the_first_whatever_it_claims() {
 
     // `None` is the retraction, the same certificate again the no-op repeat
     for retransmission in [None, Some(qc.clone())] {
-        let mut collectors = ViewCollectors::new(SLOT, view(2));
+        let mut collectors = ViewCollectors::new(SLOT, view(2), &validator_data);
         for node in quorum() {
             collectors.store_timeout(
                 dummy_index(node),
@@ -645,7 +645,7 @@ fn a_later_timeout_replaces_the_first_whatever_it_claims() {
         );
 
         let tc = collectors
-            .try_form_tc(&validator_data)
+            .try_form_tc()
             .expect("the three senders are a supermajority however they are split");
 
         assert_eq!(
@@ -1550,7 +1550,7 @@ fn a_retransmitted_timeout_with_a_raised_lock_reaches_the_certificate() {
     let locked = metablock(2, &validator_data);
     let qc = prepare_qc(view(1), &locked.entries(), &validator_data);
 
-    let mut collectors = ViewCollectors::new(SLOT, view(2));
+    let mut collectors = ViewCollectors::new(SLOT, view(2), &validator_data);
     for node in &quorum()[..2] {
         collectors.store_timeout(
             dummy_index(node),
@@ -1571,7 +1571,7 @@ fn a_retransmitted_timeout_with_a_raised_lock_reaches_the_certificate() {
     );
 
     let tc = collectors
-        .try_form_tc(&validator_data)
+        .try_form_tc()
         .expect("three of four is a supermajority");
 
     assert_eq!(

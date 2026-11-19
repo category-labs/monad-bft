@@ -30,8 +30,10 @@ pub mod prod;
 
 use std::{fmt, time::Duration};
 
-use alloy_rlp::{
-    Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
+use alloy_rlp::{Decodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
+
+pub use self::containers::{
+    Lane, Lanes, OrderKey, ValidatorIndex, ValidatorMap, ValidatorSet, ValidatorVec,
 };
 
 // Slot number, starting from 0.
@@ -207,36 +209,8 @@ impl<M, R> Outbound<M, R, Qos> {
 // the max number of lanes we currently permit
 pub const MAX_PROPOSER_SET_SIZE: usize = 5;
 
-// The position of a proposal in a slot. Only meaningful under the
-// context of a given slot. Invariant: .0 < MAX_PROPOSER_SET_SIZE.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RlpEncodableWrapper)]
-pub struct Lane(u8);
-
-impl Lane {
-    pub const fn new_unchecked(lane: u8) -> Self {
-        Self(lane)
-    }
-
-    pub const fn from_u8(lane: u8) -> Option<Self> {
-        if lane as usize >= MAX_PROPOSER_SET_SIZE {
-            return None;
-        }
-        Some(Self(lane))
-    }
-}
-
-impl Decodable for Lane {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let lane = u8::decode(buf)?;
-        Self::from_u8(lane).ok_or(alloy_rlp::Error::Custom("lane out of range"))
-    }
-}
-
-impl From<Lane> for usize {
-    fn from(lane: Lane) -> Self {
-        usize::from(lane.0)
-    }
-}
+// the most validators an epoch may have
+pub const MAX_VALIDATORS: usize = 300;
 
 /// The slot and lane authenticated by a per-proposal vote.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
@@ -430,195 +404,6 @@ impl Default for WindowId {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Lanes<T> {
-    values: Box<[T]>,
-}
-
-impl<T> Lanes<T> {
-    // the caller must ensure `size` is contextually valid.
-    pub fn new(size: usize, init_fn: impl FnMut(Lane) -> T) -> Self {
-        assert!(size <= MAX_PROPOSER_SET_SIZE, "too many lanes");
-        Self {
-            values: lanes_unchecked(size).map(init_fn).collect(),
-        }
-    }
-
-    // the caller must ensure `size` is contextually valid.
-    pub fn new_default(size: usize) -> Self
-    where
-        T: Default,
-    {
-        assert!(size <= MAX_PROPOSER_SET_SIZE, "too many lanes");
-        Self {
-            values: lanes_unchecked(size).map(|_| T::default()).collect(),
-        }
-    }
-
-    pub const fn size(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn lanes(&self) -> impl Iterator<Item = Lane> + use<T> {
-        lanes_unchecked(self.size())
-    }
-
-    // None if `index` is not a lane of this slot
-    pub fn checked_lane(&self, index: usize) -> Option<Lane> {
-        let in_range = index < self.size();
-        in_range.then(|| Lane::new_unchecked(index as u8))
-    }
-
-    pub fn get(&self, index: usize) -> Option<&T> {
-        self.values.get(index)
-    }
-
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.values.get_mut(index)
-    }
-
-    pub fn as_ref(&self) -> Lanes<&T> {
-        let values = self.values.iter().collect();
-        Lanes { values }
-    }
-
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.values.iter_mut()
-    }
-
-    pub fn map<F, U>(self, f: F) -> Lanes<U>
-    where
-        F: FnMut(T) -> U,
-    {
-        let values = self.values.into_iter().map(f).collect();
-        Lanes { values }
-    }
-
-    pub fn map_indexed<F, U>(self, mut f: F) -> Lanes<U>
-    where
-        F: FnMut(Lane, T) -> U,
-    {
-        let values = self
-            .lanes()
-            .zip(self.values)
-            .map(|(lane, v)| f(lane, v))
-            .collect();
-        Lanes { values }
-    }
-
-    pub fn into_indexed_iter(self) -> impl Iterator<Item = (Lane, T)> {
-        self.lanes().zip(self.values)
-    }
-}
-
-impl<T> IntoIterator for Lanes<T> {
-    type Item = T;
-    type IntoIter = std::vec::IntoIter<T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.values.into_iter()
-    }
-}
-
-impl<T> Lanes<Option<T>> {
-    /// Panics if the lane is out of bounds. The caller must ensure the lane is valid.
-    pub fn set(&mut self, lane: Lane, value: T) {
-        self.values[usize::from(lane)] = Some(value);
-    }
-
-    pub fn try_into_total<S>(self) -> Option<Lanes<S>>
-    where
-        S: From<T>,
-    {
-        let is_partial = self.values.iter().any(|v| v.is_none());
-        if is_partial {
-            return None;
-        }
-
-        let values = self
-            .values
-            .into_iter()
-            // SAFETY: we just checked that all values are Some
-            .map(|opt| S::from(opt.unwrap()))
-            .collect();
-
-        Some(Lanes { values })
-    }
-
-    pub fn into_total<S>(self) -> Lanes<S>
-    where
-        S: From<Option<T>>,
-    {
-        self.map(|opt| S::from(opt))
-    }
-}
-
-impl<T> Lanes<&T> {
-    pub fn into_owned(self) -> Lanes<T>
-    where
-        T: Clone,
-    {
-        self.map(|v| v.clone())
-    }
-}
-
-/// Panics if the lane is out of bounds. The caller must ensure the lane is valid.
-impl<T> std::ops::Index<Lane> for Lanes<T> {
-    type Output = T;
-    fn index(&self, lane: Lane) -> &T {
-        &self.values[usize::from(lane)]
-    }
-}
-
-/// Panics if the lane is out of bounds. The caller must ensure the lane is valid.
-impl<T> std::ops::IndexMut<Lane> for Lanes<T> {
-    fn index_mut(&mut self, lane: Lane) -> &mut T {
-        &mut self.values[usize::from(lane)]
-    }
-}
-
-// the caller must ensure count is contextually valid
-fn lanes_unchecked(count: usize) -> impl Iterator<Item = Lane> {
-    assert!(count <= MAX_PROPOSER_SET_SIZE);
-    (0..count).map(|j| Lane::new_unchecked(j as u8))
-}
-
-impl<T> Encodable for Lanes<T>
-where
-    T: Encodable,
-{
-    fn encode(&self, out: &mut dyn bytes::BufMut) {
-        alloy_rlp::encode_list(&self.values, out);
-    }
-
-    fn length(&self) -> usize {
-        alloy_rlp::list_length(&self.values)
-    }
-}
-
-impl<T> Decodable for Lanes<T>
-where
-    T: Decodable,
-{
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
-        let mut values = Vec::new();
-        while !payload.is_empty() {
-            if values.len() == MAX_PROPOSER_SET_SIZE {
-                return Err(alloy_rlp::Error::Custom("too many lanes"));
-            }
-            values.push(T::decode(&mut payload)?);
-        }
-        if values.is_empty() {
-            return Err(alloy_rlp::Error::Custom("no lanes"));
-        }
-        let result = Self {
-            values: values.into_boxed_slice(),
-        };
-        Ok(result)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,16 +413,6 @@ mod tests {
         let decode = |slot: u64| Slot::decode(&mut alloy_rlp::encode(slot).as_slice()).ok();
         assert_eq!(decode(Slot::MAX.0), Some(Slot::MAX));
         assert_eq!(decode(Slot::MAX_CAP.0), None);
-    }
-
-    #[test]
-    fn a_lane_decodes_only_below_the_proposer_set_size() {
-        for lane in 0..=u8::MAX {
-            let bytes = alloy_rlp::encode(lane);
-            let decoded = Lane::decode(&mut bytes.as_slice());
-            let in_range = usize::from(lane) < MAX_PROPOSER_SET_SIZE;
-            assert_eq!(decoded.is_ok(), in_range, "lane {lane}");
-        }
     }
 
     #[test]

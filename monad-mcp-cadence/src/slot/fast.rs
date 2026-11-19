@@ -90,13 +90,15 @@ impl FastPath {
         Self {
             slot: s,
 
-            votes: Lanes::new(num_lanes, |j| VotePool::new(ProposalScope::new(s, j))),
+            votes: Lanes::new(num_lanes, |j| {
+                VotePool::new(ProposalScope::new(s, j), validator_data.clone())
+            }),
             certs: Lanes::new_default(num_lanes),
-            commit_votes: VotePool::new(s),
+            commit_votes: VotePool::new(s, validator_data.clone()),
 
-            enter_fallback_votes: VotePool::new(s),
+            enter_fallback_votes: VotePool::new(s, validator_data.clone()),
             fallback_entry_votes: Lanes::new(num_lanes, |j| {
-                VotePool::new(ProposalScope::new(s, j))
+                VotePool::new(ProposalScope::new(s, j), validator_data.clone())
             }),
 
             phase: Phase::Initial,
@@ -166,9 +168,7 @@ impl FastPath {
         // no phase guard on purpose
         self.commit_votes.add_vote(voter, vote_msg);
         let supermajority = self.validator_data.total_stake().supermajority_threshold();
-        let tally = self
-            .commit_votes
-            .tally_at_least(&self.validator_data, supermajority)?;
+        let tally = self.commit_votes.tally_at_least(supermajority)?;
         tally.strong_qc()
     }
 
@@ -319,7 +319,7 @@ impl FastPath {
             }
         }
 
-        let Some(states) = states.try_into_total::<ProposalState>() else {
+        let Ok(states) = states.try_into_total::<ProposalState>() else {
             // some proposals are still undecided, wait for more votes/chunks
             return FallbackTransitionOutcome::Waiting;
         };
@@ -355,10 +355,7 @@ impl FastPath {
             return Some((None, block));
         }
 
-        let enter_fallback_cert = self
-            .enter_fallback_votes
-            .tally(&self.validator_data)
-            .strong_qc()?;
+        let enter_fallback_cert = self.enter_fallback_votes.tally().strong_qc()?;
 
         Some((Some(enter_fallback_cert), block))
     }
@@ -373,6 +370,7 @@ impl FastPath {
                 LocalCertifiedEntry::Certified(cert) => Some(cert),
             })
             .try_into_total()
+            .ok()
             .map(|block| Metablock::new(block.into_owned()))
     }
 
@@ -381,7 +379,7 @@ impl FastPath {
     pub(crate) fn vote_admission_state(&self) -> (Vec<usize>, Vec<(Lane, NodeId)>) {
         let mut admitted = Vec::new();
         let mut waiting_on_header = Vec::new();
-        for j in self.proposals.lanes() {
+        for j in self.proposals.indices() {
             let header_seen = HeaderSeen(&self.availability[j]);
             let mut count = 0;
             for (entry, voters) in self.votes[j].buckets() {
@@ -412,7 +410,7 @@ impl FastPath {
             .collect();
         let uncertified = self
             .proposals
-            .lanes()
+            .indices()
             .filter(|j| matches!(self.certs[*j], LocalCertifiedEntry::Absent))
             .collect();
         (voters, uncertified)
@@ -420,7 +418,7 @@ impl FastPath {
 
     // ------- internal helper methods ---------
     fn proposal_state(&self, j: Lane) -> Option<ProposalState> {
-        let tally = self.votes[j].tally(&self.validator_data);
+        let tally = self.votes[j].tally();
         let supermajority = self.validator_data.total_stake().supermajority_threshold();
 
         if tally.stake() <= supermajority {
@@ -482,7 +480,7 @@ impl FastPath {
 
     fn missing_headers(&self, j: Lane) -> MissingHeaders {
         let avail = &self.availability[j];
-        let tally = self.votes[j].tally(&self.validator_data);
+        let tally = self.votes[j].tally();
         let mut missing = MissingHeaders::new();
         for (entry, sigcol) in tally.groups() {
             let Entry::Positive(pid) = entry else {
@@ -509,7 +507,7 @@ impl FastPath {
 
         let votes = &self.fallback_entry_votes[j];
         let honest = self.validator_data.total_stake().honest_threshold();
-        let Some(tally) = votes.tally_at_least(&self.validator_data, honest) else {
+        let Some(tally) = votes.tally_at_least(honest) else {
             return;
         };
         let mut weak_qcs = tally.weak_qcs().into_iter();
@@ -542,6 +540,7 @@ impl FastPath {
             .as_ref()
             .map(LocalCertifiedEntry::fast_qc)
             .try_into_total()
+            .ok()
             .map(Lanes::into_owned)
             .map(FastBlock)
     }
@@ -554,7 +553,7 @@ impl FastPath {
 
         let votes = &self.votes[j];
         let supermajority = self.validator_data.total_stake().supermajority_threshold();
-        let Some(tally) = votes.tally_at_least(&self.validator_data, supermajority) else {
+        let Some(tally) = votes.tally_at_least(supermajority) else {
             return;
         };
         let fast_qc = tally.narrow(HeaderSeen(&self.availability[j])).strong_qc();
@@ -1329,13 +1328,13 @@ mod tests {
 
     // a fast qc on header(byte) at `scope`, signed by validators 0, 2 and 3
     fn fast_qc(scope: ProposalScope, byte: u8) -> FastQc {
-        let mut pool = VotePool::new(scope);
+        let mut pool = VotePool::new(scope, Arc::new(validator_data(4)));
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let msg = VoteMsg::new_signed(scope, Entry::Positive(pid(byte)), &voter.keypair());
             pool.add_vote(dummy_index(voter), msg);
         }
-        pool.tally(&validator_data(4))
+        pool.tally()
             .strong_qc()
             .expect("three of four votes form a fast qc")
     }
@@ -1348,13 +1347,13 @@ mod tests {
     // a fast commit qc on `entries`, signed by validators 0, 2 and 3
     fn fast_commit_qc(entries: Lanes<Entry>) -> FastCommitQc {
         let vote = FastCommitVote { entries };
-        let mut pool = VotePool::new(SLOT);
+        let mut pool = VotePool::new(SLOT, Arc::new(validator_data(4)));
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let msg = VoteMsg::new_signed(SLOT, vote.clone(), &voter.keypair());
             pool.add_vote(dummy_index(voter), msg);
         }
-        pool.tally(&validator_data(4))
+        pool.tally()
             .strong_qc()
             .expect("three of four votes form a fast commit qc")
     }
@@ -1447,19 +1446,16 @@ mod tests {
     #[test]
     fn a_positive_fallback_qc_names_its_signers_as_decoded_holders() {
         let entry = FallbackEntry(Entry::Positive(pid(1)));
-        let mut pool = VotePool::new(ProposalScope::new(SLOT, Lane::new_unchecked(0)));
+        let validator_data = Arc::new(validator_data(4));
+        let scope = ProposalScope::new(SLOT, Lane::new_unchecked(0));
+        let mut pool = VotePool::new(scope, validator_data.clone());
         for id in [0, 2] {
             let voter = NodeId::dummy(id);
-            let vote = VoteMsg::new_signed(
-                ProposalScope::new(SLOT, Lane::new_unchecked(0)),
-                entry.clone(),
-                &voter.keypair(),
-            );
+            let vote = VoteMsg::new_signed(scope, entry.clone(), &voter.keypair());
             pool.add_vote(dummy_index(voter), vote);
         }
-        let validator_data = validator_data(4);
         let qc = pool
-            .tally(&validator_data)
+            .tally()
             .weak_qcs()
             .into_iter()
             .next()
@@ -1775,11 +1771,11 @@ mod tests {
     /// neither a strong nor a weak quorum.
     #[test]
     fn a_certificate_does_not_verify_under_a_foreign_scope() {
-        let validators = validator_data(4);
+        let validators = Arc::new(validator_data(4));
         let scope = ProposalScope::new(SLOT, Lane::new_unchecked(0));
         let foreign = ProposalScope::new(SLOT, Lane::new_unchecked(1));
 
-        let mut pool = VotePool::new(scope);
+        let mut pool = VotePool::new(scope, validators.clone());
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let msg = VoteMsg::new_signed(scope, Entry::Positive(pid(1)), &voter.keypair());
@@ -1787,7 +1783,7 @@ mod tests {
         }
 
         let strong = pool
-            .tally(&validators)
+            .tally()
             .strong_qc()
             .expect("three of four votes form a strong qc");
         assert!(strong.verify(&validators));
@@ -1799,7 +1795,7 @@ mod tests {
             .verify(&validators)
         );
 
-        let mut weak_qcs = pool.tally(&validators).weak_qcs().into_iter();
+        let mut weak_qcs = pool.tally().weak_qcs().into_iter();
         let weak = match (weak_qcs.next(), weak_qcs.next()) {
             (Some(qc), None) => qc,
             (None, _) => panic!("three of four votes exceed the honest threshold"),
@@ -1852,7 +1848,7 @@ mod rlp_tests {
             [(signer, Stake::from(1))].into(),
             [(signer, key.pubkey())].into(),
         );
-        let first = ValidatorIndex::new(0).expect("one validator");
+        let first = ValidatorIndex::new_unchecked(0);
         let sigcol = SignatureCollection::aggregate([(first, &signature)], &validator_data);
         let fast_qc = StrongQc {
             scope: ProposalScope::new(slot, Lane::new_unchecked(0)),

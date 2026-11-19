@@ -42,7 +42,7 @@ pub fn new_block(finalized: &FinalizedSlot, proposers: Option<&ProposerSet>) -> 
     let pids = finalization_pids(finalized);
     let lanes = finalized
         .proposals
-        .lanes()
+        .indices()
         .zip(pids)
         .zip(finalized.proposals.clone())
         .map(|((lane, pid), payload)| NewLane {

@@ -27,7 +27,7 @@ from config or the keystore.
   arm and x86 (16- vs 8-byte probe groups), so even a fixed seed does not give
   a portable order. Pick the container for how it is used (the module docs of
   `monad_mcp_common::containers` say which when): `ValidatorSet`/
-  `ValidatorMap` for validators of an epoch, an `IndexVec` for dense state
+  `ValidatorMap` for validators of an epoch, a `DenseVec` for dense state
   over another index (DA's `ByNode`), a `Vec` for lists that are only
   iterated, a `BTreeMap`/`BTreeSet` where the order means something, a hash
   container only for lookups. `clippy::iter_over_hash_type` is denied in these
@@ -97,7 +97,7 @@ Hash containers kept, lookup or membership only: DA `authenticated_headers`,
 `headers`/`decoded`/`invalid`, MVBA `BlockStore` and its gc set, the timeout
 certificate's distinct votes, the stub `ValidatorData`'s
 `NodeId -> ValidatorIndex` map (stakes, pubkeys and node ids are in
-index-ordered `IndexVec`s); node finalization `resolved`, mempool
+index-ordered `ValidatorVec`s); node finalization `resolved`, mempool
 `pending`/`recent_set`; cadence-sim's per-node logs. All are std's, SipHash
 with random keys, which also covers the mempool's sender-chosen tx hashes.
 

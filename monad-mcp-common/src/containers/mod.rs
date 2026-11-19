@@ -21,12 +21,15 @@
 //!
 //! - Validators of one epoch: [`ValidatorIndex`], resolved once from a
 //!   `NodeId` where a sender is checked against the validator set, then
-//!   [`ValidatorSet`] (a fixed-size bitset: signers, voters, holders) and
-//!   [`ValidatorMap`] (a value for some validators: votes). Both iterate in
+//!   [`ValidatorSet`] (a fixed-size bitset: signers, voters, holders),
+//!   [`ValidatorMap`] (a value for some validators: votes) and
+//!   [`ValidatorVec`] (a value for each validator: stakes). All iterate in
 //!   index order.
+//! - The lanes of one slot: [`Lane`], then [`Lanes`], a value for each lane,
+//!   in lane order.
 //! - Dense state over another small index domain, such as a chunk
-//!   assignment's nodes: [`IndexVec`], typed by the index, so indices of
-//!   different domains cannot be mixed up.
+//!   assignment's nodes: [`DenseVec`] and [`DenseMap`], typed by the index,
+//!   so indices of different domains cannot be mixed up.
 //! - Lookups by any other key: std's `HashMap` and `HashSet` (SipHash with
 //!   random keys per instance, so also fine for keys an adversary chooses).
 //!   Only for lookups: their iteration order differs between instances and
@@ -41,14 +44,16 @@
 //!   portable between x86 and arm, nor across versions, even with a fixed
 //!   seed.
 
-mod index_vec;
+mod dense;
+mod lanes;
 mod order;
 mod validators;
 
 pub use self::{
-    index_vec::{Idx, IndexVec},
+    dense::{DenseMap, DenseVec, Idx},
+    lanes::{Lane, Lanes},
     order::OrderKey,
-    validators::{MAX_VALIDATORS, ValidatorIndex, ValidatorMap, ValidatorSet},
+    validators::{ValidatorIndex, ValidatorMap, ValidatorSet, ValidatorVec},
 };
 
 pub mod validator_set {

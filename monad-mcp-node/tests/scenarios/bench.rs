@@ -90,8 +90,8 @@ fn progress(swarm: &Swarm<SimNode>) -> (u64, usize) {
     let committed = swarm.with_node(&NodeId::dummy(0), |node| {
         let mut committed = 0;
         for pattern in node.finalized().values() {
-            for lane in pattern.lanes() {
-                let entry = pattern.get(usize::from(lane)).expect("in range");
+            for lane in pattern.indices() {
+                let entry = pattern.get(lane).expect("in range");
                 committed += usize::from(entry.is_some());
             }
         }

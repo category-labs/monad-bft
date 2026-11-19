@@ -18,7 +18,7 @@
 //! stake sum). Every vote triggers a tally, so a slot costs about n tallies
 //! of a growing pool.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -47,14 +47,14 @@ impl IsVote for Claim {
 
 const SCOPE: u64 = 7;
 
-fn setup(n: u64) -> (ValidatorData, Vec<(ValidatorIndex, VoteMsg<Claim>)>) {
+fn setup(n: u64) -> (Arc<ValidatorData>, Vec<(ValidatorIndex, VoteMsg<Claim>)>) {
     let nodes: Vec<NodeId> = (0..n).map(NodeId::dummy).collect();
     let valset: HashMap<_, _> = nodes.iter().map(|node| (*node, Stake::from(1))).collect();
     let mapping: HashMap<_, _> = nodes
         .iter()
         .map(|node| (*node, node.keypair().pubkey()))
         .collect();
-    let validator_data = ValidatorData::new(valset, mapping);
+    let validator_data = Arc::new(ValidatorData::new(valset, mapping));
     // in arrival order unrelated to the index order, and one in ten voting
     // for a rival, so a tally sees two buckets
     let mut votes: Vec<_> = nodes
@@ -69,8 +69,11 @@ fn setup(n: u64) -> (ValidatorData, Vec<(ValidatorIndex, VoteMsg<Claim>)>) {
     (validator_data, votes)
 }
 
-fn fill(votes: &[(ValidatorIndex, VoteMsg<Claim>)]) -> VotePool<Claim> {
-    let mut pool = VotePool::new(SCOPE);
+fn fill(
+    validator_data: &Arc<ValidatorData>,
+    votes: &[(ValidatorIndex, VoteMsg<Claim>)],
+) -> VotePool<Claim> {
+    let mut pool = VotePool::new(SCOPE, validator_data.clone());
     for (voter, vote) in votes {
         pool.add_vote(*voter, vote.clone());
     }
@@ -79,16 +82,16 @@ fn fill(votes: &[(ValidatorIndex, VoteMsg<Claim>)]) -> VotePool<Claim> {
 }
 
 fn bench(c: &mut Criterion) {
-    for n in [200, 1500] {
+    for n in [200] {
         let (validator_data, votes) = setup(n);
 
         c.bench_with_input(BenchmarkId::new("fill", n), &votes, |b, votes| {
-            b.iter(|| fill(votes))
+            b.iter(|| fill(&validator_data, votes))
         });
 
-        let pool = fill(&votes);
+        let pool = fill(&validator_data, &votes);
         c.bench_with_input(BenchmarkId::new("tally", n), &pool, |b, pool| {
-            b.iter(|| pool.tally(&validator_data).strong_qc())
+            b.iter(|| pool.tally().strong_qc())
         });
     }
 }

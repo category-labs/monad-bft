@@ -177,7 +177,7 @@ impl Component for MempoolProposing {
             ProposingInput::Tx { at, from, tx } => self.admit(tx, from, at),
             ProposingInput::Finalized(slot, committed, path) => {
                 self.planner.handle_finalized(slot, &committed, path);
-                let is_committed = |lane: Lane| committed.get(usize::from(lane)) == Some(&true);
+                let is_committed = |lane: Lane| committed.get(lane) == Some(&true);
                 self.mempool.settle(slot, is_committed);
             }
             ProposingInput::BatchVote {

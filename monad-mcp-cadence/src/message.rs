@@ -138,14 +138,14 @@ mod rlp_tests {
                 .map(|node| (*node, node.keypair().pubkey()))
                 .collect(),
         );
-        let mut votes = VotePool::new(slot);
+        let mut votes = VotePool::new(slot, std::sync::Arc::new(validators));
         for node in &nodes[..3] {
             votes.add_vote(
                 dummy_index(node),
                 VoteMsg::new_signed(slot, EnterFallbackVote, &node.keypair()),
             );
         }
-        votes.tally(&validators).strong_qc().unwrap().into()
+        votes.tally().strong_qc().unwrap().into()
     }
 
     #[test]

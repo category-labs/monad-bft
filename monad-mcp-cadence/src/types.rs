@@ -13,17 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::hash::Hash;
+use std::{hash::Hash, sync::Arc};
 
 use alloy_rlp::{Decodable, Encodable, RlpEncodable};
 use arrayvec::ArrayVec;
 use bytes::Bytes;
-pub use monad_mcp_common::containers::{ValidatorIndex, ValidatorMap, ValidatorSet};
 use monad_mcp_common::spec::{KeyPair as _, Stake as _};
 pub(crate) use monad_mcp_common::{
     Lane, Lanes, MAX_PROPOSER_SET_SIZE, ProposalScope, RepeatUntil, Slot, SlotScoped, Timestamp,
     TimestampDelta, WindowId,
 };
+pub use monad_mcp_common::{ValidatorIndex, ValidatorMap, ValidatorSet};
 
 // the environment this module subtree is instantiated.
 pub(crate) use super::env::{KeyPair, NodeId, PubKey, Signature, Stake};
@@ -59,6 +59,8 @@ where
     V: IsVote,
 {
     scope: <V as IsVote>::Scope,
+    // the voters are validators of this table, and a tally reads its stakes
+    validator_data: Arc<ValidatorData>,
     // each distinct vote with its voters, in the order the vote was first
     // cast; a tally orders them canonically. Usually one to three, never more
     // than the voters (an empty bucket is dropped), so a linear search.
@@ -70,16 +72,17 @@ impl<V> VotePool<V>
 where
     V: IsVote,
 {
-    pub fn new(scope: <V as IsVote>::Scope) -> Self {
+    pub fn new(scope: <V as IsVote>::Scope, validator_data: Arc<ValidatorData>) -> Self {
+        let votes = ValidatorMap::new(validator_data.len());
         Self {
             scope,
+            validator_data,
             buckets: Vec::new(),
-            votes: ValidatorMap::new(),
+            votes,
         }
     }
 
-    // the caller should ensure that the voter is of the validator data the
-    // pool is tallied with.
+    // the caller should ensure that the voter is of the pool's validator data
     pub fn add_vote(&mut self, voter: ValidatorIndex, msg: VoteMsg<V>) {
         assert!(msg.scope == self.scope);
 
@@ -136,6 +139,10 @@ where
         &self.scope
     }
 
+    pub fn validator_data(&self) -> &ValidatorData {
+        &self.validator_data
+    }
+
     // everyone who voted, whatever for
     pub fn voters(&self) -> ValidatorSet {
         let mut voters = ValidatorSet::new();
@@ -152,8 +159,10 @@ where
         self.buckets.iter().map(|(vote, voters)| (vote, voters))
     }
 
-    pub fn tally<'a>(&'a self, validator_data: &'a ValidatorData) -> Tally<'a, V> {
+    pub fn tally(&self) -> Tally<'_, V> {
         use crate::spec::vote::VoteAggregation as _;
+
+        let validator_data: &ValidatorData = &self.validator_data;
 
         let mut buckets = vec![];
         for (vote, voters) in &self.buckets {
@@ -191,18 +200,13 @@ where
     }
 
     // short-circuit when the pool's total stake is below the threshold
-    pub fn tally_at_least<'a>(
-        &'a self,
-        validator_data: &'a ValidatorData,
-        stake: Stake,
-    ) -> Option<Tally<'a, V>> {
-        let received = validator_data.sum_stake(&self.voters());
+    pub fn tally_at_least(&self, stake: Stake) -> Option<Tally<'_, V>> {
+        let received = self.validator_data.sum_stake(&self.voters());
         if received < stake {
             return None;
         }
 
-        let tally = self.tally(validator_data);
-        Some(tally)
+        Some(self.tally())
     }
 }
 
@@ -516,21 +520,25 @@ mod tests {
     }
 
     /// Seven validators of stake one each, as in the aggregation tests.
-    fn claim_setup() -> (Vec<NodeId>, ValidatorData) {
-        let nodes: Vec<NodeId> = (0..7).map(NodeId::dummy).collect();
+    fn claim_setup() -> (Vec<NodeId>, Arc<ValidatorData>) {
+        let nodes: Vec<NodeId> = (0..NUM_VALIDATORS as u64).map(NodeId::dummy).collect();
         let valset: HashMap<_, _> = nodes.iter().map(|node| (*node, Stake::from(1))).collect();
         let mapping: HashMap<_, _> = nodes
             .iter()
             .map(|node| (*node, node.keypair().pubkey()))
             .collect();
 
-        (nodes, ValidatorData::new(valset, mapping))
+        (nodes, Arc::new(ValidatorData::new(valset, mapping)))
     }
 
     const SCOPE: u64 = 7;
+    const NUM_VALIDATORS: usize = 7;
 
-    fn claim_pool(votes: &[(NodeId, Claim)]) -> VotePool<Claim> {
-        let mut pool = VotePool::new(SCOPE);
+    fn claim_pool(
+        votes: &[(NodeId, Claim)],
+        validator_data: &Arc<ValidatorData>,
+    ) -> VotePool<Claim> {
+        let mut pool = VotePool::new(SCOPE, validator_data.clone());
         for (node, claim) in votes {
             pool.add_vote(
                 dummy_index(node),
@@ -551,12 +559,12 @@ mod tests {
             .enumerate()
             .map(|(i, node)| (*node, Claim(i as u64 % 2)))
             .collect();
-        let pool = claim_pool(&votes);
+        let pool = claim_pool(&votes, &validator_data);
 
         // no bucket reaches a supermajority on its own: three each of seven.
-        assert!(pool.tally(&validator_data).strong_qc().is_none());
+        assert!(pool.tally().strong_qc().is_none());
 
-        let tally = pool.tally(&validator_data);
+        let tally = pool.tally();
         assert!(
             tally.stake() > Stake::from(4),
             "six of seven exceeds the target across both buckets"
@@ -590,8 +598,8 @@ mod tests {
         reversed.reverse();
 
         let groups = |votes: &[(NodeId, Claim)]| {
-            let pool = claim_pool(votes);
-            let tally = pool.tally(&validator_data);
+            let pool = claim_pool(votes, &validator_data);
+            let tally = pool.tally();
             tally
                 .groups()
                 .map(|(claim, sigcol)| (claim.clone(), sigcol.clone()))
@@ -611,7 +619,7 @@ mod tests {
             .map(|(i, node)| (*node, Claim(i as u64 % 2)))
             .collect();
 
-        assert!(claim_pool(&votes).tally(&validator_data).stake() <= Stake::from(4));
+        assert!(claim_pool(&votes, &validator_data).tally().stake() <= Stake::from(4));
     }
 
     /// The quorum requires strictly more than the target: stake equal to the
@@ -620,9 +628,9 @@ mod tests {
     fn the_target_boundary_is_strict() {
         let (nodes, validator_data) = claim_setup();
         let votes: Vec<_> = nodes[..5].iter().map(|node| (*node, Claim(0))).collect();
-        let pool = claim_pool(&votes);
+        let pool = claim_pool(&votes, &validator_data);
 
-        let stake = pool.tally(&validator_data).stake();
+        let stake = pool.tally().stake();
         assert!(stake <= Stake::from(5));
         assert!(stake > Stake::from(4));
     }
@@ -633,7 +641,7 @@ mod tests {
     #[test]
     fn invalid_signatures_are_dropped_before_the_quorum_is_counted() {
         let (nodes, validator_data) = claim_setup();
-        let mut pool = VotePool::new(SCOPE);
+        let mut pool = VotePool::new(SCOPE, validator_data.clone());
         for (i, node) in nodes.iter().enumerate() {
             let mut msg = VoteMsg::new_signed(SCOPE, Claim(i as u64 % 2), &node.keypair());
             // two of seven sign garbage, one in each bucket.
@@ -643,7 +651,7 @@ mod tests {
             pool.add_vote(dummy_index(node), msg);
         }
 
-        let tally = pool.tally(&validator_data);
+        let tally = pool.tally();
         assert!(
             tally.stake() > Stake::from(4),
             "the five valid signers exceed the target"
@@ -668,7 +676,7 @@ mod tests {
     #[test]
     fn a_bucket_of_only_invalid_signatures_is_dropped() {
         let (nodes, validator_data) = claim_setup();
-        let mut pool = VotePool::new(SCOPE);
+        let mut pool = VotePool::new(SCOPE, validator_data);
         for (i, node) in nodes.iter().enumerate() {
             // one lone dissenter, and its signature is garbage.
             let claim = Claim(u64::from(i == 0));
@@ -679,7 +687,7 @@ mod tests {
             pool.add_vote(dummy_index(node), msg);
         }
 
-        let tally = pool.tally(&validator_data);
+        let tally = pool.tally();
         assert!(
             tally.stake() > Stake::from(4),
             "the six honest signers exceed the target"
@@ -694,7 +702,7 @@ mod tests {
     #[test]
     fn a_replacing_vote_moves_the_sender_between_buckets() {
         let (nodes, validator_data) = claim_setup();
-        let mut pool = VotePool::new(SCOPE);
+        let mut pool = VotePool::new(SCOPE, validator_data.clone());
         // five agree, one dissents alone.
         for (i, node) in nodes[..6].iter().enumerate() {
             let claim = Claim(u64::from(i == 5));
@@ -710,7 +718,7 @@ mod tests {
             VoteMsg::new_signed(SCOPE, Claim(2), &raiser.keypair()),
         );
 
-        let tally = pool.tally(&validator_data);
+        let tally = pool.tally();
         assert!(
             tally.stake() > Stake::from(4),
             "the same six senders still exceed the target"
@@ -740,7 +748,7 @@ mod tests {
     #[test]
     fn a_repeated_add_vote_leaves_the_first_standing() {
         let (nodes, validator_data) = claim_setup();
-        let mut pool = VotePool::new(SCOPE);
+        let mut pool = VotePool::new(SCOPE, validator_data.clone());
         for node in &nodes[..5] {
             pool.add_vote(
                 dummy_index(node),
@@ -754,7 +762,7 @@ mod tests {
             VoteMsg::new_signed(SCOPE, Claim(0), &sender.keypair()),
         );
 
-        let tally = pool.tally(&validator_data);
+        let tally = pool.tally();
         assert!(
             tally.stake() > Stake::from(4),
             "five of seven exceeds the target"
@@ -783,13 +791,13 @@ mod tests {
     fn a_narrowed_tally_forms_no_qc_on_a_rejected_vote() {
         let (nodes, validator_data) = claim_setup();
         let votes: Vec<_> = nodes[..5].iter().map(|node| (*node, Claim(1))).collect();
-        let pool = claim_pool(&votes);
+        let pool = claim_pool(&votes, &validator_data);
 
-        let rejecting = pool.tally(&validator_data).narrow(Listed(&[Claim(2)]));
+        let rejecting = pool.tally().narrow(Listed(&[Claim(2)]));
         assert!(rejecting.strong_qc().is_none());
         assert!(rejecting.weak_qcs().is_empty());
 
-        let admitting = pool.tally(&validator_data).narrow(Listed(&[Claim(1)]));
+        let admitting = pool.tally().narrow(Listed(&[Claim(1)]));
         assert!(admitting.strong_qc().is_some());
         assert_eq!(admitting.weak_qcs().len(), 1);
     }
@@ -799,10 +807,10 @@ mod tests {
         let (nodes, validator_data) = claim_setup();
         let mut votes: Vec<_> = nodes[..3].iter().map(|node| (*node, Claim(1))).collect();
         votes.extend(nodes[3..5].iter().map(|node| (*node, Claim(2))));
-        let pool = claim_pool(&votes);
+        let pool = claim_pool(&votes, &validator_data);
 
-        assert!(pool.tally(&validator_data).stake() == Stake::from(5));
-        let one_bucket = pool.tally(&validator_data).narrow(Listed(&[Claim(1)]));
+        assert!(pool.tally().stake() == Stake::from(5));
+        let one_bucket = pool.tally().narrow(Listed(&[Claim(1)]));
         assert!(one_bucket.stake() == Stake::from(3));
     }
 
@@ -811,9 +819,9 @@ mod tests {
         let (nodes, validator_data) = claim_setup();
         let mut votes: Vec<_> = nodes[..3].iter().map(|node| (*node, Claim(1))).collect();
         votes.extend(nodes[3..5].iter().map(|node| (*node, Claim(2))));
-        let pool = claim_pool(&votes);
+        let pool = claim_pool(&votes, &validator_data);
 
-        let narrowed = pool.tally(&validator_data).narrow(Listed(&[Claim(2)]));
+        let narrowed = pool.tally().narrow(Listed(&[Claim(2)]));
         assert!(narrowed.stake() == Stake::from(2));
 
         let claims: Vec<_> = narrowed.groups().map(|(claim, _)| claim).collect();

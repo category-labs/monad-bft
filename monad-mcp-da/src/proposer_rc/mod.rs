@@ -18,7 +18,7 @@ mod recovery;
 use std::collections::HashMap;
 
 use monad_mcp_cadence::spec::ProposalHeader as _;
-use monad_mcp_common::containers::ValidatorSet;
+use monad_mcp_common::ValidatorSet;
 use recovery::{Recovery, everything_missing};
 
 use super::{

@@ -16,7 +16,8 @@
 use std::{iter::Cycle, ops::Range};
 
 use monad_mcp_common::{
-    containers::{Idx, IndexVec},
+    MAX_VALIDATORS,
+    containers::{DenseVec, Idx},
     spec::Stake as _,
 };
 
@@ -57,6 +58,8 @@ pub(crate) struct NodeIndex(usize);
 
 // for ByNode, which hands out only the indices of its own length
 impl Idx for NodeIndex {
+    const MAX: usize = MAX_VALIDATORS;
+
     fn new(index: usize) -> Self {
         Self(index)
     }
@@ -67,7 +70,7 @@ impl Idx for NodeIndex {
 }
 
 // a value per node of a chunk assignment, in index order
-pub(crate) type ByNode<T> = IndexVec<NodeIndex, T>;
+pub(crate) type ByNode<T> = DenseVec<NodeIndex, T>;
 
 // an obligation of o chunks is met by ceil(o * den / num) of them, to
 // tolerate packet loss
@@ -264,7 +267,7 @@ impl OrderedNodes {
     }
 
     fn iter(&self) -> impl Iterator<Item = (NodeIndex, &NodeId)> + '_ {
-        self.0.iter_enumerated()
+        self.0.indexed_iter()
     }
 }
 
@@ -317,7 +320,8 @@ impl ChunkAssignment {
             }
         }
 
-        let nodes = OrderedNodes(nodes.into_iter().collect());
+        let nodes = DenseVec::from_vec(nodes).expect("at most MAX_VALIDATORS holders");
+        let nodes = OrderedNodes(nodes);
         let author = nodes.index_of(author).expect("author is a holder");
 
         let mut ring = CoverageRing::new(num_holders, obligations.total_stake);
@@ -360,12 +364,12 @@ impl ChunkAssignment {
     }
 
     pub(crate) fn num_nodes(&self) -> usize {
-        self.nodes.0.len()
+        self.nodes.0.size()
     }
 
     // a value per node, from its index
     pub(crate) fn by_node<T>(&self, f: impl FnMut(NodeIndex) -> T) -> ByNode<T> {
-        ByNode::from_fn(self.num_nodes(), f)
+        ByNode::new(self.num_nodes(), f)
     }
 
     pub(crate) fn node(&self, index: NodeIndex) -> &NodeId {

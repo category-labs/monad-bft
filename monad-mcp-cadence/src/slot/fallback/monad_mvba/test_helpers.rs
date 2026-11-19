@@ -127,7 +127,7 @@ pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMv
 
 /// A valid metablock whose entries are determined by `seed`, so two seeds give
 /// two metablocks that cannot be confused for one another
-pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
+pub(super) fn metablock(seed: u64, validator_data: &Arc<ValidatorData>) -> Metablock {
     Metablock::new(Lanes::new(NUM_LANES, |j| {
         let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
         let fast_qc = strong_qc(
@@ -143,7 +143,10 @@ pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock 
 /// Valid but *not* a fast metablock: its first entry rests on a fallback
 /// quorum. `entries()` matches [`metablock`] on the same seed, so the two
 /// differ only in their evidence
-pub(super) fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
+pub(super) fn mixed_evidence_metablock(
+    seed: u64,
+    validator_data: &Arc<ValidatorData>,
+) -> Metablock {
     Metablock::new(Lanes::new(NUM_LANES, |j| {
         let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
         if j == Lane::new_unchecked(0) {
@@ -166,7 +169,7 @@ pub(super) fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData
 }
 
 /// A genuine fallback certificate for this slot
-pub(super) fn enter_fallback_cert(validator_data: &ValidatorData) -> EnterFallbackCert {
+pub(super) fn enter_fallback_cert(validator_data: &Arc<ValidatorData>) -> EnterFallbackCert {
     strong_qc(SLOT, EnterFallbackVote, &quorum(), validator_data)
 }
 
@@ -175,15 +178,15 @@ pub(super) fn strong_qc<V: IsVote>(
     scope: V::Scope,
     vote: V,
     signers: &[NodeId],
-    validator_data: &ValidatorData,
+    validator_data: &Arc<ValidatorData>,
 ) -> StrongQc<V> {
-    let mut pool = VotePool::new(scope.clone());
+    let mut pool = VotePool::new(scope.clone(), validator_data.clone());
     for node in signers {
         let msg = VoteMsg::new_signed(scope.clone(), vote.clone(), &node.keypair());
         pool.add_vote(dummy_index(node), msg);
     }
 
-    pool.tally(validator_data)
+    pool.tally()
         .strong_qc()
         .expect("the signers hold a supermajority of stake")
 }
@@ -193,15 +196,15 @@ pub(super) fn weak_qc<V: IsVote>(
     scope: V::Scope,
     vote: V,
     signers: &[NodeId],
-    validator_data: &ValidatorData,
+    validator_data: &Arc<ValidatorData>,
 ) -> WeakQc<V> {
-    let mut pool = VotePool::new(scope.clone());
+    let mut pool = VotePool::new(scope.clone(), validator_data.clone());
     for node in signers {
         let msg = VoteMsg::new_signed(scope.clone(), vote.clone(), &node.keypair());
         pool.add_vote(dummy_index(node), msg);
     }
 
-    let mut qcs = pool.tally(validator_data).weak_qcs().into_iter();
+    let mut qcs = pool.tally().weak_qcs().into_iter();
     match (qcs.next(), qcs.next()) {
         (Some(qc), None) => qc,
         (None, _) => panic!("the signers hold more than an honest threshold of stake"),
@@ -212,7 +215,7 @@ pub(super) fn weak_qc<V: IsVote>(
 pub(super) fn prepare_qc(
     v: FallbackView,
     entries: &Lanes<Entry>,
-    validator_data: &ValidatorData,
+    validator_data: &Arc<ValidatorData>,
 ) -> PrepareQc {
     strong_qc(
         MvbaScope::new(SLOT, v),
@@ -271,7 +274,7 @@ pub(super) fn delivered(message: Message) -> Option<Message> {
 pub(super) fn timeout_certificate(
     v: FallbackView,
     high_prep_qc: Option<PrepareQc>,
-    validator_data: &ValidatorData,
+    validator_data: &Arc<ValidatorData>,
 ) -> TimeoutCertificate {
     timeout_certificate_in(SLOT, v, high_prep_qc, validator_data)
 }
@@ -281,9 +284,9 @@ pub(super) fn timeout_certificate_in(
     slot: Slot,
     v: FallbackView,
     high_prep_qc: Option<PrepareQc>,
-    validator_data: &ValidatorData,
+    validator_data: &Arc<ValidatorData>,
 ) -> TimeoutCertificate {
-    let mut collectors = ViewCollectors::new(slot, v);
+    let mut collectors = ViewCollectors::new(slot, v, validator_data);
     for node in quorum() {
         collectors.store_timeout(
             dummy_index(node),
@@ -292,7 +295,7 @@ pub(super) fn timeout_certificate_in(
     }
 
     collectors
-        .try_form_tc(validator_data)
+        .try_form_tc()
         .expect("a supermajority of timeouts forms a certificate")
 }
 
@@ -335,7 +338,7 @@ pub(super) fn feed_commit_votes(
 pub(super) fn commit_qc_message(
     v: FallbackView,
     block: &Metablock,
-    validator_data: &ValidatorData,
+    validator_data: &Arc<ValidatorData>,
 ) -> Message {
     let qc = strong_qc(
         MvbaScope::new(SLOT, v),

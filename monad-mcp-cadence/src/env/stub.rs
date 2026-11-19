@@ -21,8 +21,7 @@ mod validator {
     use std::collections::HashMap;
 
     use monad_mcp_common::{
-        containers::{IndexVec, MAX_VALIDATORS, ValidatorIndex, ValidatorSet},
-        spec::Stake as _,
+        MAX_VALIDATORS, ValidatorIndex, ValidatorSet, ValidatorVec, spec::Stake as _,
     };
 
     use super::{NodeId, PubKey, Stake};
@@ -34,9 +33,9 @@ mod validator {
     // large, all stakes are nonzero, and total_stake is their sum.
     pub struct ValidatorData {
         indices: HashMap<NodeId, ValidatorIndex>,
-        nodes: IndexVec<ValidatorIndex, NodeId>,
-        stakes: IndexVec<ValidatorIndex, Stake>,
-        pubkeys: IndexVec<ValidatorIndex, PubKey>,
+        nodes: ValidatorVec<NodeId>,
+        stakes: ValidatorVec<Stake>,
+        pubkeys: ValidatorVec<PubKey>,
         total_stake: Stake,
     }
 
@@ -50,13 +49,13 @@ mod validator {
 
             let mut sorted: Vec<NodeId> = valset.keys().copied().collect();
             sorted.sort();
-            let nodes: IndexVec<ValidatorIndex, NodeId> = sorted.into_iter().collect();
+            let nodes = ValidatorVec::from_vec(sorted).expect("at most MAX_VALIDATORS validators");
             let indices = nodes
-                .iter_enumerated()
+                .indexed_iter()
                 .map(|(index, node_id)| (*node_id, index))
                 .collect();
-            let stakes: IndexVec<_, _> = nodes.iter().map(|node_id| valset[node_id]).collect();
-            let pubkeys = nodes.iter().map(|node_id| mapping[node_id]).collect();
+            let stakes = nodes.as_ref().map(|node_id| valset[node_id]);
+            let pubkeys = nodes.as_ref().map(|node_id| mapping[node_id]);
             let total_stake = stakes.iter().copied().sum();
 
             Self {
@@ -70,8 +69,7 @@ mod validator {
 
         // a wire index as one of this validator set's, if it is one
         pub(crate) fn checked_index(&self, index: usize) -> Option<ValidatorIndex> {
-            let index = ValidatorIndex::new(index)?;
-            self.nodes.get(index).map(|_| index)
+            ValidatorIndex::new(index, self.nodes.size())
         }
     }
 
@@ -85,7 +83,7 @@ mod validator {
         }
 
         fn len(&self) -> usize {
-            self.nodes.len()
+            self.nodes.size()
         }
 
         fn index_of(&self, node_id: &NodeId) -> Option<ValidatorIndex> {
@@ -391,10 +389,7 @@ mod proposal {
 
 mod vote {
     use alloy_rlp::{Decodable, Encodable};
-    use monad_mcp_common::{
-        containers::{MAX_VALIDATORS, ValidatorIndex, ValidatorSet},
-        spec::Signature as _,
-    };
+    use monad_mcp_common::{MAX_VALIDATORS, ValidatorIndex, ValidatorSet, spec::Signature as _};
 
     use super::{Signature, Stake, ValidatorData};
     use crate::spec::{self, SignatureCollection as _, validator::ValidatorData as _};
@@ -412,7 +407,7 @@ mod vote {
         shares: u64,
     }
 
-    const BITMAP_LEN: usize = MAX_VALIDATORS / 8;
+    const BITMAP_LEN: usize = MAX_VALIDATORS.div_ceil(8);
 
     impl SignatureCollection {
         // little-endian bits, ending with the last signer's byte
@@ -472,7 +467,9 @@ mod vote {
                 "signer bitmap ends in a zero byte",
             ));
         }
-        if bitmap.len() > BITMAP_LEN {
+        // the last byte is not zero, so it holds the highest signer
+        let highest = (bitmap.len() - 1) * 8 + last.ilog2() as usize;
+        if highest >= MAX_VALIDATORS {
             return Err(alloy_rlp::Error::Custom("signature index out of range"));
         }
         let mut signers = ValidatorSet::new();
@@ -480,7 +477,7 @@ mod vote {
             let mut bits = *byte;
             while bits != 0 {
                 let index = byte_index * 8 + bits.trailing_zeros() as usize;
-                signers.insert(ValidatorIndex::new(index).expect("within the bitmap"));
+                signers.insert(ValidatorIndex::new_unchecked(index));
                 bits &= bits - 1;
             }
         }
@@ -515,10 +512,9 @@ mod vote {
         }
 
         fn signers(&self, validator_data: &ValidatorData) -> Option<ValidatorSet> {
-            for index in self.signers.iter() {
-                // None for an index outside the validator set
-                validator_data.checked_index(index.get())?;
-            }
+            // indices are dense, so the highest signer decides for all
+            let highest = self.signers.last()?;
+            validator_data.checked_index(highest.get())?;
             Some(self.signers)
         }
 
@@ -714,10 +710,7 @@ mod rlp_tests {
     use std::collections::HashMap;
 
     use alloy_rlp::Encodable;
-    use monad_mcp_common::{
-        containers::{MAX_VALIDATORS, ValidatorIndex, ValidatorSet},
-        spec::KeyPair as _,
-    };
+    use monad_mcp_common::{MAX_VALIDATORS, ValidatorIndex, ValidatorSet, spec::KeyPair as _};
 
     use super::*;
     use crate::spec::vote::SignatureCollection as _;
@@ -741,7 +734,7 @@ mod rlp_tests {
     }
 
     fn index(index: usize) -> ValidatorIndex {
-        ValidatorIndex::new(index).expect("in range")
+        ValidatorIndex::new_unchecked(index)
     }
 
     // validator i's signature over data
@@ -774,8 +767,12 @@ mod rlp_tests {
         };
         assert!(decode(&[]).is_err());
         assert!(decode(&[0b10, 0]).is_err());
-        assert!(decode(&[1; MAX_VALIDATORS / 8 + 1]).is_err());
-        assert!(decode(&[1; MAX_VALIDATORS / 8]).is_ok());
+        assert!(decode(&[1; MAX_VALIDATORS.div_ceil(8) + 1]).is_err());
+        assert!(decode(&[1; MAX_VALIDATORS.div_ceil(8)]).is_ok());
+        // the first index that is no validator's
+        let mut beyond = [1; MAX_VALIDATORS.div_ceil(8)];
+        beyond[MAX_VALIDATORS / 8] = 1 << (MAX_VALIDATORS % 8);
+        assert!(decode(&beyond).is_err());
 
         let mut malformed = one;
         malformed.make_malformed();

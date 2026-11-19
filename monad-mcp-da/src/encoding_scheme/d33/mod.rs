@@ -20,9 +20,7 @@ use rand_chacha::ChaCha20Rng;
 use super::{
     super::{
         assignment::{ChunkAssignment, PacketLossResistance, StakePartition},
-        types::{
-            D33, Lane, MAX_PROPOSER_SET_SIZE, MerkleRoot, NodeId, PubKey, Slot, ValidatorData,
-        },
+        types::{D33, Lane, MerkleRoot, NodeId, PubKey, Slot, ValidatorData},
         wire::v1,
     },
     DAEncodingScheme,
@@ -52,7 +50,6 @@ pub fn for_message(
     num_validators: usize,
 ) -> Option<D33> {
     let msg_len = bounded_len(msg_len)?;
-    let lane = bounded_lane(lane)?;
     for depth in header::MIN_DEPTH..=header::MAX_DEPTH {
         if fits(msg_len, depth, num_validators) {
             return Some(D33 {
@@ -72,10 +69,6 @@ fn bounded_len(msg_len: usize) -> Option<u32> {
         return None;
     }
     u32::try_from(msg_len).ok()
-}
-
-fn bounded_lane(lane: Lane) -> Option<Lane> {
-    (usize::from(lane) < MAX_PROPOSER_SET_SIZE).then_some(lane)
 }
 
 // the chunks a decoder needs once packet loss trims each obligation
@@ -139,9 +132,6 @@ impl DAEncodingScheme for D33 {
         if bounded_len(self.msg_len as usize).is_none() {
             return false;
         }
-        if bounded_lane(self.lane).is_none() {
-            return false;
-        }
         if !(header::MIN_DEPTH..=header::MAX_DEPTH).contains(&self.depth) {
             return false;
         }
@@ -202,8 +192,7 @@ pub(super) mod header {
     // the smallest message targets ceil(1 * 1.1) = 2 chunks, scaled to
     // 6, plus one rounding chunk for the only validator: 7 leaves
     pub(super) const MIN_DEPTH: u8 = 4;
-    // the depth the largest message among MAX_VALIDATOR_SET_SIZE
-    // validators needs
+    // the depth the largest message among MAX_VALIDATORS validators needs
     pub(super) const MAX_DEPTH: u8 = 13;
 
     // the lane+depth byte: 4 lane bits over 4 depth bits
@@ -423,6 +412,8 @@ pub(super) mod header {
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_common::MAX_VALIDATORS;
+
     use super::{
         super::super::{
             chunk::Chunk,
@@ -435,7 +426,6 @@ mod tests {
         },
         *,
     };
-    use crate::spec::MAX_VALIDATOR_SET_SIZE;
 
     const LANE: Lane = Lane::new_unchecked(0);
 
@@ -466,14 +456,13 @@ mod tests {
 
         assert!(for_message(SLOT, 0, 0, LANE, 4).is_none());
         assert!(for_message(SLOT, MAX_MESSAGE_LEN + 1, 0, LANE, 4).is_none());
-        assert!(for_message(SLOT, MESSAGE_LEN, 0, Lane::new_unchecked(16), 4).is_none());
         // a message in range that no depth can carry
         assert!(for_message(SLOT, MAX_MESSAGE_LEN, 0, LANE, 20_000).is_none());
     }
 
     #[test]
     fn the_max_depth_is_the_one_the_largest_proposal_needs() {
-        let deepest = for_message(SLOT, MAX_MESSAGE_LEN, 0, LANE, MAX_VALIDATOR_SET_SIZE);
+        let deepest = for_message(SLOT, MAX_MESSAGE_LEN, 0, LANE, MAX_VALIDATORS);
         assert_eq!(deepest.expect("fits").depth, header::MAX_DEPTH);
     }
 

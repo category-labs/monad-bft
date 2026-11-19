@@ -836,7 +836,7 @@ mod tests {
         };
         let pid = header.pid();
         let entries = Lanes::new(1, |_| Entry::Positive(pid));
-        let mut pool = VotePool::new(Slot(1));
+        let mut pool = VotePool::new(Slot(1), Arc::new(validator_data(4)));
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let vote = FastCommitVote {
@@ -848,7 +848,7 @@ mod tests {
             );
         }
         let qc = pool
-            .tally(&context.validator_data)
+            .tally()
             .strong_qc()
             .expect("three of four votes form a commit qc");
         chorus.handle_message(NodeId::dummy(0), ChorusMessage::FastCommitQc(qc));

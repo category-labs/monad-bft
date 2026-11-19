@@ -119,7 +119,7 @@ impl MvbaContext {
         assert!(num_nodes > 0);
 
         let index = self.slot.get().wrapping_add(view.get()) % num_nodes;
-        ValidatorIndex::new(index as usize).expect("index is taken modulo the validator set size")
+        ValidatorIndex::new_unchecked(index as usize)
     }
 
     fn view_timeout(&self) -> TimestampDelta {
@@ -490,9 +490,10 @@ where
     /// pre-prepare, which immediately triggers garbage collection
     fn collectors_mut(&mut self, view: FallbackView) -> &mut ViewCollectors<V, C> {
         let slot = self.context.slot;
+        let validator_data = &self.context.validator_data;
         self.collectors
             .entry(view)
-            .or_insert_with(|| ViewCollectors::new(slot, view))
+            .or_insert_with(|| ViewCollectors::new(slot, view, validator_data))
     }
 }
 
@@ -571,9 +572,9 @@ where
         // once: the echo never clears. `local_time_out` consumes a fire
         let timeout = self.timer_fired
             || (!self.phase.has_timed_out()
-                && self.current_view_collectors().is_some_and(|collectors| {
-                    collectors.has_honest_timeout(&self.context.validator_data)
-                }));
+                && self
+                    .current_view_collectors()
+                    .is_some_and(|collectors| collectors.has_honest_timeout()));
         if timeout {
             return Some(Transition::Timeout);
         }
@@ -605,7 +606,7 @@ where
         self.collectors
             .range(..=self.view())
             .rev()
-            .find_map(|(_, collectors)| collectors.try_form_commit_qc(&self.context.validator_data))
+            .find_map(|(_, collectors)| collectors.try_form_commit_qc())
     }
 
     /// `TryDecide`: a commit certificate together with the block it settled
@@ -620,9 +621,7 @@ where
     /// `TryFormPrepQC`
     fn pending_prepare_qc(&self) -> Option<PrepareQc<V::Entries>> {
         let entries = self.phase.preparing_entries()?;
-        let qc = self
-            .current_view_collectors()?
-            .try_form_prepare_qc(&self.context.validator_data)?;
+        let qc = self.current_view_collectors()?.try_form_prepare_qc()?;
 
         // a validator commits only the vector it prepared
         (qc.verdict.0 == *entries).then_some(qc)
@@ -633,7 +632,7 @@ where
     fn pending_tc(&self) -> Option<TimeoutCertificate<V::Entries>> {
         let organic = self
             .current_view_collectors()
-            .and_then(|collectors| collectors.try_form_tc(&self.context.validator_data));
+            .and_then(|collectors| collectors.try_form_tc());
 
         let harvested = self
             .collectors

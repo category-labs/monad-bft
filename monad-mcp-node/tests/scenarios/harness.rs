@@ -188,12 +188,11 @@ impl SimNode {
                     let pattern = finalized.finalization.pids();
                     // committed, but without a message
                     let invalid: Vec<usize> = pattern
-                        .lanes()
-                        .map(usize::from)
-                        .filter(|&j| {
-                            let committed = pattern.get(j).expect("in range").is_some();
-                            committed && finalized.proposals.get(j).expect("in range").is_none()
+                        .indices()
+                        .filter(|&lane| {
+                            pattern[lane].is_some() && finalized.proposals[lane].is_none()
                         })
+                        .map(usize::from)
                         .collect();
                     if !invalid.is_empty() {
                         self.invalid.insert(finalized.slot, invalid);
@@ -436,8 +435,8 @@ pub fn run_digest(swarm: &Swarm<SimNode>) -> u64 {
             hasher.write(&u64::from(id).to_le_bytes());
             for (slot, pattern) in &node.finalized {
                 hasher.write(&slot.0.to_le_bytes());
-                for lane in pattern.lanes() {
-                    match pattern.get(usize::from(lane)).expect("in range") {
+                for lane in pattern.indices() {
+                    match pattern.get(lane).expect("in range") {
                         Some(pid) => {
                             hasher.write(&[1]);
                             hasher.write(pid.as_bytes());

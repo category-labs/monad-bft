@@ -18,10 +18,7 @@ pub use proposal::{MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader}
 pub use vote::SignatureCollection;
 
 pub mod validator {
-    use monad_mcp_common::{
-        containers::{ValidatorIndex, ValidatorSet},
-        spec as common_spec,
-    };
+    use monad_mcp_common::{ValidatorIndex, ValidatorSet, spec as common_spec};
 
     // One epoch's validators. Each has a ValidatorIndex, dense from 0 in a
     // stable order across all nodes, which addresses the validator in
@@ -69,10 +66,7 @@ pub mod validator {
 pub mod vote {
     use alloy_rlp::{EMPTY_LIST_CODE, Encodable};
     use bytes::{BufMut, Bytes};
-    use monad_mcp_common::{
-        containers::{ValidatorIndex, ValidatorSet},
-        spec as common_spec,
-    };
+    use monad_mcp_common::{ValidatorIndex, ValidatorSet, spec as common_spec};
 
     // A namespace mixed into the bytes a signature covers, so a signature
     // over one message kind can never be read as another.

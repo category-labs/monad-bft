@@ -130,7 +130,7 @@ impl SlotRaptorcast {
     // proposals resolved since the last drain, under j, with their roots and messages
     pub(crate) fn drain_resolved(&mut self) -> Vec<(Lane, ProposalId, Resolved)> {
         let mut resolved = Vec::new();
-        for j in self.raptorcasts.lanes() {
+        for j in self.raptorcasts.indices() {
             let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                 continue;
             };
@@ -162,7 +162,7 @@ impl SlotRaptorcast {
                 self.egress.release();
             }
             ChorusDACommand::AddDecodedHolders { j, pid, holders } => {
-                let Some(j) = self.raptorcasts.checked_lane(usize::from(j)) else {
+                let Some(j) = self.raptorcasts.checked_index(usize::from(j)) else {
                     return;
                 };
                 let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
@@ -180,7 +180,7 @@ impl SlotRaptorcast {
                 }
             }
             ChorusDACommand::PinFinal { j, pid } => {
-                let Some(j) = self.raptorcasts.checked_lane(usize::from(j)) else {
+                let Some(j) = self.raptorcasts.checked_index(usize::from(j)) else {
                     return;
                 };
                 let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
@@ -190,7 +190,7 @@ impl SlotRaptorcast {
                 self.collect_events(j);
             }
             ChorusDACommand::PullHeader { j, missing } => {
-                let Some(j) = self.raptorcasts.checked_lane(usize::from(j)) else {
+                let Some(j) = self.raptorcasts.checked_index(usize::from(j)) else {
                     return;
                 };
                 let Some(raptorcast) = self.raptorcasts[j].as_ref() else {
@@ -218,7 +218,7 @@ impl SlotRaptorcast {
 
     // every proposer's pulls due by now
     pub(crate) fn tick(&mut self, now: Timestamp) {
-        for j in self.raptorcasts.lanes() {
+        for j in self.raptorcasts.indices() {
             let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                 continue;
             };
@@ -242,7 +242,7 @@ impl SlotRaptorcast {
         requester: &NodeId,
         now: Timestamp,
     ) {
-        let Some(lane) = self.raptorcasts.checked_lane(usize::from(lane)) else {
+        let Some(lane) = self.raptorcasts.checked_index(usize::from(lane)) else {
             return;
         };
         let Some(raptorcast) = self.raptorcasts[lane].as_mut() else {

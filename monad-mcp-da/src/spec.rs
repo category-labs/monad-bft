@@ -17,9 +17,6 @@ use bytes::BufMut;
 use monad_mcp_cadence::spec as cadence_spec;
 use monad_mcp_common::spec as common_spec;
 
-// the validator set an encoding scheme sizes its depth range for
-pub const MAX_VALIDATOR_SET_SIZE: usize = 300;
-
 // the signature field of a packet
 pub const SIGNATURE_LEN: usize = 65;
 

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{cell::OnceCell, collections::BTreeMap};
+use std::{cell::OnceCell, collections::BTreeMap, sync::Arc};
 
 use monad_mcp_common::spec::Stake as _;
 
@@ -46,9 +46,9 @@ pub(crate) struct SealingVotePool<V: IsVote> {
 }
 
 impl<V: IsVote> SealingVotePool<V> {
-    fn new(scope: V::Scope) -> Self {
+    fn new(scope: V::Scope, validator_data: Arc<ValidatorData>) -> Self {
         Self {
-            votes: VotePool::new(scope),
+            votes: VotePool::new(scope, validator_data),
             sealed: OnceCell::new(),
         }
     }
@@ -60,12 +60,13 @@ impl<V: IsVote> SealingVotePool<V> {
         self.votes.add_vote(voter, msg);
     }
 
-    fn try_form_strong_qc(&self, validator_data: &ValidatorData) -> Option<&StrongQc<V>> {
+    fn try_form_strong_qc(&self) -> Option<&StrongQc<V>> {
         if let Some(qc) = self.sealed.get() {
             return Some(qc);
         }
-        let supermajority = validator_data.total_stake().supermajority_threshold();
-        let tally = self.votes.tally_at_least(validator_data, supermajority)?;
+        let total_stake = self.votes.validator_data().total_stake();
+        let supermajority = total_stake.supermajority_threshold();
+        let tally = self.votes.tally_at_least(supermajority)?;
         let qc = tally.strong_qc()?;
         Some(self.sealed.get_or_init(|| qc))
     }
@@ -91,14 +92,15 @@ pub(crate) struct ViewCollectors<V: Votable, C: ValidateCert> {
 }
 
 impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
-    pub(crate) fn new(slot: Slot, view: FallbackView) -> Self {
+    pub(crate) fn new(slot: Slot, view: FallbackView, validator_data: &Arc<ValidatorData>) -> Self {
+        let scope = MvbaScope::new(slot, view);
         Self {
             slot,
             view,
             pre_prepare: None,
-            prepare_votes: SealingVotePool::new(MvbaScope::new(slot, view)),
-            commit_votes: SealingVotePool::new(MvbaScope::new(slot, view)),
-            timeout_votes: VotePool::new(MvbaScope::new(slot, view)),
+            prepare_votes: SealingVotePool::new(scope, validator_data.clone()),
+            commit_votes: SealingVotePool::new(scope, validator_data.clone()),
+            timeout_votes: VotePool::new(scope, validator_data.clone()),
             prep_qcs: BTreeMap::new(),
             harvested_tc: None,
         }
@@ -133,23 +135,13 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
 
     /// `PrepQC_{slot, view}`, if a supermajority voted to prepare the same
     /// entries here. Aggregated once; a formed certificate is final
-    pub(crate) fn try_form_prepare_qc(
-        &self,
-        validator_data: &ValidatorData,
-    ) -> Option<PrepareQc<V::Entries>> {
-        self.prepare_votes
-            .try_form_strong_qc(validator_data)
-            .cloned()
+    pub(crate) fn try_form_prepare_qc(&self) -> Option<PrepareQc<V::Entries>> {
+        self.prepare_votes.try_form_strong_qc().cloned()
     }
 
     /// `CommitQC_{slot, view}`, likewise
-    pub(crate) fn try_form_commit_qc(
-        &self,
-        validator_data: &ValidatorData,
-    ) -> Option<FallbackCommitQc<V::Entries>> {
-        self.commit_votes
-            .try_form_strong_qc(validator_data)
-            .cloned()
+    pub(crate) fn try_form_commit_qc(&self) -> Option<FallbackCommitQc<V::Entries>> {
+        self.commit_votes.try_form_strong_qc().cloned()
     }
 
     pub(crate) fn store_timeout(&mut self, sender: ValidatorIndex, msg: TimeoutMsg<V::Entries>) {
@@ -165,9 +157,10 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
     }
 
     /// Whether f+1 stake has timed out here
-    pub(crate) fn has_honest_timeout(&self, validator_data: &ValidatorData) -> bool {
-        let honest = validator_data.total_stake().honest_threshold();
-        let Some(tally) = self.timeout_votes.tally_at_least(validator_data, honest) else {
+    pub(crate) fn has_honest_timeout(&self) -> bool {
+        let total_stake = self.timeout_votes.validator_data().total_stake();
+        let honest = total_stake.honest_threshold();
+        let Some(tally) = self.timeout_votes.tally_at_least(honest) else {
             return false;
         };
         tally.stake() > honest
@@ -188,14 +181,10 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
     /// `TC_{slot, view}` once a supermajority has timed out here. The highest
     /// claim comes from the *formed* groups, which is what
     /// [`TimeoutCertificate::is_well_formed`] checks
-    pub(crate) fn try_form_tc(
-        &self,
-        validator_data: &ValidatorData,
-    ) -> Option<TimeoutCertificate<V::Entries>> {
-        let target_stake = validator_data.total_stake().supermajority_threshold();
-        let tally = self
-            .timeout_votes
-            .tally_at_least(validator_data, target_stake)?;
+    pub(crate) fn try_form_tc(&self) -> Option<TimeoutCertificate<V::Entries>> {
+        let total_stake = self.timeout_votes.validator_data().total_stake();
+        let target_stake = total_stake.supermajority_threshold();
+        let tally = self.timeout_votes.tally_at_least(target_stake)?;
         if tally.stake() <= target_stake {
             return None;
         }
