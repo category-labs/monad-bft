@@ -1,0 +1,34 @@
+[package]
+name = "monad-rpc-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+alloy-consensus = "2.0"
+alloy-primitives = "1.5"
+alloy-signer = "2.0"
+alloy-signer-local = "2.0"
+arbitrary = { version = "1.4.1", features = ["derive"] }
+futures = "0.3"
+libfuzzer-sys = "0.4"
+serde_json = "1.0"
+
+monad-eth-types = { path = "../../monad-eth-types" }
+monad-rpc = { path = ".." }
+monad-triedb-utils = { path = "../../monad-triedb-utils" }
+monad-types = { path = "../../monad-types" }
+
+# Not part of the main workspace: cargo-fuzz builds with its own flags.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fee_history"
+path = "fuzz_targets/fee_history.rs"
+test = false
+doc = false
+bench = false
