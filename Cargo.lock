@@ -5744,6 +5744,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-message-rate-limit"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "governor",
+ "lru",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
+]
+
+[[package]]
 name = "monad-metrics"
 version = "0.1.0"
 dependencies = [
