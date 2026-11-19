@@ -66,7 +66,8 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: "--model claude-fable-5 --effort medium --max-turns 30 --allowedTools Bash,Read,Glob,Grep"
+          claude_args: |
+            --model claude-opus-5-5 --effort medium --max-turns 100 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git fetch:*),Bash(gh pr view:*),Bash(gh pr diff:*),Read,Glob,Grep"
           prompt: "Review this pull request for code quality, correctness, and security. Analyze the diff, then post your findings as review comments."
 
   # On-demand @claude mentions
@@ -93,4 +94,5 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          claude_args: "--model claude-fable-5 --effort medium --max-turns 30"
+          claude_args: |
+            --model claude-opus-5-5 --effort medium --max-turns 100 --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git fetch:*),Bash(gh pr view:*),Bash(gh pr diff:*),Read,Glob,Grep"
