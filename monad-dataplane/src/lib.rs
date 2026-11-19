@@ -842,13 +842,22 @@ pub struct RecvUdpMsg {
     pub stride: u16,
 }
 
+/// Application protocol carried by a frame on the shared TCP socket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TcpProtocol {
+    Signature,
+    WireAuth,
+}
+
 #[derive(Clone)]
 pub struct RecvTcpMsg {
+    pub protocol: TcpProtocol,
     pub src_addr: SocketAddr,
     pub payload: Bytes,
 }
 
 pub struct TcpMsg {
+    pub protocol: TcpProtocol,
     pub msg: Bytes,
     pub completion: Option<oneshot::Sender<()>>,
 }

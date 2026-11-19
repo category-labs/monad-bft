@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use monoio::{
     buf::IoBufMut,
     io::{AsyncReadRent, AsyncReadRentExt},
@@ -35,9 +35,12 @@ use super::{
     message_timeout, task_connection,
     tx::{drop_queued_messages, BoundedQueueReceiver},
     ConnectionContext, ConnectionIdle, IoGuard, RecvTcpMsg, TcpConnectionGuard, TcpMsgHdr,
-    TcpReadHalf, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
+    TcpReadHalf, HEADER_MAGIC, SIGNATURE_VERSION, TCP_MESSAGE_LENGTH_LIMIT, WIREAUTH_VERSION,
 };
-use crate::metrics::{ActiveConnectionGuard, DataplaneMetrics};
+use crate::{
+    metrics::{ActiveConnectionGuard, DataplaneMetrics},
+    TcpProtocol,
+};
 
 // Finish the remaining header within this deadline after its first byte arrives.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -143,14 +146,7 @@ pub(crate) async fn read_messages(
             warn!(conn_id, ?addr, "rate limit exceeded");
             break;
         }
-        if let Err(err) = context
-            .tcp_ingress_tx
-            .send(RecvTcpMsg {
-                src_addr: addr,
-                payload: message,
-            })
-            .await
-        {
+        if let Err(err) = context.tcp_ingress_tx.send(message).await {
             warn!(
                 conn_id,
                 ?addr,
@@ -171,7 +167,7 @@ async fn read_message<'a>(
     read_half: &mut TcpReadHalf,
     metrics: &DataplaneMetrics,
     idle: &'a ConnectionIdle,
-) -> Option<(Bytes, IoGuard<'a>)> {
+) -> Option<(RecvTcpMsg, IoGuard<'a>)> {
     let start_time = if enabled!(Level::DEBUG) {
         Some(Instant::now())
     } else {
@@ -255,17 +251,21 @@ async fn read_message<'a>(
         );
         return None;
     }
-    if header_version.get() != HEADER_VERSION {
-        metrics.tcp_receive_errors.inc();
-        debug!(
-            conn_id,
-            ?addr,
-            message_id,
-            ?header,
-            "received incorrect version number on TCP connection"
-        );
-        return None;
-    }
+    let protocol = match header_version.get() {
+        SIGNATURE_VERSION => TcpProtocol::Signature,
+        WIREAUTH_VERSION => TcpProtocol::WireAuth,
+        _ => {
+            metrics.tcp_receive_errors.inc();
+            debug!(
+                conn_id,
+                ?addr,
+                message_id,
+                ?header,
+                "received incorrect version number on TCP connection"
+            );
+            return None;
+        }
+    };
 
     let message_length: usize = header_length.get() as usize;
 
@@ -354,5 +354,12 @@ async fn read_message<'a>(
 
     metrics.tcp_messages_received.inc();
     metrics.tcp_bytes_received.add(message_length as u64);
-    Some((message.freeze(), reading))
+    Some((
+        RecvTcpMsg {
+            protocol,
+            src_addr: addr,
+            payload: message.freeze(),
+        },
+        reading,
+    ))
 }
