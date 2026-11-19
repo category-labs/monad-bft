@@ -11,10 +11,17 @@ monad-rpc = { workspace = true }
 monad-triedb-utils = { workspace = true }
 
 actix-web = { workspace = true }
+alloy-primitives = { workspace = true, features = ["k256"] }
+alloy-sol-types = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing = { workspace = true }
 tracing-actix-web = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+
+[dev-dependencies]
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }

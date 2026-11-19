@@ -43,6 +43,7 @@ use self::{
     dispatch::{rpc_handler, DomainRpc},
 };
 
+mod auth;
 mod cli;
 mod dispatch;
 

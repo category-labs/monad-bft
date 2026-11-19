@@ -13,14 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use actix_web::{web, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse};
 use monad_rpc::{
     handlers::{handle_request, resources::MonadRpcResources, rpc_select, RpcDispatcher},
     middleware::TimingRequestId,
-    types::jsonrpc::{ErrorCode, JsonRpcError, RequestParams},
+    types::jsonrpc::{ErrorCode, JsonRpcError, RequestParams, Response},
 };
 use serde_json::value::RawValue;
+use tracing::debug;
 use tracing_actix_web::RootSpan;
+
+use crate::auth::authenticate;
 
 /// The methods a private domain serves. Any other method is not found.
 const METHODS: &[&str] = &[
@@ -80,12 +83,18 @@ impl RpcDispatcher for DomainRpc {
     }
 }
 
+/// Answers the requests in an HTTP body if the HTTP request carries a valid access token.
 pub async fn rpc_handler(
     root_span: RootSpan,
+    req: HttpRequest,
     body: bytes::Bytes,
     rpc: web::Data<DomainRpc>,
     request_id: TimingRequestId,
 ) -> HttpResponse {
+    if let Err(err) = authenticate(&req, rpc.resources.chain_id) {
+        debug!(%err, "rejected unauthenticated request");
+        return HttpResponse::Ok().json(Response::from_error(err.into()));
+    }
     handle_request(root_span, body, rpc.get_ref(), request_id).await
 }
 
@@ -93,16 +102,25 @@ pub async fn rpc_handler(
 mod tests {
     use std::sync::Arc;
 
+    use actix_web::{test, web, App};
+    use alloy_primitives::B256;
+    use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::MONAD_DEVNET_CHAIN_ID;
     use monad_rpc::{
-        handlers::{resources::MonadRpcResources, rpc_select, RpcDispatcher},
+        handlers::{
+            resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
+            rpc_select, RpcDispatcher,
+        },
         middleware::TimingRequestId,
         txpool::EthTxPoolBridgeClient,
         types::jsonrpc::{ErrorCode, RequestParams},
     };
+    use serde_json::{json, Value};
     use tokio::sync::Semaphore;
+    use tracing_actix_web::TracingLogger;
 
-    use super::DomainRpc;
+    use super::{rpc_handler, DomainRpc};
+    use crate::auth::{sign_token, AUTH_HEADER, UNAUTHORIZED_ERROR_CODE};
 
     const DOMAIN_CHAIN_ID: u64 = (1 << 16) | MONAD_DEVNET_CHAIN_ID;
 
@@ -165,5 +183,37 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(not_served.code, method_not_found);
+    }
+    /// The response to `eth_chainId` over HTTP with `token` as the access token.
+    async fn chain_id_response(token: Option<String>) -> Value {
+        let app = test::init_service(
+            App::new()
+                .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .app_data(web::Data::new(DomainRpc::new(resources())))
+                .service(web::resource("/").route(web::post().to(rpc_handler))),
+        )
+        .await;
+        let request = test::TestRequest::post()
+            .uri("/")
+            .set_json(json!({"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}));
+        let request = match token {
+            Some(token) => request.insert_header((AUTH_HEADER, token)),
+            None => request,
+        };
+        test::call_and_read_body_json(&app, request.to_request()).await
+    }
+
+    #[actix_web::test]
+    async fn requires_an_access_token() {
+        let signer = PrivateKeySigner::from_bytes(&B256::repeat_byte(0x11)).unwrap();
+
+        let response = chain_id_response(Some(sign_token(&signer, DOMAIN_CHAIN_ID))).await;
+        assert_eq!(response["result"], format!("{DOMAIN_CHAIN_ID:#x}"));
+
+        for token in [None, Some(sign_token(&signer, DOMAIN_CHAIN_ID + 1))] {
+            let response = chain_id_response(token).await;
+            assert_eq!(response["error"]["code"], UNAUTHORIZED_ERROR_CODE);
+            assert!(response.get("result").is_none());
+        }
     }
 }

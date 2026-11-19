@@ -6201,6 +6201,10 @@ name = "monad-rpc-domain"
 version = "0.1.0"
 dependencies = [
  "actix-web",
+ "alloy-primitives",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
  "bytes",
  "clap",
  "monad-chain-config",
@@ -6208,6 +6212,7 @@ dependencies = [
  "monad-rpc",
  "monad-triedb-utils",
  "serde_json",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-actix-web",
