@@ -1945,6 +1945,7 @@ where
 mod tests {
     use std::{
         net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+        num::NonZeroU16,
         time::Duration,
     };
 
@@ -2481,7 +2482,8 @@ mod tests {
 
         let (mut state, _clock) = generate_test_state(peer0, vec![]);
         let peer1_record = MonadNameRecord::new(
-            NameRecord::new(ip, tcp_port, Some(udp_port), auth_port, 0, 1),
+            NameRecord::new(ip, tcp_port, Some(udp_port), auth_port, 0, 1)
+                .with_legacy_encrypted_tcp_port(NonZeroU16::new(9101)),
             peer1,
         );
         state
@@ -3167,7 +3169,6 @@ mod tests {
                 Some(8000),
                 9100,
                 Some(9000),
-                None,
                 1,
             ),
             peer1,
@@ -3200,7 +3201,6 @@ mod tests {
                 Some(8001),
                 9101,
                 Some(9000),
-                None,
                 1,
             ),
             peer2,
@@ -3472,7 +3472,6 @@ mod tests {
                 Some(8001),
                 9001,
                 Some(9002),
-                None,
                 2,
             );
             let mut encoded = Vec::new();
@@ -3491,9 +3490,9 @@ mod tests {
                 Some(8002),
                 9003,
                 None,
-                Some(9004),
                 3,
-            );
+            )
+            .with_legacy_encrypted_tcp_port(NonZeroU16::new(9004));
             let mut encoded = Vec::new();
             name_record.encode(&mut encoded);
             let signature = SecpSignature::sign::<signing_domain::NameRecord>(&encoded, peer3);
@@ -3681,8 +3680,8 @@ mod tests {
             "peer3 direct UDP port should be empty"
         );
         assert_eq!(
-            loaded_peer3.name_record.encrypted_tcp_port(),
-            Some(9004),
+            loaded_peer3.name_record.legacy_encrypted_tcp_port(),
+            NonZeroU16::new(9004),
             "peer3 encrypted TCP port should match"
         );
 

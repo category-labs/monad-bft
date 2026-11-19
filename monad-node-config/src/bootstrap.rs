@@ -72,6 +72,7 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
     )]
     pub direct_udp_port: Option<NonZeroU16>,
 
+    /// Preserved when loading a legacy signed name record.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted_tcp_port: Option<NonZeroU16>,
 }

@@ -129,13 +129,12 @@ async fn signed_capability_selects_protocol_on_ordinary_tcp_port(
             let bob = ValidatorInfo::new(42);
             let alice_dp = create_dataplane_for_tests(false);
             let bob_dp = create_dataplane_for_tests(false);
-            let mut record = NameRecord::new_with_ports(
+            let mut record = NameRecord::new(
                 *bob_dp.tcp_addr.ip(),
                 bob_dp.tcp_addr.port(),
                 None,
                 bob_dp.auth_addr.port(),
-                None,
-                Some(1),
+                0,
                 1,
             );
             if encrypted {
@@ -293,7 +292,6 @@ impl ValidatorInfo {
             legacy_udp_port,
             auth_addr.port(),
             direct_udp_addr.map(|addr| addr.port()),
-            None,
             1,
         );
         MonadNameRecord::new(name_record, &*self.keypair)

@@ -36,8 +36,6 @@ pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub self_direct_udp_port: Option<NonZeroU16>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub self_encrypted_tcp_port: Option<NonZeroU16>,
     pub self_record_seq_num: u64,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]

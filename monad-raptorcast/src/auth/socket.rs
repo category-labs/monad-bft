@@ -733,13 +733,12 @@ mod tests {
         let SocketAddr::V4(bob_auth_addr) = bob.auth_addr else {
             panic!("test uses IPv4 addresses");
         };
-        let bob_name_record = NameRecord::new_with_ports(
+        let bob_name_record = NameRecord::new(
             *bob_auth_addr.ip(),
             bob_auth_addr.port(),
             None,
             bob_auth_addr.port(),
-            None,
-            None,
+            0,
             1,
         );
         let payload = Bytes::from_static(b"authenticated path");
@@ -774,13 +773,12 @@ mod tests {
         let SocketAddr::V4(auth_addr) = bob.auth_addr else {
             panic!("test uses IPv4");
         };
-        let record = NameRecord::new_with_ports(
+        let record = NameRecord::new(
             *auth_addr.ip(),
             auth_addr.port(),
             Some(legacy.local_addr().unwrap().port()),
             auth_addr.port(),
-            None,
-            None,
+            0,
             1,
         );
         alice.socket.write(
@@ -833,13 +831,12 @@ mod tests {
         let SocketAddr::V4(bob_auth_addr) = bob.auth_addr else {
             panic!("test uses IPv4 addresses");
         };
-        let bob_name_record = NameRecord::new_with_ports(
+        let bob_name_record = NameRecord::new(
             *bob_auth_addr.ip(),
             bob_auth_addr.port(),
             None,
             bob_auth_addr.port(),
-            None,
-            None,
+            0,
             1,
         );
 

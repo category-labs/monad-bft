@@ -25,11 +25,11 @@ use std::{
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_node_config::{NodeBootstrapConfig, PeerDiscoveryConfig};
+use monad_node_config::{NodeBootstrapConfig, NodeConfig};
 use tempfile::NamedTempFile;
 use tracing::info;
 
-use crate::{MonadNameRecord, NameRecord};
+use crate::{Capability, MonadNameRecord, NameRecord};
 
 pub const NAME_RECORD_FILE: &str = "self.toml";
 
@@ -79,8 +79,9 @@ pub enum Error {
 
 /// Resolve the local IPv4 endpoint and build the record described by the node config.
 pub fn from_config<ST: CertificateSignatureRecoverable>(
-    config: &PeerDiscoveryConfig<ST>,
+    node_config: &NodeConfig<ST>,
 ) -> Result<NameRecord, Error> {
+    let config = &node_config.peer_discovery;
     let tcp_port = config.tcp_port().get();
     let address = (config.self_address.as_str(), tcp_port)
         .to_socket_addrs()
@@ -96,15 +97,18 @@ pub fn from_config<ST: CertificateSignatureRecoverable>(
             address: config.self_address.clone(),
             source,
         })?;
-    Ok(NameRecord::new_with_ports(
+    let mut record = NameRecord::new_with_ports(
         *address.ip(),
         tcp_port,
         config.udp_port().map(NonZeroU16::get),
         config.self_auth_port.get(),
         config.self_direct_udp_port.map(NonZeroU16::get),
-        config.self_encrypted_tcp_port.map(NonZeroU16::get),
         config.self_record_seq_num,
-    ))
+    );
+    if node_config.network.enable_encrypted_tcp {
+        record.set_capability(Capability::EncryptedTcp);
+    }
+    Ok(record)
 }
 
 fn parse<ST: CertificateSignatureRecoverable>(
@@ -364,5 +368,67 @@ mod tests {
         assert_eq!(load(8002, 3, Mode::ReadWrite)?, updated);
         assert_eq!(fs::read(path.with_added_extension("bak"))?, first_contents);
         Ok(())
+    }
+
+    #[test]
+    fn automatic_signing_removes_the_legacy_encrypted_tcp_port() -> Result<(), Error> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join(NAME_RECORD_FILE);
+        let key = KeyPair::from_bytes(&mut [1; 32]).unwrap();
+        let name_record = NameRecord::new(Ipv4Addr::LOCALHOST, 8000, None, 8001, 0, 1);
+        let legacy = name_record
+            .clone()
+            .with_legacy_encrypted_tcp_port(NonZeroU16::new(8002));
+        let load =
+            |record| load_or_create::<SecpSignature>(&path, record, None, &key, Mode::ReadWrite);
+        let previous = load(legacy)?;
+        let updated = load(name_record)?;
+
+        assert_eq!(
+            updated.seq_and_revision(),
+            (1, previous.name_record.revision() + 1)
+        );
+        assert!(updated.name_record.legacy_encrypted_tcp_port().is_none());
+        assert_eq!(
+            parse::<SecpSignature>(&fs::read_to_string(path)?, key.pubkey())?,
+            updated
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn capability_changes_are_signed_persisted_and_advance_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(NAME_RECORD_FILE);
+        let key = KeyPair::from_bytes(&mut [1; 32]).unwrap();
+        let legacy = NameRecord::new(Ipv4Addr::LOCALHOST, 8000, None, 8001, 0, 1);
+        let load = |record| {
+            load_or_create::<SecpSignature>(&path, record, None, &key, Mode::ReadWrite).unwrap()
+        };
+        let initial = load(legacy.clone());
+        let enabled = legacy.clone().with_capability(Capability::EncryptedTcp);
+        let advertised = load(enabled.clone());
+        assert_eq!(
+            advertised.seq_and_revision(),
+            (1, initial.name_record.revision() + 1)
+        );
+        assert!(
+            advertised
+                .name_record
+                .check_capability(Capability::EncryptedTcp)
+        );
+        assert_eq!(advertised.recover_pubkey().unwrap().pubkey(), key.pubkey());
+        assert_eq!(load(enabled), advertised);
+        let disabled = load(legacy);
+        assert_eq!(
+            disabled.seq_and_revision(),
+            (1, advertised.name_record.revision() + 1)
+        );
+        assert!(
+            !disabled
+                .name_record
+                .check_capability(Capability::EncryptedTcp)
+        );
+        assert_eq!(disabled.recover_pubkey().unwrap().pubkey(), key.pubkey());
     }
 }
