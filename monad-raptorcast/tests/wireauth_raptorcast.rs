@@ -87,7 +87,8 @@ async fn tcp_application_round_trip_uses_signed_capabilities(
             let mut channels: Vec<_> = infos
                 .iter()
                 .zip(dataplanes)
-                .map(|(info, dp)| {
+                .zip([alice_encrypted, bob_encrypted])
+                .map(|((info, dp), enable_encrypted_tcp)| {
                     spawn_wireauth_validator(
                         info.keypair.clone(),
                         dp,
@@ -95,6 +96,7 @@ async fn tcp_application_round_trip_uses_signed_capabilities(
                         records.clone(),
                         vec![],
                         DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+                        enable_encrypted_tcp,
                     )
                 })
                 .collect();
@@ -126,11 +128,14 @@ async fn tcp_application_round_trip_uses_signed_capabilities(
 }
 
 #[rstest]
-#[case(false, monad_dataplane::TcpProtocol::Signature)]
-#[case(true, monad_dataplane::TcpProtocol::WireAuth)]
+#[case(false, false, monad_dataplane::TcpProtocol::Signature)]
+#[case(false, true, monad_dataplane::TcpProtocol::Signature)]
+#[case(true, false, monad_dataplane::TcpProtocol::Signature)]
+#[case(true, true, monad_dataplane::TcpProtocol::WireAuth)]
 #[tokio::test(flavor = "current_thread")]
-async fn signed_capability_selects_protocol_on_ordinary_tcp_port(
-    #[case] encrypted: bool,
+async fn encrypted_tcp_send_requires_local_and_peer_opt_in(
+    #[case] local_encrypted: bool,
+    #[case] peer_encrypted: bool,
     #[case] expected: monad_dataplane::TcpProtocol,
 ) {
     tokio::task::LocalSet::new()
@@ -139,16 +144,15 @@ async fn signed_capability_selects_protocol_on_ordinary_tcp_port(
             let bob = ValidatorInfo::new(42);
             let alice_dp = create_dataplane_for_tests(false);
             let bob_dp = create_dataplane_for_tests(false);
-            let mut record = NameRecord::new_with_ports(
+            let mut record = NameRecord::new(
                 *bob_dp.tcp_addr.ip(),
                 bob_dp.tcp_addr.port(),
                 None,
                 bob_dp.auth_addr.port(),
-                None,
-                Some(1),
+                0,
                 1,
             );
-            if encrypted {
+            if peer_encrypted {
                 record.set_capability(monad_peer_discovery::Capability::EncryptedTcp);
             }
             let records =
@@ -160,6 +164,7 @@ async fn signed_capability_selects_protocol_on_ordinary_tcp_port(
                 records,
                 vec![],
                 DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+                local_encrypted,
             );
             channels.ready_rx.await.unwrap();
             channels
@@ -303,7 +308,6 @@ impl ValidatorInfo {
             legacy_udp_port,
             auth_addr.port(),
             direct_udp_addr.map(|addr| addr.port()),
-            None,
             1,
         );
         MonadNameRecord::new(name_record, &*self.keypair)
@@ -315,13 +319,17 @@ const DEFAULT_SIG_VERIFICATION_RATE_LIMIT: u32 = 10_000;
 fn create_raptorcast_config(
     keypair: Arc<KeyPair>,
     sig_verification_rate_limit: u32,
+    enable_encrypted_tcp: bool,
 ) -> monad_raptorcast::config::RaptorCastConfig<SecpSignature> {
     monad_raptorcast::config::RaptorCastConfig {
         shared_key: keypair,
         mtu: monad_dataplane::udp::DEFAULT_MTU,
         udp_message_max_age_ms: u64::MAX,
         sig_verification_rate_limit,
-        primary_instance: Default::default(),
+        primary_instance: monad_raptorcast::config::RaptorCastConfigPrimary {
+            enable_encrypted_tcp,
+            ..Default::default()
+        },
         secondary_instance: monad_node_config::FullNodeRaptorCastConfig {
             enable_publisher: false,
             enable_client: false,
@@ -373,6 +381,7 @@ fn spawn_wireauth_validator(
     >,
     peers_to_check: Vec<(SocketAddrV4, monad_secp::PubKey)>,
     sig_verification_rate_limit: u32,
+    enable_encrypted_tcp: bool,
 ) -> ValidatorChannels {
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -382,7 +391,11 @@ fn spawn_wireauth_validator(
     let pd_driver = shared_pd.clone();
 
     tokio::task::spawn_local(async move {
-        let config = create_raptorcast_config(keypair.clone(), sig_verification_rate_limit);
+        let config = create_raptorcast_config(
+            keypair.clone(),
+            sig_verification_rate_limit,
+            enable_encrypted_tcp,
+        );
         // The ten simulated validators all use 127.0.0.1, so each needs nine peer slots.
         let wireauth_config = monad_wireauth::Config {
             max_established_peers_per_ip: NUM_NODES - 1,
@@ -594,6 +607,7 @@ async fn run_test_scenario(
                 name_records.clone(),
                 peers,
                 DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+                false,
             )
         })
         .collect();
@@ -736,6 +750,7 @@ async fn test_rate_limiting_basic() {
                 name_records.clone(),
                 peers,
                 RATE_LIMIT,
+                false,
             )
         })
         .collect();
@@ -908,6 +923,7 @@ async fn run_send_with_record_uses_name_record_address() {
         name_records.clone(),
         vec![(bob1_auth_addr, bob_info.pubkey)],
         DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+        false,
     );
 
     let bob1 = spawn_wireauth_validator(
@@ -917,6 +933,7 @@ async fn run_send_with_record_uses_name_record_address() {
         name_records.clone(),
         vec![(alice_auth_addr, alice_info.pubkey)],
         DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+        false,
     );
 
     let epoch = Epoch(0);
@@ -967,6 +984,7 @@ async fn run_send_with_record_uses_name_record_address() {
         bob2_name_records,
         vec![],
         DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+        false,
     );
 
     bob2.cmd_tx

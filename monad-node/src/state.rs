@@ -139,7 +139,7 @@ impl NodeState {
         let node_config: MonadNodeConfig =
             toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
         let config = &node_config.peer_discovery;
-        let configured_record = name_record::from_config(config)?;
+        let configured_record = name_record::from_config(&node_config)?;
         let name_record = name_record::load_or_create(
             &directory.join(NAME_RECORD_FILE),
             configured_record,

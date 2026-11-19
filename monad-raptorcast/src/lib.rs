@@ -142,6 +142,7 @@ where
     published_secondary_rounds: PublishedRounds,
 
     tcp_socket: auth::tcp_socket::SharedTcpSocket<ST, AP>,
+    enable_encrypted_tcp: bool,
     udp_socket: auth::AuthenticatedSocketHandle<AP>,
     direct_udp_transport: Option<DirectUdpTransport<ST, AP, DS>>,
     dataplane_control: DataplaneControl,
@@ -304,6 +305,7 @@ where
             published_secondary_rounds: PublishedRounds::new(),
 
             tcp_socket,
+            enable_encrypted_tcp: config.primary_instance.enable_encrypted_tcp,
             udp_socket,
             direct_udp_transport,
             dataplane_control: control,
@@ -413,9 +415,10 @@ where
             .unwrap()
             .get_name_record(to)
             .map(|record| {
-                let protocol = if record
-                    .name_record
-                    .check_capability(Capability::EncryptedTcp)
+                let protocol = if self.enable_encrypted_tcp
+                    && record
+                        .name_record
+                        .check_capability(Capability::EncryptedTcp)
                 {
                     TcpProtocol::WireAuth
                 } else {

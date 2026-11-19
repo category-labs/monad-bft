@@ -16,14 +16,13 @@
 use std::{
     net::{Ipv4Addr, SocketAddrV4},
     num::NonZeroU16,
-    panic,
     path::PathBuf,
 };
 
 use clap::{Args as _, CommandFactory, FromArgMatches, Parser};
 use monad_keystore::keystore::Keystore;
 use monad_node_config::MonadNodeConfig;
-use monad_peer_discovery::{MonadNameRecord, NameRecord, name_record};
+use monad_peer_discovery::{Capability, MonadNameRecord, NameRecord, name_record};
 use monad_secp::SecpSignature;
 
 const PRINT_EXAMPLE: &str = r"Print a node configuration snippet
@@ -68,9 +67,6 @@ struct Args {
 
     #[arg(long, help = "Optional direct UDP port")]
     direct_udp_port: Option<NonZeroU16>,
-
-    #[arg(long, help = "Optional encrypted TCP port")]
-    encrypted_tcp_port: Option<NonZeroU16>,
 
     /// Sequence number for the name record
     #[arg(long)]
@@ -139,12 +135,10 @@ impl WriteArgs {
             )
         })?;
         let config: MonadNodeConfig = toml::from_str(&std::fs::read_to_string(self.node_config)?)?;
-        let peer_discovery = &config.peer_discovery;
-        let record = name_record::from_config(peer_discovery)?;
         name_record::load_or_create(
             &self.output,
-            record,
-            peer_discovery.self_name_record_sig,
+            name_record::from_config(&config)?,
+            config.peer_discovery.self_name_record_sig,
             &keypair,
             name_record::Mode::ReadWrite,
         )?;
@@ -152,59 +146,17 @@ impl WriteArgs {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Endpoint {
-    Legacy(SocketAddrV4),
-    Split {
-        ip: Ipv4Addr,
-        tcp_port: NonZeroU16,
-        udp_port: Option<NonZeroU16>,
-    },
-}
-
-impl Endpoint {
-    fn name_record_parts(&self) -> (Ipv4Addr, u16, Option<u16>) {
-        match self {
-            Self::Legacy(address) => (*address.ip(), address.port(), Some(address.port())),
-            Self::Split {
-                ip,
-                tcp_port,
-                udp_port,
-            } => (*ip, tcp_port.get(), udp_port.map(NonZeroU16::get)),
-        }
-    }
-
-    fn print_config(&self) {
-        match self {
-            Self::Legacy(address) => {
-                println!("self_address = {:?}", address.to_string());
-            }
-            Self::Split {
-                ip,
-                tcp_port,
-                udp_port,
-            } => {
-                println!("self_address = {:?}", ip.to_string());
-                println!("self_tcp_port = {}", tcp_port);
-                if let Some(udp_port) = udp_port {
-                    println!("self_udp_port = {}", udp_port);
-                }
-            }
-        }
-    }
-}
-
 impl Args {
-    fn endpoint(&self) -> Endpoint {
+    fn name_record_parts(&self) -> (Ipv4Addr, u16, Option<u16>) {
         match self.address {
-            Some(address) => Endpoint::Legacy(address),
-            None => Endpoint::Split {
-                ip: self.ip.expect("--ip is required without --address"),
-                tcp_port: self
-                    .tcp_port
-                    .expect("--tcp-port is required without --address"),
-                udp_port: self.udp_port,
-            },
+            Some(address) => (*address.ip(), address.port(), Some(address.port())),
+            None => (
+                self.ip.expect("--ip is required without --address"),
+                self.tcp_port
+                    .expect("--tcp-port is required without --address")
+                    .get(),
+                self.udp_port.map(NonZeroU16::get),
+            ),
         }
     }
 }
@@ -232,8 +184,7 @@ fn main() {
         return;
     }
     let args = Args::from_arg_matches_mut(&mut matches).unwrap_or_else(|err| err.exit());
-    let endpoint = args.endpoint();
-    let (ip, tcp_port, udp_port) = endpoint.name_record_parts();
+    let (ip, tcp_port, udp_port) = args.name_record_parts();
 
     let keypair = match Keystore::load_secp_key(&args.keystore_path, &args.password) {
         Ok(keypair) => keypair,
@@ -243,36 +194,50 @@ fn main() {
         }
     };
 
-    let self_record_seq_num = if let Some(node_config_path) = args.node_config {
-        let contents =
-            std::fs::read_to_string(node_config_path).expect("Failed to read node toml file");
-        let node_config: MonadNodeConfig =
-            toml::from_str(&contents).expect("Invalid format in node toml file");
-        node_config.peer_discovery.self_record_seq_num + 1
-    } else {
-        args.self_record_seq_num
-            .unwrap_or_else(|| panic!("Either node_config or self_record_seq_num must be provided"))
-    };
-    let name_record = NameRecord::new_with_ports(
+    let (self_record_seq_num, configured_encrypted_tcp) =
+        if let Some(node_config_path) = args.node_config {
+            let contents =
+                std::fs::read_to_string(node_config_path).expect("Failed to read node toml file");
+            let config: MonadNodeConfig =
+                toml::from_str(&contents).expect("Invalid format in node toml file");
+            (
+                config.peer_discovery.self_record_seq_num + 1,
+                config.network.enable_encrypted_tcp,
+            )
+        } else {
+            (
+                args.self_record_seq_num
+                    .expect("Either node_config or self_record_seq_num must be provided"),
+                false,
+            )
+        };
+    let mut name_record = NameRecord::new_with_ports(
         ip,
         tcp_port,
         udp_port,
         args.authenticated_udp_port.get(),
         args.direct_udp_port.map(NonZeroU16::get),
-        args.encrypted_tcp_port.map(NonZeroU16::get),
         self_record_seq_num,
     );
+    if configured_encrypted_tcp {
+        name_record.set_capability(Capability::EncryptedTcp);
+    }
     let signed_name_record: MonadNameRecord<SecpSignature> =
         MonadNameRecord::new(name_record, &keypair);
 
-    endpoint.print_config();
+    if let Some(address) = args.address {
+        println!("self_address = {:?}", address.to_string());
+    } else {
+        println!("self_address = {:?}", ip.to_string());
+        println!("self_tcp_port = {tcp_port}");
+        if let Some(udp_port) = udp_port {
+            println!("self_udp_port = {udp_port}");
+        }
+    }
     println!("self_record_seq_num = {}", self_record_seq_num);
     println!("self_auth_port = {}", args.authenticated_udp_port);
     if let Some(direct_udp_port) = args.direct_udp_port {
         println!("self_direct_udp_auth_port = {}", direct_udp_port);
-    }
-    if let Some(encrypted_tcp_port) = args.encrypted_tcp_port {
-        println!("self_encrypted_tcp_port = {}", encrypted_tcp_port);
     }
     println!(
         "self_name_record_sig = {:?}",
@@ -335,14 +300,8 @@ mod tests {
     #[test]
     fn legacy_address_sets_tcp_and_udp_ports() {
         let args = parse(&["--address", "65.109.127.109:8000"]).unwrap();
-        let endpoint = args.endpoint();
-
         assert_eq!(
-            endpoint,
-            Endpoint::Legacy("65.109.127.109:8000".parse().unwrap())
-        );
-        assert_eq!(
-            endpoint.name_record_parts(),
+            args.name_record_parts(),
             ("65.109.127.109".parse().unwrap(), 8000, Some(8000))
         );
     }
@@ -358,18 +317,8 @@ mod tests {
             "8002",
         ])
         .unwrap();
-        let endpoint = args.endpoint();
-
         assert_eq!(
-            endpoint,
-            Endpoint::Split {
-                ip: "65.109.127.109".parse().unwrap(),
-                tcp_port: NonZeroU16::new(8000).unwrap(),
-                udp_port: NonZeroU16::new(8002),
-            }
-        );
-        assert_eq!(
-            endpoint.name_record_parts(),
+            args.name_record_parts(),
             ("65.109.127.109".parse().unwrap(), 8000, Some(8002))
         );
     }

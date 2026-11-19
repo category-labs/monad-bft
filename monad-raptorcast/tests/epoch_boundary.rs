@@ -147,13 +147,12 @@ impl ValidatorInfo {
     }
 
     fn create_name_record(&self, dp: &DataplaneHandles) -> MonadNameRecord<SecpSignature> {
-        let name_record = NameRecord::new_with_ports(
+        let name_record = NameRecord::new(
             Ipv4Addr::new(127, 0, 0, 1),
             dp.tcp_addr.port(),
             None,
             dp.auth_addr.port(),
-            None,
-            None,
+            0,
             1,
         );
         MonadNameRecord::new(name_record, &*self.keypair)

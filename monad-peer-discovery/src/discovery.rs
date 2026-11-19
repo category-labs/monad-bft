@@ -3167,7 +3167,6 @@ mod tests {
                 Some(8000),
                 9100,
                 Some(9000),
-                None,
                 1,
             ),
             peer1,
@@ -3200,7 +3199,6 @@ mod tests {
                 Some(8001),
                 9101,
                 Some(9000),
-                None,
                 1,
             ),
             peer2,
@@ -3472,7 +3470,6 @@ mod tests {
                 Some(8001),
                 9001,
                 Some(9002),
-                None,
                 2,
             );
             let mut encoded = Vec::new();
@@ -3491,7 +3488,6 @@ mod tests {
                 Some(8002),
                 9003,
                 None,
-                Some(9004),
                 3,
             );
             let mut encoded = Vec::new();
@@ -3679,11 +3675,6 @@ mod tests {
             loaded_peer3.name_record.direct_udp_port(),
             None,
             "peer3 direct UDP port should be empty"
-        );
-        assert_eq!(
-            loaded_peer3.name_record.encrypted_tcp_port(),
-            Some(9004),
-            "peer3 encrypted TCP port should match"
         );
 
         let _ = std::fs::remove_file(&temp_file);

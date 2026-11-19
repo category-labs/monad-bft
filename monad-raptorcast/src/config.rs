@@ -75,6 +75,9 @@ pub struct RaptorCastConfigPrimary<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
+    /// Use WireAuth on TCP sends to peers that advertise support.
+    pub enable_encrypted_tcp: bool,
+
     // This refers to the full-nodes we as a validator will be broadcasting full
     // app-messages (e.g. block proposals) directly
     pub fullnode_dedicated: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -92,6 +95,7 @@ where
 {
     fn default() -> RaptorCastConfigPrimary<ST> {
         RaptorCastConfigPrimary {
+            enable_encrypted_tcp: false,
             fullnode_dedicated: Vec::new(),
             raptor10_redundancy: 2.5f32, // for validators
         }
