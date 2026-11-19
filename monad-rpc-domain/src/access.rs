@@ -24,10 +24,16 @@
 //! | `eth_getBalance`, `eth_getTransactionCount` | the requested account is the caller |
 //! | `eth_getTransactionByHash` | the caller sent the transaction |
 //! | `eth_getTransactionReceipt` | the caller sent the transaction; its logs are removed |
+//! | `eth_getLogs` | the filter has the caller as the only value of a topic position |
+//!
+//! A log filter may narrow its result by contract and by other topics. `eth_getLogs` reads a
+//! block only if the block's bloom filter matches the whole filter, so the time a response
+//! takes can tell a caller whether those other values occur in the logs of a block that names
+//! it.
 
 use alloy_consensus::ReceiptEnvelope;
 use alloy_primitives::{Address, Bloom};
-use alloy_rpc_types::TransactionReceipt;
+use alloy_rpc_types::{Filter, TransactionReceipt};
 use monad_rpc::types::jsonrpc::JsonRpcError;
 
 /// JSON-RPC error code of a request the authenticated account is not allowed to make.
@@ -103,6 +109,25 @@ impl Caller {
         }
     }
 
+    /// `filter` must match only logs that have the caller as a topic: the caller is the only
+    /// value of one of its topic positions.
+    pub fn require_own_logs(&self, filter: &Filter) -> Result<(), JsonRpcError> {
+        let caller = self.signer.into_word();
+        if self.operator
+            || filter
+                .topics
+                .iter()
+                .any(|t| t.len() == 1 && t.contains(&caller))
+        {
+            Ok(())
+        } else {
+            Err(forbidden(format!(
+                "the log filter must have the authenticated account {} as the only value of a topic position",
+                self.signer
+            )))
+        }
+    }
+
     /// Removes the logs of `receipt`.
     pub fn remove_logs(&self, receipt: &mut TransactionReceipt) {
         if self.operator {
@@ -121,6 +146,7 @@ impl Caller {
 #[cfg(test)]
 mod tests {
     use alloy_primitives::Address;
+    use alloy_rpc_types::Filter;
     use monad_rpc::types::jsonrpc::JsonRpcError;
 
     use super::{Caller, FORBIDDEN_ERROR_CODE};
@@ -166,5 +192,31 @@ mod tests {
             OPERATOR.require_sender(Some(OTHER), sender),
             Ok(Some(OTHER))
         );
+    }
+
+    #[test]
+    fn log_filter_must_pin_the_caller_in_a_topic() {
+        let signer = SIGNER.into_word();
+        let other = OTHER.into_word();
+
+        for filter in [
+            Filter::new().topic1(signer),
+            Filter::new().topic3(signer),
+            Filter::new().address(OTHER).topic1(other).topic2(signer),
+        ] {
+            assert!(USER.require_own_logs(&filter).is_ok(), "{filter:?}");
+        }
+
+        // No topic, another account, a set that also matches another account, and the caller
+        // as the address of the contract.
+        for filter in [
+            Filter::new(),
+            Filter::new().topic1(other),
+            Filter::new().topic1(vec![signer, other]),
+            Filter::new().address(SIGNER),
+        ] {
+            assert_forbidden(USER.require_own_logs(&filter));
+            assert!(OPERATOR.require_own_logs(&filter).is_ok(), "{filter:?}");
+        }
     }
 }

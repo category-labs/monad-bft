@@ -25,7 +25,10 @@ use monad_rpc::{
                 monad_eth_getBalance, monad_eth_getTransactionCount, MonadEthGetBalanceParams,
                 MonadEthGetTransactionCountParams,
             },
-            txn::{monad_eth_getTransactionByHash, monad_eth_getTransactionReceipt},
+            txn::{
+                monad_eth_getLogs, monad_eth_getTransactionByHash, monad_eth_getTransactionReceipt,
+                MonadEthGetLogsParams,
+            },
         },
         handle_request,
         resources::MonadRpcResources,
@@ -75,22 +78,23 @@ const METHODS: &[(&str, Policy)] = &[
         "eth_getTransactionByBlockNumberAndIndex",
         Policy::OperatorOnly,
     ),
-    // An account's balance, nonce and transactions, each under its rule in `own_data`.
+    // An account's balance, nonce, transactions and logs, each under its rule in `own_data`.
     ("eth_getBalance", Policy::OwnData),
+    ("eth_getLogs", Policy::OwnData),
     ("eth_getTransactionByHash", Policy::OwnData),
     ("eth_getTransactionCount", Policy::OwnData),
     ("eth_getTransactionReceipt", Policy::OwnData),
-    // TODO: serve these to every account for its own calls and logs.
+    // TODO: serve these to every account for its own calls.
     ("eth_call", Policy::OperatorOnly),
     ("eth_createAccessList", Policy::OperatorOnly),
     ("eth_estimateGas", Policy::OperatorOnly),
     ("eth_fillTransaction", Policy::OperatorOnly),
-    ("eth_getLogs", Policy::OperatorOnly),
 ];
 
 /// Answers a [`Policy::OwnData`] method with data of `caller` only.
 async fn own_data<T: Triedb>(
     caller: &Caller,
+    resources: &MonadRpcResources,
     data_provider: &DataProvider<T>,
     method: &str,
     params: RequestParams<'_>,
@@ -101,6 +105,22 @@ async fn own_data<T: Triedb>(
                 serde_json::from_str(params.get()).invalid_params()?;
             caller.require_account(Address::from(params.account.0))?;
             serialize_result(monad_eth_getBalance(data_provider, params).await?)
+        }
+        "eth_getLogs" => {
+            let params: MonadEthGetLogsParams =
+                serde_json::from_str(params.get()).invalid_params()?;
+            caller.require_own_logs(&params.filters)?;
+            let logs = monad_eth_getLogs(
+                data_provider,
+                resources.max_response_size,
+                resources.logs_max_block_range,
+                params,
+                resources.use_eth_get_logs_index,
+                resources.dry_run_get_logs_index,
+                resources.max_finalized_block_cache_len,
+            )
+            .await?;
+            serialize_result(logs)
         }
         "eth_getTransactionCount" => {
             let params: MonadEthGetTransactionCountParams =
@@ -178,9 +198,9 @@ impl RpcDispatcher for CallerRpc<'_> {
             Policy::Open => {}
             Policy::OperatorOnly => self.caller.require_operator()?,
             Policy::OwnData => {
-                let data_provider = &self.rpc.resources.data_provider;
-                let data_provider = data_provider.as_ref().method_not_found()?;
-                return own_data(&self.caller, data_provider, method, params).await;
+                let resources = &self.rpc.resources;
+                let data_provider = resources.data_provider.as_ref().method_not_found()?;
+                return own_data(&self.caller, resources, data_provider, method, params).await;
             }
         }
         rpc_select(&self.rpc.resources, method, params, request_id).await
@@ -210,11 +230,14 @@ pub async fn rpc_handler(
 mod tests {
     use std::{collections::HashSet, sync::Arc};
 
-    use actix_web::{test, web, App};
+    use actix_web::{
+        test::{call_and_read_body_json, init_service, TestRequest},
+        web, App,
+    };
     use alloy_consensus::{
         Block, BlockBody, Eip658Value, Header, Receipt, ReceiptEnvelope, ReceiptWithBloom,
     };
-    use alloy_primitives::{Address, Bloom, Log, B256, U256};
+    use alloy_primitives::{logs_bloom, Address, Bloom, Log, B256, U256};
     use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::MONAD_DEVNET_CHAIN_ID;
     use monad_eth_testutil::make_legacy_tx;
@@ -257,20 +280,25 @@ mod tests {
         Caller { signer, operator }
     }
 
+    /// A log of a contract with `account` as a topic.
+    fn log_naming(account: Address) -> Log {
+        Log::new_unchecked(
+            Address::repeat_byte(0xcc),
+            vec![B256::repeat_byte(0xee), account.into_word()],
+            Default::default(),
+        )
+    }
+
     /// A chain of one transaction, sent by the user, and the hash of that transaction. Its
-    /// receipt has one log. The user has balance 5 and nonce 1, the other account balance 9
-    /// and nonce 3.
+    /// receipt has a log naming the user and a log naming the other account. The user has
+    /// balance 5 and nonce 1, the other account balance 9 and nonce 3.
     fn chain() -> (DataProvider<MockTriedb>, B256) {
         let tx = make_legacy_tx(USER_KEY, 1, 21_000, 0, 0);
         let tx_hash = *tx.tx_hash();
         let receipt = Receipt {
             status: Eip658Value::Eip658(true),
             cumulative_gas_used: 21_000,
-            logs: vec![Log::new_unchecked(
-                Address::repeat_byte(0xcc),
-                vec![B256::repeat_byte(0xee), user().address().into_word()],
-                Default::default(),
-            )],
+            logs: vec![log_naming(user().address()), log_naming(OTHER)],
         };
 
         let mut triedb = MockTriedb::default();
@@ -290,6 +318,7 @@ mod tests {
             Block {
                 header: Header {
                     number: 1,
+                    logs_bloom: logs_bloom(&receipt.logs),
                     ..Default::default()
                 },
                 body: BlockBody {
@@ -324,9 +353,15 @@ mod tests {
         params: Value,
     ) -> Result<Value, JsonRpcError> {
         let params = to_raw_value(&params).unwrap();
-        own_data(&caller, chain, method, RequestParams::new(&params))
-            .await
-            .map(|result| serde_json::from_str(result.get()).unwrap())
+        own_data(
+            &caller,
+            &resources(),
+            chain,
+            method,
+            RequestParams::new(&params),
+        )
+        .await
+        .map(|result| serde_json::from_str(result.get()).unwrap())
     }
 
     fn assert_forbidden(result: Result<Value, JsonRpcError>) {
@@ -363,21 +398,21 @@ mod tests {
 
     /// The response to `method` over HTTP with `token` as the access token.
     async fn response(method: &str, token: Option<String>) -> Value {
-        let app = test::init_service(
+        let app = init_service(
             App::new()
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .app_data(web::Data::new(rpc()))
                 .service(web::resource("/").route(web::post().to(rpc_handler))),
         )
         .await;
-        let request = test::TestRequest::post()
+        let request = TestRequest::post()
             .uri("/")
             .set_json(json!({"jsonrpc": "2.0", "method": method, "params": [], "id": 1}));
         let request = match token {
             Some(token) => request.insert_header((AUTH_HEADER, token)),
             None => request,
         };
-        test::call_and_read_body_json(&app, request.to_request()).await
+        call_and_read_body_json(&app, request.to_request()).await
     }
 
     #[tokio::test]
@@ -485,10 +520,84 @@ mod tests {
         let to_operator = own_data_of(&chain, caller(OTHER, true), method, json!([tx_hash]))
             .await
             .unwrap();
-        assert_eq!(to_operator["logs"].as_array().unwrap().len(), 1);
+        assert_eq!(to_operator["logs"].as_array().unwrap().len(), 2);
         assert_ne!(to_operator["logsBloom"], json!(Bloom::ZERO));
 
         assert_forbidden(own_data_of(&chain, caller(OTHER, false), method, json!([tx_hash])).await);
+    }
+
+    #[tokio::test]
+    async fn serves_an_account_the_logs_that_name_it() {
+        let (chain, _) = chain();
+        let user = user().address();
+        let method = "eth_getLogs";
+        let named = |logs: Value| -> Vec<Value> {
+            let logs = logs.as_array().unwrap();
+            logs.iter().map(|log| log["topics"][1].clone()).collect()
+        };
+
+        let own = json!([{"topics": [null, user.into_word()]}]);
+        let logs = own_data_of(&chain, caller(user, false), method, own).await;
+        assert_eq!(named(logs.unwrap()), [json!(user.into_word())]);
+
+        // No log names the user in this topic position.
+        let elsewhere = json!([{"topics": [null, null, user.into_word()]}]);
+        let logs = own_data_of(&chain, caller(user, false), method, elsewhere).await;
+        assert_eq!(logs.unwrap(), json!([]));
+
+        for filter in [
+            json!({}),
+            json!({"topics": [null, OTHER.into_word()]}),
+            json!({"topics": [null, [user.into_word(), OTHER.into_word()]]}),
+            // A null among the values of a topic position matches every topic.
+            json!({"topics": [null, [user.into_word(), null]]}),
+            json!({"address": user}),
+        ] {
+            let params = json!([filter]);
+            assert_forbidden(
+                own_data_of(&chain, caller(user, false), method, params.clone()).await,
+            );
+            assert!(own_data_of(&chain, caller(user, true), method, params)
+                .await
+                .is_ok());
+        }
+
+        let all = own_data_of(&chain, caller(user, true), method, json!([{}])).await;
+        assert_eq!(
+            named(all.unwrap()),
+            [json!(user.into_word()), json!(OTHER.into_word())]
+        );
+    }
+
+    #[test]
+    fn serves_these_methods_to_every_account() {
+        let with = |policy: Policy| -> Vec<&str> {
+            let methods = METHODS.iter().filter(|(_, served_to)| *served_to == policy);
+            methods.map(|(method, _)| *method).collect()
+        };
+        assert_eq!(
+            with(Policy::Open),
+            [
+                "eth_blockNumber",
+                "eth_chainId",
+                "eth_feeHistory",
+                "eth_gasPrice",
+                "eth_maxPriorityFeePerGas",
+                "eth_syncing",
+                "net_version",
+                "web3_clientVersion",
+            ]
+        );
+        assert_eq!(
+            with(Policy::OwnData),
+            [
+                "eth_getBalance",
+                "eth_getLogs",
+                "eth_getTransactionByHash",
+                "eth_getTransactionCount",
+                "eth_getTransactionReceipt",
+            ]
+        );
     }
 
     #[tokio::test]
@@ -500,6 +609,7 @@ mod tests {
         {
             let err = own_data(
                 &caller(OTHER, false),
+                &resources(),
                 &chain,
                 method,
                 RequestParams::default(),
