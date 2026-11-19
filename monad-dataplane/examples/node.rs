@@ -93,6 +93,7 @@ fn main() {
         tx.tcp_socket.write(
             tx.target,
             TcpMsg {
+                protocol: monad_dataplane::TcpProtocol::Signature,
                 msg: Bytes::from(&b"Hello world"[..]),
                 completion: None,
             },

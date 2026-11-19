@@ -39,7 +39,7 @@ use zerocopy::{
     FromBytes, Immutable, IntoBytes,
 };
 
-use super::{RecvTcpMsg, TcpMsg, TcpSocketId};
+use super::{RecvTcpMsg, TcpMsg, TcpProtocol, TcpSocketId};
 use crate::{metrics::DataplaneMetrics, Addrlist};
 
 mod conn;
@@ -69,10 +69,13 @@ struct TcpMsgHdr {
 }
 
 impl TcpMsgHdr {
-    fn new(length: u64) -> TcpMsgHdr {
+    fn new(length: u64, protocol: TcpProtocol) -> TcpMsgHdr {
         TcpMsgHdr {
             magic: U32::new(HEADER_MAGIC),
-            version: U32::new(HEADER_VERSION),
+            version: U32::new(match protocol {
+                TcpProtocol::Signature => HEADER_VERSION,
+                TcpProtocol::WireAuth => 2,
+            }),
             length: U64::new(length),
         }
     }
@@ -631,6 +634,52 @@ mod tests {
     const SOCKET: TcpSocketId = TcpSocketId::Raptorcast;
     const PEER_TIMEOUT: Duration = Duration::from_secs(2);
 
+    #[test]
+    fn legacy_header_bytes_and_wireauth_discriminant() {
+        assert_eq!(
+            TcpMsgHdr::new(3, crate::TcpProtocol::Signature).as_bytes(),
+            &[0x53, 0x53, 0x4e, 0x43, 1, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0]
+        );
+        let header = TcpMsgHdr::new(3, crate::TcpProtocol::WireAuth);
+        assert_eq!(header.version.get(), 2);
+        assert_eq!(header.length.get(), 3);
+    }
+
+    #[monoio::test(enable_timer = true)]
+    async fn mixed_frame_protocols_use_the_same_ingress() {
+        let mut dp = TestDataplane::new(&[SOCKET]);
+        let mut peer = Peer::connect(dp.addrs[&SOCKET]).await;
+        for protocol in [
+            crate::TcpProtocol::Signature,
+            crate::TcpProtocol::WireAuth,
+            crate::TcpProtocol::Signature,
+        ] {
+            let frame = [TcpMsgHdr::new(4, protocol).as_bytes(), b"body"].concat();
+            let (result, _) = within(peer.write.write_all(frame)).await;
+            result.unwrap();
+            let message = within(dp.ingress.get_mut(&SOCKET).unwrap().recv())
+                .await
+                .unwrap();
+            assert_eq!(message.protocol, protocol);
+            assert_eq!(message.payload, b"body"[..]);
+            assert_eq!(message.src_addr, peer.addr);
+        }
+        assert_eq!(dp.metrics.tcp_current_inbound_connections.get(), 1);
+    }
+
+    #[monoio::test(enable_timer = true)]
+    async fn unknown_frame_protocol_closes_connection() {
+        let dp = TestDataplane::new(&[SOCKET]);
+        let mut peer = Peer::connect(dp.addrs[&SOCKET]).await;
+        let mut header = TcpMsgHdr::new(0, crate::TcpProtocol::Signature);
+        header.version = U32::new(3);
+        let (result, _) = within(peer.write.write_all(header.as_bytes().to_vec())).await;
+        result.unwrap();
+        within(peer.closed()).await;
+        dp.disconnected().await;
+        assert_eq!(dp.metrics.tcp_receive_errors.get(), 1);
+    }
+
     async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
         monoio::time::timeout(PEER_TIMEOUT, future).await.unwrap()
     }
@@ -654,7 +703,11 @@ mod tests {
         }
 
         async fn send(&mut self, payload: &[u8]) {
-            let frame = [TcpMsgHdr::new(payload.len() as u64).as_bytes(), payload].concat();
+            let frame = [
+                TcpMsgHdr::new(payload.len() as u64, crate::TcpProtocol::Signature).as_bytes(),
+                payload,
+            ]
+            .concat();
             let (result, _) = within(self.write.write_all(frame)).await;
             result.unwrap();
         }
@@ -745,6 +798,7 @@ mod tests {
                 socket,
                 addr,
                 TcpMsg {
+                    protocol: crate::TcpProtocol::Signature,
                     msg: bytes::Bytes::from_static(payload),
                     completion: None,
                 },
@@ -861,7 +915,11 @@ mod tests {
     async fn test_partial_frame_is_not_idle() {
         let mut dp = TestDataplane::new(&[SOCKET]);
         let mut peer = Peer::connect(dp.addrs[&SOCKET]).await;
-        let frame = [TcpMsgHdr::new(2).as_bytes(), b"ok"].concat();
+        let frame = [
+            TcpMsgHdr::new(2, crate::TcpProtocol::Signature).as_bytes(),
+            b"ok",
+        ]
+        .concat();
         // TX becomes idle, but RX remains active while finishing this frame.
         // Each frame stage still has its own fixed deadline.
         for chunk in [&frame[..8], &frame[8..17], &frame[17..]] {
@@ -883,7 +941,11 @@ mod tests {
     async fn test_frame_deadline_is_not_extended_by_progress(#[case] body: bool) {
         let dp = TestDataplane::new(&[SOCKET]);
         let mut peer = Peer::connect(dp.addrs[&SOCKET]).await;
-        let frame = [TcpMsgHdr::new(8).as_bytes(), &[0; 8]].concat();
+        let frame = [
+            TcpMsgHdr::new(8, crate::TcpProtocol::Signature).as_bytes(),
+            &[0; 8],
+        ]
+        .concat();
         let prefix_len = if body { 17 } else { 1 };
         let (result, _) = within(peer.write.write_all(frame[..prefix_len].to_vec())).await;
         result.unwrap();
@@ -970,8 +1032,8 @@ mod tests {
 
     #[rstest]
     #[case::silent(Vec::new())]
-    #[case::partial_header(TcpMsgHdr::new(1).as_bytes()[..8].to_vec())]
-    #[case::partial_body([TcpMsgHdr::new(TCP_MESSAGE_LENGTH_LIMIT as u64).as_bytes(), &[1]].concat())]
+    #[case::partial_header(TcpMsgHdr::new(1, crate::TcpProtocol::Signature).as_bytes()[..8].to_vec())]
+    #[case::partial_body([TcpMsgHdr::new(TCP_MESSAGE_LENGTH_LIMIT as u64, crate::TcpProtocol::Signature).as_bytes(), &[1]].concat())]
     #[monoio::test(enable_timer = true)]
     async fn test_stalled_first_frame_releases_connection_slot(#[case] prefix: Vec<u8>) {
         let mut dp = TestDataplane::new(&[SOCKET]);

@@ -420,7 +420,7 @@ async fn send_message(
 
     let message_len = message.msg.len();
 
-    let header = TcpMsgHdr::new(message_len as u64);
+    let header = TcpMsgHdr::new(message_len as u64, message.protocol);
 
     let (ret, _header) = write_half
         .write_all(Box::<[u8]>::from(header.as_bytes()))
@@ -489,6 +489,7 @@ mod tests {
 
     fn make_msg(size: usize) -> TcpMsg {
         TcpMsg {
+            protocol: crate::TcpProtocol::Signature,
             msg: Bytes::from(vec![0u8; size]),
             completion: None,
         }
@@ -578,6 +579,7 @@ mod tests {
             .try_send(
                 &key,
                 TcpMsg {
+                    protocol: crate::TcpProtocol::Signature,
                     msg: Bytes::from_static(b"queued while connecting"),
                     completion: Some(complete),
                 },
@@ -664,6 +666,7 @@ mod tests {
             .try_send(
                 &key,
                 TcpMsg {
+                    protocol: crate::TcpProtocol::Signature,
                     msg: Bytes::from(vec![0; TCP_MESSAGE_LENGTH_LIMIT]),
                     completion: Some(complete),
                 },
@@ -700,7 +703,11 @@ mod tests {
         // Deliver a full inbound frame halfway through the blocked write so
         // the preserved reader deadline cannot mask a missing write timeout.
         monoio::time::sleep(Duration::from_secs(5)).await;
-        let frame = [TcpMsgHdr::new(1).as_bytes(), &[1]].concat();
+        let frame = [
+            TcpMsgHdr::new(1, crate::TcpProtocol::Signature).as_bytes(),
+            &[1],
+        ]
+        .concat();
         let (result, _) = peer.write_all(frame).await;
         result.unwrap();
         monoio::time::timeout(Duration::from_secs(7), async {
