@@ -28,7 +28,7 @@ use crate::{
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBalanceParams {
-    account: EthAddress,
+    pub account: EthAddress,
     block_number: BlockTagOrHash,
 }
 
@@ -144,7 +144,7 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionCountParams {
-    account: EthAddress,
+    pub account: EthAddress,
     block: BlockTagOrHash,
 }
 
