@@ -160,6 +160,7 @@ itertools = "0.13"
 jemalloc_pprof = "0.8"
 k256 = { version = "0.13", features = ["hash2curve"] }
 libc = "0.2.153"
+libm = "0.2.15"
 lru = "0.16"
 lz4 = "1.28"
 mongodb = { version = "3.7.0", default-features = false, features = ["compat-3-0-0", "dns-resolver", "openssl-tls"] }

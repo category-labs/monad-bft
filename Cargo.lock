@@ -5711,6 +5711,7 @@ dependencies = [
  "derive_more",
  "hex",
  "libc",
+ "libm",
  "monad-mcp-common",
  "proptest",
  "rand 0.8.5",
