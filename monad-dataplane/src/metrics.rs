@@ -78,6 +78,7 @@ define_metrics! {
     tcp_egress_messages_dropped_banned => TCP_EGRESS_MESSAGES_DROPPED_BANNED("monad.dataplane.tcp.total_egress_messages_dropped_banned", "Total TCP egress messages rejected for a banned destination during send queue registration or before dialing"),
     tcp_pacing_memory_limit_drops => TCP_PACING_MEMORY_LIMIT_DROPS("monad.dataplane.tcp.pacing.total_memory_limit_drops", "Total TCP pacing reservations rejected because the pacing queue memory limit was reached"),
     tcp_pacing_queued_bytes => TCP_PACING_QUEUED_BYTES("monad.dataplane.tcp.pacing.current_queued_bytes", "Current TCP chunk bytes reserved in the pacing queue"),
+    tcp_pacing_grant_wait_micros => TCP_PACING_GRANT_WAIT_MICROS("monad.dataplane.tcp.pacing.total_grant_wait_micros", "Total time in microseconds spent waiting for TCP pacing grants, including rejected and canceled requests"),
     tcp_connections_rate_limited => TCP_CONNECTIONS_RATE_LIMITED("monad.dataplane.tcp.total_connections_rate_limited", "Total inbound TCP connections closed after exceeding the per-connection message rate limit"),
     egress_pacing_peers => EGRESS_PACING_PEERS("monad.dataplane.egress.pacing.current_peers", "Current number of destination IPs retained by the shared pacing queue"),
     egress_pacing_memory_limit_bytes => EGRESS_PACING_MEMORY_LIMIT_BYTES("monad.dataplane.egress.pacing.memory_limit_bytes", "Configured shared pacing queue byte limit per priority"),

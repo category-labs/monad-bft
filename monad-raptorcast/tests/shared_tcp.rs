@@ -19,6 +19,7 @@ use monad_raptorcast::auth::{
     WireAuthProtocol,
 };
 use monad_secp::{KeyPair, PubKey, SecpSignature};
+use monad_types::EgressPriority;
 use rstest::rstest;
 
 type Socket = SharedTcpSocket<SecpSignature, WireAuthProtocol>;
@@ -279,6 +280,7 @@ async fn malformed_frames_are_not_exposed_as_application_messages() {
                 msg: Bytes::from_static(b"invalid"),
                 completion: None,
             },
+            EgressPriority::Background,
         );
         let (_, error) = tokio::time::timeout(DEADLINE, receiver.socket.recv())
             .await

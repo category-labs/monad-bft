@@ -276,6 +276,7 @@ fn tcp_reuses_connection_after_idle() {
                 msg: payload.clone().into(),
                 completion: Some(sender),
             },
+            EgressPriority::Background,
         );
 
         assert!(executor::block_on(receiver).is_ok());
@@ -328,6 +329,7 @@ fn tcp_slow() {
                 msg: payload.clone().into(),
                 completion: Some(sender),
             },
+            EgressPriority::Background,
         );
 
         assert!(executor::block_on(receiver).is_ok());
@@ -376,6 +378,7 @@ fn tcp_rapid() {
                 msg: payload.clone().into(),
                 completion: Some(sender),
             },
+            EgressPriority::Background,
         );
 
         completions.push_back(receiver);
@@ -427,6 +430,7 @@ fn tcp_connect_fail() {
             msg: payload.into(),
             completion: Some(sender),
         },
+        EgressPriority::Background,
     );
 
     assert!(executor::block_on(receiver).is_err());
@@ -467,6 +471,7 @@ fn tcp_exceed_queue_limits() {
                 msg: payload.clone().into(),
                 completion: Some(sender),
             },
+            EgressPriority::Background,
         );
 
         completions.push(receiver);
@@ -543,6 +548,7 @@ fn tcp_exceed_queue_byte_limit() {
                 msg: payload.clone().into(),
                 completion: Some(sender),
             },
+            EgressPriority::Background,
         );
 
         completions.push(receiver);
@@ -602,6 +608,7 @@ fn tcp_outgoing_connection_limit() {
             msg: payload1.clone().into(),
             completion: Some(sender1),
         },
+        EgressPriority::Background,
     );
 
     let recv_msg = executor::block_on(rx1_socket.recv());
@@ -617,6 +624,7 @@ fn tcp_outgoing_connection_limit() {
             msg: payload2.into(),
             completion: Some(sender2),
         },
+        EgressPriority::Background,
     );
 
     assert!(executor::block_on(receiver2).is_err());
@@ -653,6 +661,7 @@ fn tcp_reject_oversized_message() {
             msg: oversized_payload.into(),
             completion: None,
         },
+        EgressPriority::Background,
     );
 
     let start = std::time::Instant::now();
@@ -692,6 +701,7 @@ fn tcp_accept_max_size_message() {
             msg: max_size_payload.clone().into(),
             completion: Some(sender),
         },
+        EgressPriority::Background,
     );
 
     assert!(executor::block_on(receiver).is_ok());
@@ -874,6 +884,7 @@ async fn test_tcp_limits_are_applied(
             msg: payload1.clone().into(),
             completion: None,
         },
+        EgressPriority::Background,
     );
 
     let mut rx_tcp_socket = rx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
@@ -889,6 +900,7 @@ async fn test_tcp_limits_are_applied(
             msg: payload2.clone().into(),
             completion: None,
         },
+        EgressPriority::Background,
     );
 
     let result = async {
@@ -933,6 +945,7 @@ async fn test_tcp_rps_limits() {
                 msg: payload.into(),
                 completion: None,
             },
+            EgressPriority::Background,
         );
     }
 
@@ -992,6 +1005,7 @@ async fn test_tcp_limits_ignored_for_trusted(
             msg: payload1.clone().into(),
             completion: None,
         },
+        EgressPriority::Background,
     );
 
     let mut rx_tcp_socket = rx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
@@ -1007,6 +1021,7 @@ async fn test_tcp_limits_ignored_for_trusted(
             msg: payload2.clone().into(),
             completion: None,
         },
+        EgressPriority::Background,
     );
 
     let recv_msg = rx_tcp_socket.recv().await;
@@ -1040,6 +1055,7 @@ async fn test_tcp_banned() {
             msg: payload1.clone().into(),
             completion: None,
         },
+        EgressPriority::Background,
     );
     let mut rx_tcp_socket = rx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
     let recv_msg = rx_tcp_socket.recv().await;
@@ -1055,6 +1071,7 @@ async fn test_tcp_banned() {
             msg: payload2.clone().into(),
             completion: None,
         },
+        EgressPriority::Background,
     );
     let result = async {
         monoio::time::timeout(Duration::from_millis(50), rx_tcp_socket.recv())
@@ -1426,6 +1443,7 @@ fn tcp_multi_socket() {
                 msg: payload1.clone().into(),
                 completion: None,
             },
+            EgressPriority::Background,
         );
         tcp_socket_2.write(
             rx_addr_2,
@@ -1434,6 +1452,7 @@ fn tcp_multi_socket() {
                 msg: payload2.clone().into(),
                 completion: None,
             },
+            EgressPriority::Background,
         );
     }
 

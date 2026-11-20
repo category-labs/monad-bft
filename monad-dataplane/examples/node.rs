@@ -28,6 +28,7 @@ use monad_dataplane::{
     udp::DEFAULT_SEGMENT_SIZE, BroadcastMsg, Dataplane, DataplaneBuilder, RecvUdpMsg, TcpMsg,
     TcpSocketHandle, TcpSocketId, UdpSocketHandle, UdpSocketId,
 };
+use monad_types::EgressPriority;
 use rand::Rng;
 
 const NODE_ONE_ADDR: &str = "127.0.0.1:60000";
@@ -97,6 +98,7 @@ fn main() {
                 msg: Bytes::from(&b"Hello world"[..]),
                 completion: None,
             },
+            EgressPriority::Background,
         );
 
         std::thread::sleep(std::time::Duration::from_secs(5));

@@ -24,6 +24,7 @@ use monad_crypto::{
 };
 use monad_dataplane::{TcpIngressEvent, TcpMsg, TcpProtocol, TcpSocketHandle};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
+use monad_types::EgressPriority;
 use tokio::time::Sleep;
 use zerocopy::IntoBytes;
 
@@ -145,6 +146,7 @@ where
                 msg: packet.freeze(),
                 completion,
             },
+            EgressPriority::Background,
         );
         self.metrics.gauge(metric).add(len);
         Ok(())
@@ -159,6 +161,7 @@ where
                     msg,
                     completion,
                 },
+                EgressPriority::Background,
             );
         }
     }
