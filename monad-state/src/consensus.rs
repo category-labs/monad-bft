@@ -458,7 +458,7 @@ where
                         Command::RouterCommand(RouterCommand::PublishWithPriority {
                             target: RouterTarget::DirectPointToPoint(target),
                             message: VerifiedMonadMessage::ForwardedTx(txs.clone()),
-                            priority: monad_types::UdpPriority::Regular,
+                            priority: monad_types::EgressPriority::Regular,
                         })
                     })
                     .collect_vec()
@@ -714,7 +714,7 @@ where
                 parent_cmds.push(Command::RouterCommand(RouterCommand::PublishWithPriority {
                     target,
                     message: VerifiedMonadMessage::Consensus(message),
-                    priority: monad_types::UdpPriority::High,
+                    priority: monad_types::EgressPriority::High,
                 }))
             }
             ConsensusCommand::PublishToFullNodes {

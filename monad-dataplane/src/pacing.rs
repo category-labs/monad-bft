@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Single-owner global and per-peer UDP packet pacing.
+//! Single-owner global and per-peer packet pacing.
 //!
 //! Flow state is ordered by its next eligible send time. Messages provide their
 //! pacing characteristics through [`PacingItem`].
@@ -22,19 +22,21 @@ use std::{
     cell::{RefCell, RefMut},
     cmp::{Ordering, Reverse},
     collections::{binary_heap::PeekMut, BTreeMap, BinaryHeap, HashMap},
-    net::SocketAddrV4,
+    io::ErrorKind,
+    net::IpAddr,
     num::NonZeroU64,
     rc::Rc,
     time::{Duration, Instant},
 };
 
 use bytes::Bytes;
-use monad_types::UdpPriority;
+use monad_types::EgressPriority;
+use tokio::sync::mpsc;
 
 use crate::{metrics::DataplaneMetrics, IPV4_HDR_SIZE, UDP_HDR_SIZE};
 
 const PACER_MAX_CATCH_UP: Duration = Duration::from_millis(5);
-const PRIORITY_COUNT: usize = 2;
+const PRIORITY_COUNT: usize = EgressPriority::Background as usize + 1;
 const MIN_PEER_QUEUE_CAPACITY: usize = 16;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -42,15 +44,69 @@ pub enum EnqueueError<T> {
     MemoryLimit(T),
 }
 
+/// A bandwidth reservation whose caller reuses the same reply channel.
+/// Keep at most one outstanding request per channel.
+#[derive(Debug)]
+pub struct PacingRequest {
+    bytes: usize,
+    ready: Option<mpsc::Sender<Result<(), ErrorKind>>>,
+}
+
+impl PacingRequest {
+    pub fn new(bytes: usize, ready: mpsc::Sender<Result<(), ErrorKind>>) -> Self {
+        Self {
+            bytes,
+            ready: Some(ready),
+        }
+    }
+
+    pub fn grant(&mut self) {
+        if let Some(ready) = self.ready.take() {
+            let _ = ready.try_send(Ok(()));
+        }
+    }
+}
+
+impl Drop for PacingRequest {
+    fn drop(&mut self) {
+        if let Some(ready) = self.ready.take() {
+            let _ = ready.try_send(Err(ErrorKind::BrokenPipe));
+        }
+    }
+}
+
 pub trait PacingItem {
-    /// Remaining payload bytes charged against the queue's memory limit.
+    /// Retained bytes charged against the queue's memory limit.
     fn queued_bytes(&self) -> usize;
+
+    fn record_memory_limit_drop(&self, metrics: &DataplaneMetrics) {
+        metrics.udp_egress_messages_dropped.inc();
+        metrics.udp_pacing_memory_limit_drops.inc();
+    }
 
     fn next_payload_bytes(&self) -> usize;
 
     fn next_pacing_bytes(&self) -> usize {
         self.next_payload_bytes()
             .saturating_add(usize::from(IPV4_HDR_SIZE + UDP_HDR_SIZE))
+    }
+}
+
+impl PacingItem for PacingRequest {
+    fn queued_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn record_memory_limit_drop(&self, metrics: &DataplaneMetrics) {
+        metrics.tcp_pacing_memory_limit_drops.inc();
+    }
+
+    fn next_payload_bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn next_pacing_bytes(&self) -> usize {
+        self.bytes
     }
 }
 
@@ -79,12 +135,12 @@ impl PacingItem for Vec<u8> {
 pub struct Scheduled<T> {
     pub item: T,
     pub(crate) batch_bytes: usize,
-    priority: UdpPriority,
+    priority: EgressPriority,
     order: u64,
 }
 
 struct Queued<T> {
-    priority: UdpPriority,
+    priority: EgressPriority,
     order: u64,
     item: T,
     queued_bytes: usize,
@@ -134,7 +190,7 @@ impl<'a, T> PeerMut<'a, T> {
     }
 
     /// Add this peer to the ready index, returning false if its queue is empty.
-    fn make_ready(&mut self, key: SocketAddrV4) -> bool {
+    fn make_ready(&mut self, key: IpAddr) -> bool {
         debug_assert!(self.state.ready.is_none());
         let Some(message) = self.state.messages.peek() else {
             return false;
@@ -198,13 +254,13 @@ impl<'a, T> PeerMut<'a, T> {
 /// the peer handle separately; rebuild this key when the top message changes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct ReadyKey {
-    priority: UdpPriority,
+    priority: EgressPriority,
     order: u64,
-    key: SocketAddrV4,
+    key: IpAddr,
 }
 
 impl ReadyKey {
-    fn new<T>(key: SocketAddrV4, message: &Queued<T>) -> Self {
+    fn new<T>(key: IpAddr, message: &Queued<T>) -> Self {
         Self {
             priority: message.priority,
             order: message.order,
@@ -219,7 +275,7 @@ type Peer<T> = Rc<RefCell<PeerState<T>>>;
 
 struct PeerDeadline<T> {
     next_at: Duration,
-    key: SocketAddrV4,
+    key: IpAddr,
     peer: Peer<T>,
 }
 
@@ -245,9 +301,9 @@ impl<T> Ord for PeerDeadline<T> {
     }
 }
 
-/// Socket-address keyed queue with global and uniform per-peer pacing.
+/// IP-address keyed queue with global and uniform per-peer pacing.
 pub struct PacingQueue<T> {
-    peers: HashMap<SocketAddrV4, Peer<T>>,
+    peers: HashMap<IpAddr, Peer<T>>,
     next_peers: BinaryHeap<Reverse<PeerDeadline<T>>>,
     ready: BTreeMap<ReadyKey, Peer<T>>,
     global_bytes_per_second: NonZeroU64,
@@ -321,38 +377,42 @@ impl<T: PacingItem> PacingQueue<T> {
 
     pub fn enqueue(
         &mut self,
-        key: SocketAddrV4,
-        priority: UdpPriority,
+        key: impl Into<IpAddr>,
+        priority: EgressPriority,
         item: T,
     ) -> Result<(), EnqueueError<T>> {
         // Assign a global sequence number to preserve FIFO among ready messages of
         // equal priority, including across peers. Requeued messages retain their order.
         let order = self.next_order;
         self.next_order = self.next_order.wrapping_add(1);
-        self.enqueue_inner(key, priority, item, order)
+        self.enqueue_inner(key.into(), priority, item, order)
     }
 
     /// Return a partially sent message without changing its priority or FIFO order.
     pub(crate) fn requeue(
         &mut self,
-        key: SocketAddrV4,
+        key: impl Into<IpAddr>,
         scheduled: Scheduled<T>,
     ) -> Result<(), EnqueueError<T>> {
-        self.enqueue_inner(key, scheduled.priority, scheduled.item, scheduled.order)
+        self.enqueue_inner(
+            key.into(),
+            scheduled.priority,
+            scheduled.item,
+            scheduled.order,
+        )
     }
 
     fn enqueue_inner(
         &mut self,
-        key: SocketAddrV4,
-        priority: UdpPriority,
+        key: IpAddr,
+        priority: EgressPriority,
         item: T,
         order: u64,
     ) -> Result<(), EnqueueError<T>> {
         let queued_bytes = item.queued_bytes();
         let memory = &mut self.memory[priority as usize];
         if queued_bytes > memory.limit.saturating_sub(memory.used) {
-            self.metrics.udp_egress_messages_dropped.inc();
-            self.metrics.udp_pacing_memory_limit_drops.inc();
+            item.record_memory_limit_drop(&self.metrics);
             return Err(EnqueueError::MemoryLimit(item));
         }
         let queued = Queued {
@@ -466,6 +526,8 @@ impl<T: PacingItem> PacingQueue<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use super::*;
 
     const UNLIMITED: u64 = 1_000_000_000_000;
@@ -490,8 +552,9 @@ mod tests {
         NonZeroU64::new(bytes_per_second).unwrap()
     }
 
-    fn key(port: u16) -> SocketAddrV4 {
-        SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port)
+    fn key(peer: u16) -> Ipv4Addr {
+        let [high, low] = peer.to_be_bytes();
+        Ipv4Addr::new(127, 0, high, low)
     }
 
     fn item(id: u64, bytes: usize) -> Item {
@@ -529,20 +592,23 @@ mod tests {
         let mut queue = queue(UNLIMITED, UNLIMITED);
         for port in 1..=4 {
             queue
-                .enqueue(key(port), UdpPriority::Regular, item(0, 64))
+                .enqueue(key(port), EgressPriority::Regular, item(0, 64))
                 .unwrap();
             for id in 1..128 {
                 queue
-                    .enqueue(key(port), UdpPriority::High, item(id, 64))
+                    .enqueue(key(port), EgressPriority::High, item(id, 64))
                     .unwrap();
             }
-            assert_eq!(queue.peers[&key(port)].borrow().messages.capacity(), 128);
+            assert_eq!(
+                queue.peers[&key(port).into()].borrow().messages.capacity(),
+                128
+            );
 
             for id in 1..128 {
-                let capacity = queue.peers[&key(port)].borrow().messages.capacity();
+                let capacity = queue.peers[&key(port).into()].borrow().messages.capacity();
                 let now = queue.next_wakeup(queue.service_at).unwrap();
                 assert_eq!(queue.dequeue(now, usize::MAX).unwrap().item.id, id);
-                let state = queue.peers[&key(port)].borrow();
+                let state = queue.peers[&key(port).into()].borrow();
                 let len = state.messages.len();
                 let expected = if capacity > 16 && len <= capacity / 4 {
                     (len * 2).max(16)
@@ -568,7 +634,7 @@ mod tests {
         let mut queue = queue(UNLIMITED, 1_000);
         for id in 0..3 {
             queue
-                .enqueue(key(1), UdpPriority::Regular, item(id, 100))
+                .enqueue(key(1), EgressPriority::Regular, item(id, 100))
                 .unwrap();
         }
 
@@ -606,13 +672,13 @@ mod tests {
         for port in 1..=10 {
             for id in 0..100 {
                 queue
-                    .enqueue(key(port), UdpPriority::High, item(id, 100))
+                    .enqueue(key(port), EgressPriority::High, item(id, 100))
                     .unwrap();
             }
         }
         for id in 0..100 {
             queue
-                .enqueue(key(20), UdpPriority::Regular, item(10_000 + id, 100))
+                .enqueue(key(20), EgressPriority::Regular, item(10_000 + id, 100))
                 .unwrap();
         }
         let mut regular_times = Vec::new();
@@ -635,7 +701,7 @@ mod tests {
         let mut queue = queue(1_000, UNLIMITED);
         for id in 0..3 {
             queue
-                .enqueue(key(id as u16), UdpPriority::Regular, item(id, 100))
+                .enqueue(key(id as u16), EgressPriority::Regular, item(id, 100))
                 .unwrap();
         }
 
@@ -659,10 +725,10 @@ mod tests {
     fn global_clock_catches_up_within_window() {
         let mut queue = queue(1_000, UNLIMITED);
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(1, 100))
+            .enqueue(key(1), EgressPriority::Regular, item(1, 100))
             .unwrap();
         queue
-            .enqueue(key(2), UdpPriority::Regular, item(2, 100))
+            .enqueue(key(2), EgressPriority::Regular, item(2, 100))
             .unwrap();
 
         queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
@@ -681,10 +747,10 @@ mod tests {
     fn global_clock_clamps_beyond_catch_up_window() {
         let mut queue = queue(1_000, UNLIMITED);
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(1, 100))
+            .enqueue(key(1), EgressPriority::Regular, item(1, 100))
             .unwrap();
         queue
-            .enqueue(key(2), UdpPriority::Regular, item(2, 100))
+            .enqueue(key(2), EgressPriority::Regular, item(2, 100))
             .unwrap();
 
         queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
@@ -704,7 +770,7 @@ mod tests {
         let mut queue = queue(UNLIMITED, 1_000);
         for id in 0..2 {
             queue
-                .enqueue(key(1), UdpPriority::Regular, item(id, 100))
+                .enqueue(key(1), EgressPriority::Regular, item(id, 100))
                 .unwrap();
         }
 
@@ -723,7 +789,7 @@ mod tests {
         let mut queue = queue(UNLIMITED, 1_000);
         for id in 0..2 {
             queue
-                .enqueue(key(1), UdpPriority::Regular, item(id, 100))
+                .enqueue(key(1), EgressPriority::Regular, item(id, 100))
                 .unwrap();
         }
 
@@ -741,10 +807,10 @@ mod tests {
     fn next_wakeup_tracks_peer_deadline_and_tombstone() {
         let mut queue = queue(2_000, 1_000);
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(0, 100))
+            .enqueue(key(1), EgressPriority::Regular, item(0, 100))
             .unwrap();
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(1, 100))
+            .enqueue(key(1), EgressPriority::Regular, item(1, 100))
             .unwrap();
 
         assert_eq!(queue.next_wakeup(Duration::ZERO), Some(Duration::ZERO));
@@ -770,7 +836,7 @@ mod tests {
         let mut queue = queue(2_000, 1_000);
         for id in 0..2 {
             queue
-                .enqueue(key(1), UdpPriority::Regular, item(id, 100))
+                .enqueue(key(1), EgressPriority::Regular, item(id, 100))
                 .unwrap();
         }
         queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
@@ -780,7 +846,7 @@ mod tests {
         );
 
         queue
-            .enqueue(key(2), UdpPriority::High, item(2, 100))
+            .enqueue(key(2), EgressPriority::High, item(2, 100))
             .unwrap();
         assert_eq!(
             queue.next_wakeup(Duration::from_millis(70)),
@@ -800,14 +866,14 @@ mod tests {
     fn ready_peer_candidate_tracks_new_high_priority_messages() {
         let mut queue = queue(UNLIMITED, UNLIMITED);
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(1, 1))
+            .enqueue(key(1), EgressPriority::Regular, item(1, 1))
             .unwrap();
         queue
-            .enqueue(key(2), UdpPriority::Regular, item(2, 1))
+            .enqueue(key(2), EgressPriority::Regular, item(2, 1))
             .unwrap();
-        drop(PeerMut::new(&queue.peers[&key(1)], &mut queue.ready));
+        drop(PeerMut::new(&queue.peers[&key(1).into()], &mut queue.ready));
         assert!(queue.ready.is_empty());
-        assert!(PeerMut::new(&queue.peers[&key(1)], &mut queue.ready)
+        assert!(PeerMut::new(&queue.peers[&key(1).into()], &mut queue.ready)
             .pop(usize::MAX)
             .is_none());
         assert_eq!(queue.len(), 2);
@@ -818,11 +884,11 @@ mod tests {
         assert_eq!(queue.metrics.udp_pacing_queued_bytes.get(), 2);
         assert_ready_consistent(&queue);
         queue
-            .enqueue(key(1), UdpPriority::High, item(3, 1))
+            .enqueue(key(1), EgressPriority::High, item(3, 1))
             .unwrap();
         assert_ready_consistent(&queue);
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(4, 1))
+            .enqueue(key(1), EgressPriority::Regular, item(4, 1))
             .unwrap();
         assert_ready_consistent(&queue);
 
@@ -841,7 +907,7 @@ mod tests {
         let mut queue = queue(UNLIMITED, UNLIMITED);
         for id in 0..10 {
             queue
-                .enqueue(key(1), UdpPriority::Regular, item(id, 1))
+                .enqueue(key(1), EgressPriority::Regular, item(id, 1))
                 .unwrap();
         }
         let items: Vec<_> = (0..10)
@@ -855,12 +921,12 @@ mod tests {
         let mut queue = queue(1_000, 1_000);
         for id in 0..4 {
             queue
-                .enqueue(key(1), UdpPriority::High, item(id, 100))
+                .enqueue(key(1), EgressPriority::High, item(id, 100))
                 .unwrap();
         }
         for id in 100..104 {
             queue
-                .enqueue(key(2), UdpPriority::Regular, item(id, 100))
+                .enqueue(key(2), EgressPriority::Regular, item(id, 100))
                 .unwrap();
         }
 
@@ -875,12 +941,12 @@ mod tests {
         let mut queue = queue(2_000, 1_000);
         for id in 0..4 {
             queue
-                .enqueue(key(1), UdpPriority::High, item(id, 100))
+                .enqueue(key(1), EgressPriority::High, item(id, 100))
                 .unwrap();
         }
         for id in 100..104 {
             queue
-                .enqueue(key(2), UdpPriority::Regular, item(id, 100))
+                .enqueue(key(2), EgressPriority::Regular, item(id, 100))
                 .unwrap();
         }
 
@@ -895,12 +961,12 @@ mod tests {
         let mut queue = queue(1_000, 1_000);
         for id in 0..4 {
             queue
-                .enqueue(key(1), UdpPriority::Regular, item(id, 100))
+                .enqueue(key(1), EgressPriority::Regular, item(id, 100))
                 .unwrap();
         }
         for id in 100..104 {
             queue
-                .enqueue(key(2), UdpPriority::Regular, item(id, 100))
+                .enqueue(key(2), EgressPriority::Regular, item(id, 100))
                 .unwrap();
         }
 
@@ -915,26 +981,26 @@ mod tests {
         let mut queue =
             PacingQueue::new(rate(UNLIMITED), rate(UNLIMITED), 2, DataplaneMetrics::new());
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(1, 1))
+            .enqueue(key(1), EgressPriority::Regular, item(1, 1))
             .unwrap();
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(2, 1))
+            .enqueue(key(1), EgressPriority::Regular, item(2, 1))
             .unwrap();
         queue
-            .enqueue(key(2), UdpPriority::High, item(3, 1))
+            .enqueue(key(2), EgressPriority::High, item(3, 1))
             .unwrap();
         queue
-            .enqueue(key(2), UdpPriority::High, item(4, 1))
+            .enqueue(key(2), EgressPriority::High, item(4, 1))
             .unwrap();
         let error = queue
-            .enqueue(key(2), UdpPriority::High, item(5, 1))
+            .enqueue(key(2), EgressPriority::High, item(5, 1))
             .unwrap_err();
         assert_eq!(error, EnqueueError::MemoryLimit(item(5, 1)));
         let memory_used: [usize; PRIORITY_COUNT] =
             std::array::from_fn(|class| queue.memory[class].used);
         assert_eq!(
             memory_used,
-            [2, 2],
+            [2, 2, 0],
             "all traffic classes must have independent budgets"
         );
         assert_eq!(queue.metrics.udp_pacing_queued_bytes.get(), 4);
@@ -944,7 +1010,7 @@ mod tests {
 
         queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         queue
-            .enqueue(key(2), UdpPriority::High, item(5, 1))
+            .enqueue(key(2), EgressPriority::High, item(5, 1))
             .unwrap();
     }
 
@@ -953,7 +1019,7 @@ mod tests {
         let mut queue = queue(UNLIMITED, UNLIMITED);
         for peer in 1..=3 {
             queue
-                .enqueue(key(peer), UdpPriority::Regular, item(peer.into(), 1))
+                .enqueue(key(peer), EgressPriority::Regular, item(peer.into(), 1))
                 .unwrap();
         }
         assert_eq!(queue.metrics.udp_pacing_peers.get(), 3);
@@ -973,7 +1039,7 @@ mod tests {
         let mut queue = queue(1_000, 1_000);
         for (id, bytes) in [(1, 100), (2, 200), (3, 50)] {
             queue
-                .enqueue(key(1), UdpPriority::Regular, item(id, bytes))
+                .enqueue(key(1), EgressPriority::Regular, item(id, bytes))
                 .unwrap();
         }
         let selected: Vec<_> = (0..3)
@@ -998,7 +1064,7 @@ mod tests {
 
         for port in 1..1_001 {
             queue
-                .enqueue(key(port), UdpPriority::Regular, item(port.into(), 1))
+                .enqueue(key(port), EgressPriority::Regular, item(port.into(), 1))
                 .unwrap();
             assert_eq!(
                 queue.dequeue(Duration::ZERO, 1).unwrap().item.id,
@@ -1015,7 +1081,7 @@ mod tests {
         let mut queue = queue(UNLIMITED, 1_000);
         for port in 1..=100 {
             queue
-                .enqueue(key(port), UdpPriority::Regular, item(port.into(), 100))
+                .enqueue(key(port), EgressPriority::Regular, item(port.into(), 100))
                 .unwrap();
         }
         for _ in 0..100 {
@@ -1049,14 +1115,14 @@ mod tests {
     fn byte_limit_and_reenqueue() {
         let mut queue = queue(1_000, 1_000);
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(0, 100))
+            .enqueue(key(1), EgressPriority::Regular, item(0, 100))
             .unwrap();
 
         let mut first = queue.dequeue(Duration::ZERO, 120).unwrap();
         assert_eq!(first.item.id, 0);
         assert_eq!(queue.service_at, Duration::from_millis(128));
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(1, 100))
+            .enqueue(key(1), EgressPriority::Regular, item(1, 100))
             .unwrap();
         assert!(queue.dequeue(Duration::ZERO, 20).is_none());
 
@@ -1066,7 +1132,7 @@ mod tests {
         let remainder = queue.dequeue(Duration::ZERO, 120).unwrap();
         assert_eq!(remainder.item.id, 0);
         assert_eq!(remainder.order, original_order);
-        assert_eq!(remainder.priority, UdpPriority::Regular);
+        assert_eq!(remainder.priority, EgressPriority::Regular);
         assert_eq!(remainder.batch_bytes, 40);
 
         let second = queue.dequeue(Duration::ZERO, 120).unwrap();
@@ -1078,7 +1144,7 @@ mod tests {
     fn exhausted_ready_queue_keeps_peer_scheduled() {
         let mut queue = queue(1_000, 1_000);
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(0, 100))
+            .enqueue(key(1), EgressPriority::Regular, item(0, 100))
             .unwrap();
         assert_eq!(
             queue.dequeue(Duration::ZERO, usize::MAX).unwrap().item.id,
@@ -1087,7 +1153,7 @@ mod tests {
         assert!(queue.dequeue(Duration::ZERO, usize::MAX).is_none());
 
         queue
-            .enqueue(key(1), UdpPriority::Regular, item(1, 100))
+            .enqueue(key(1), EgressPriority::Regular, item(1, 100))
             .unwrap();
         let scheduled = queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         assert_eq!(scheduled.item.id, 1);
@@ -1100,32 +1166,35 @@ mod tests {
         let mut queue = PacingQueue::new(rate(UNLIMITED), rate(UNLIMITED), 6, metrics.clone());
         let message = |bytes| crate::UdpMsg {
             socket_id: crate::UdpSocketId::Raptorcast,
-            dst: key(1).into(),
+            dst: (key(1), 1).into(),
             payload: Bytes::from(vec![0; bytes]),
             stride: 2,
-            priority: UdpPriority::Regular,
+            priority: EgressPriority::Regular,
         };
         assert!(queue
-            .enqueue(key(1), UdpPriority::Regular, message(7))
+            .enqueue(key(1), EgressPriority::Regular, message(7))
             .is_err());
         assert_eq!(metrics.udp_pacing_queued_bytes.get(), 0);
         assert!(queue
-            .enqueue(key(1), UdpPriority::Regular, message(5))
+            .enqueue(key(1), EgressPriority::Regular, message(5))
             .is_ok());
         assert_eq!(metrics.udp_pacing_queued_bytes.get(), 5);
 
         let mut scheduled = queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         assert_eq!(scheduled.batch_bytes, 2);
         assert_eq!(metrics.udp_pacing_queued_bytes.get(), 0);
-        assert_eq!(scheduled.take_chunk(), Bytes::from_static(&[0, 0]));
+        assert_eq!(
+            scheduled.item.payload.split_to(scheduled.batch_bytes),
+            Bytes::from_static(&[0, 0])
+        );
         assert_eq!(scheduled.item.payload.len(), 3);
         assert!(queue.requeue(key(1), scheduled).is_ok());
         assert_eq!(metrics.udp_pacing_queued_bytes.get(), 3);
         assert!(queue
-            .enqueue(key(1), UdpPriority::Regular, message(4))
+            .enqueue(key(1), EgressPriority::Regular, message(4))
             .is_err());
         assert!(queue
-            .enqueue(key(1), UdpPriority::Regular, message(3))
+            .enqueue(key(1), EgressPriority::Regular, message(3))
             .is_ok());
         assert_eq!(metrics.udp_pacing_queued_bytes.get(), 6);
     }
