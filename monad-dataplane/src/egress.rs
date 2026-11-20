@@ -18,6 +18,8 @@
 use std::{net::SocketAddr, num::NonZeroU64, time::Instant};
 
 use async_channel::Sender;
+#[cfg(test)]
+use monoio::spawn;
 use monoio::{select, time::sleep};
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{debug, trace};
@@ -236,4 +238,19 @@ pub(crate) async fn task(
             return;
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_pacing() -> mpsc::Sender<PacedMessage> {
+    let (sender, receiver) = mpsc::channel(crate::TCP_EGRESS_CHANNEL_SIZE);
+    let (dispatch, received) = async_channel::bounded(1);
+    spawn(task(
+        dispatch,
+        receiver,
+        1_000,
+        UdpPacingConfig::for_global_bandwidth(1_000),
+        DataplaneMetrics::new(),
+    ));
+    spawn(async move { while received.recv().await.is_ok() {} });
+    sender
 }
