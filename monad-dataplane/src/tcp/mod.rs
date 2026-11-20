@@ -39,7 +39,7 @@ use zerocopy::{
     FromBytes, Immutable, IntoBytes,
 };
 
-use super::{RecvTcpMsg, TcpMsg, TcpProtocol, TcpSocketId};
+use super::{TcpIngressEvent, TcpMsg, TcpProtocol, TcpSocketId};
 use crate::{metrics::DataplaneMetrics, Addrlist};
 
 mod conn;
@@ -51,7 +51,7 @@ pub(crate) struct ConnectionContext {
     pub(crate) socket_id: TcpSocketId,
     pub(crate) rate_limit: TcpRateLimit,
     pub(crate) tcp_control_map: TcpControl,
-    pub(crate) tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    pub(crate) tcp_ingress_tx: mpsc::Sender<TcpIngressEvent>,
     pub(crate) metrics: DataplaneMetrics,
 }
 
@@ -328,7 +328,7 @@ pub(crate) fn spawn_tasks(
     cfg: TcpConfig,
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
-    socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
+    socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<TcpIngressEvent>)>,
     tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpMsg)>,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(TcpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
@@ -478,6 +478,7 @@ impl TcpControl {
 #[cfg(test)]
 mod tests {
     use crate::TcpProtocol::{Signature, WireAuth};
+    use crate::TcpSocketReader;
 
     use std::{
         collections::HashMap,
@@ -656,9 +657,7 @@ mod tests {
             let frame = [TcpMsgHdr::new(4, protocol).as_bytes(), b"body"].concat();
             let (result, _) = within(peer.write.write_all(frame)).await;
             result.unwrap();
-            let message = within(dp.ingress.get_mut(&SOCKET).unwrap().recv())
-                .await
-                .unwrap();
+            let message = within(dp.ingress.get_mut(&SOCKET).unwrap().recv()).await;
             assert_eq!(message.protocol, protocol);
             assert_eq!(message.payload, b"body"[..]);
             assert_eq!(message.src_addr, peer.addr);
@@ -740,7 +739,7 @@ mod tests {
 
     struct TestDataplane {
         egress: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
-        ingress: HashMap<TcpSocketId, mpsc::Receiver<RecvTcpMsg>>,
+        ingress: HashMap<TcpSocketId, TcpSocketReader>,
         addrs: HashMap<TcpSocketId, SocketAddr>,
         control: TcpControl,
         metrics: DataplaneMetrics,
@@ -754,7 +753,13 @@ mod tests {
                 .iter()
                 .map(|&id| {
                     let (sender, receiver) = mpsc::channel(16);
-                    ingress.insert(id, receiver);
+                    ingress.insert(
+                        id,
+                        TcpSocketReader {
+                            socket_id: id,
+                            ingress_rx: receiver,
+                        },
+                    );
                     (id, "127.0.0.1:0".parse().unwrap(), sender)
                 })
                 .collect();
@@ -806,9 +811,7 @@ mod tests {
         }
 
         async fn received(&mut self, socket: TcpSocketId, addr: SocketAddr, payload: &[u8]) {
-            let message = within(self.ingress.get_mut(&socket).unwrap().recv())
-                .await
-                .unwrap();
+            let message = within(self.ingress.get_mut(&socket).unwrap().recv()).await;
             assert_eq!(message.src_addr, addr);
             assert_eq!(&message.payload[..], payload);
         }
@@ -985,26 +988,57 @@ mod tests {
         dp.disconnected().await;
     }
 
+    #[rstest]
+    #[case::accepted(false)]
+    #[case::outbound(true)]
     #[monoio::test(enable_timer = true)]
-    async fn test_disconnect_with_full_ingress_queue() {
+    async fn test_disconnect_with_full_ingress_queue(#[case] outgoing: bool) {
         let mut dp = TestDataplane::new(&[SOCKET]);
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut peer = dp.open(SOCKET, false, &listener).await;
-        for _ in 0..17 {
+        let mut peer = dp.open(SOCKET, outgoing, &listener).await;
+        let capacity = dp.ingress[&SOCKET].ingress_rx.max_capacity();
+        let expected_received = dp.metrics.tcp_messages_received.get() + capacity as u64 + 1;
+        for _ in 0..=capacity {
             peer.send(b"fill ingress").await;
         }
         within(async {
-            while dp.metrics.tcp_messages_received.get() != 18 {
+            while dp.metrics.tcp_messages_received.get() != expected_received {
                 monoio::time::sleep(Duration::from_millis(1)).await;
             }
         })
         .await;
-        assert_eq!(dp.ingress[&SOCKET].len(), 16);
+        assert_eq!(dp.ingress[&SOCKET].ingress_rx.len(), capacity);
         dp.control
             .disconnect_socket(peer.addr.ip(), peer.addr.port());
         within(peer.closed()).await;
         dp.disconnected().await;
         assert_eq!(dp.metrics.tcp_current_inbound_connections.get(), 0);
+        assert_eq!(dp.metrics.tcp_current_outbound_connections.get(), 0);
+
+        // The one-connection quota must allow a replacement before ingress drains.
+        let _replacement = if outgoing {
+            dp.open(SOCKET, true, &listener).await
+        } else {
+            let replacement = Peer::connect(dp.addrs[&SOCKET]).await;
+            within(async {
+                while dp.metrics.tcp_current_inbound_connections.get() != 1 {
+                    monoio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await;
+            replacement
+        };
+        let ingress = dp.ingress.get_mut(&SOCKET).unwrap();
+        for _ in 0..capacity {
+            assert!(matches!(
+                within(ingress.recv_event()).await,
+                TcpIngressEvent::Message(message) if message.payload == b"fill ingress"[..]
+            ));
+        }
+        assert!(matches!(
+            ingress.ingress_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[monoio::test(enable_timer = true)]

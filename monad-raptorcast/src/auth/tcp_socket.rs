@@ -22,7 +22,7 @@ use monad_crypto::{
     },
     signing_domain,
 };
-use monad_dataplane::{TcpMsg, TcpProtocol, TcpSocketHandle};
+use monad_dataplane::{TcpIngressEvent, TcpMsg, TcpProtocol, TcpSocketHandle};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use tokio::time::Sleep;
 use zerocopy::IntoBytes;
@@ -61,7 +61,7 @@ pub struct AuthRecvTcpMsg<P> {
 }
 
 /// Both TCP protocols share this reader, writer, listener and connection registry.
-/// WireAuth owns session lifetimes independently of TCP connection lifetimes.
+/// Closing a connection expires its established WireAuth sessions.
 pub struct SharedTcpSocket<ST, AP>
 where
     ST: CertificateSignatureRecoverable,
@@ -169,9 +169,16 @@ where
         loop {
             let timer =
                 AuthenticatedTimerFuture::new(&mut self.auth_protocol, &mut self.auth_timer);
-            let message = tokio::select! {
+            let event = tokio::select! {
                 () = timer => { self.flush(); continue; }
-                message = self.socket.recv() => message,
+                event = self.socket.recv_event() => event,
+            };
+            let message = match event {
+                TcpIngressEvent::Message(message) => message,
+                TcpIngressEvent::Closed(addr) => {
+                    self.auth_protocol.disconnect_transports_by_socket(addr);
+                    continue;
+                }
             };
             let addr = message.src_addr;
             let (payload, from, metric) = match message.protocol {

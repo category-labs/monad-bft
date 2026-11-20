@@ -43,6 +43,8 @@ pub trait AuthenticationProtocol {
         remote_addr: SocketAddr,
     ) -> Result<Option<(Bytes, Option<Self::PublicKey>)>, Self::Error>;
 
+    fn disconnect_transports_by_socket(&mut self, _addr: SocketAddr) {}
+
     fn encrypt_by_public_key(
         &mut self,
         public_key: &Self::PublicKey,
@@ -118,6 +120,10 @@ impl AuthenticationProtocol for WireAuthProtocol {
     type Header = monad_wireauth::messages::DataPacketHeader;
 
     const HEADER_SIZE: u16 = DataPacketHeader::SIZE as u16;
+
+    fn disconnect_transports_by_socket(&mut self, addr: SocketAddr) {
+        self.api.disconnect_transports_by_socket(addr);
+    }
 
     fn connect(
         &mut self,
