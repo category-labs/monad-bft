@@ -28,7 +28,7 @@ use monad_dataplane::{
     udp::DEFAULT_SEGMENT_SIZE,
     BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, TcpSocketId, UdpSocketId, UnicastMsg,
 };
-use monad_types::UdpPriority;
+use monad_types::EgressPriority;
 use ntest::timeout;
 use rand::Rng;
 use rstest::*;
@@ -1155,7 +1155,7 @@ fn udp_priority_delivery() {
             msgs: vec![(rx_addr, high_priority_data.into())],
             stride: DEFAULT_SEGMENT_SIZE,
         },
-        UdpPriority::High,
+        EgressPriority::High,
     );
 
     tx_socket.write_unicast_with_priority(
@@ -1163,7 +1163,7 @@ fn udp_priority_delivery() {
             msgs: vec![(rx_addr, regular_priority_data.into())],
             stride: DEFAULT_SEGMENT_SIZE,
         },
-        UdpPriority::Regular,
+        EgressPriority::Regular,
     );
 
     let messages = msg_rx
@@ -1240,14 +1240,14 @@ fn udp_cross_peer_priority_delivery() {
             msgs: vec![(high_addr, vec![0xAA; message_bytes].into())],
             stride: DEFAULT_SEGMENT_SIZE,
         },
-        UdpPriority::High,
+        EgressPriority::High,
     );
     tx_socket.write_unicast_with_priority(
         UnicastMsg {
             msgs: vec![(regular_addr, vec![0xBB; message_bytes].into())],
             stride: DEFAULT_SEGMENT_SIZE,
         },
-        UdpPriority::Regular,
+        EgressPriority::Regular,
     );
 
     let mut high_count = 0;
@@ -1320,7 +1320,7 @@ fn udp_priority_with_regular_then_high_traffic() {
             msgs: vec![(rx_addr, regular_priority_data.into())],
             stride: DEFAULT_SEGMENT_SIZE,
         },
-        UdpPriority::Regular,
+        EgressPriority::Regular,
     );
 
     thread::sleep(Duration::from_millis(50));
@@ -1330,7 +1330,7 @@ fn udp_priority_with_regular_then_high_traffic() {
             msgs: vec![(rx_addr, high_priority_data.into())],
             stride: DEFAULT_SEGMENT_SIZE,
         },
-        UdpPriority::High,
+        EgressPriority::High,
     );
 
     let messages = msg_rx

@@ -49,7 +49,7 @@ use monad_raptorcast::{
 };
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{
-    Deserializable, Epoch, NodeId, Round, RoundSpan, Serializable, Stake, UdpPriority,
+    Deserializable, EgressPriority, Epoch, NodeId, Round, RoundSpan, Serializable, Stake,
 };
 use monad_validator::validator_set::ValidatorSet;
 use tokio::sync::mpsc::unbounded_channel;
@@ -1091,7 +1091,7 @@ async fn test_priority_messages() {
         tx_rc.exec(vec![RouterCommand::PublishWithPriority {
             target: monad_types::RouterTarget::PointToPoint(rx_nodeid),
             message: high_priority_msg,
-            priority: UdpPriority::High,
+            priority: EgressPriority::High,
         }]);
     }
 
@@ -1101,7 +1101,7 @@ async fn test_priority_messages() {
         tx_rc.exec(vec![RouterCommand::PublishWithPriority {
             target: monad_types::RouterTarget::PointToPoint(rx_nodeid),
             message: regular_priority_msg,
-            priority: UdpPriority::Regular,
+            priority: EgressPriority::Regular,
         }]);
     }
 
@@ -1260,14 +1260,14 @@ async fn test_raptorcast_forwarding_priority() {
     validator1_rc.exec(vec![RouterCommand::PublishWithPriority {
         target: monad_types::RouterTarget::Broadcast(epoch),
         message: high_priority_msg,
-        priority: UdpPriority::High,
+        priority: EgressPriority::High,
     }]);
 
     let regular_priority_msg = MockMessage::new(0xBB, MESSAGE_SIZE);
     validator1_rc.exec(vec![RouterCommand::PublishWithPriority {
         target: monad_types::RouterTarget::Broadcast(epoch),
         message: regular_priority_msg,
-        priority: UdpPriority::Regular,
+        priority: EgressPriority::Regular,
     }]);
 
     let mut received_messages = Vec::new();

@@ -53,8 +53,8 @@ use monad_statesync_version::{
     MONAD_STATESYNC_MAJOR, MONAD_STATESYNC_MINOR_2, MONAD_STATESYNC_MINOR_3,
 };
 use monad_types::{
-    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, FullnodeBroadcastMode,
-    LimitedVec, NodeId, Round, RouterTarget, SeqNum, Stake, UdpPriority,
+    deserialize_pubkey, serialize_pubkey, EgressPriority, Epoch, ExecutionProtocol,
+    FullnodeBroadcastMode, LimitedVec, NodeId, Round, RouterTarget, SeqNum, Stake,
     MAX_FORWARDED_TXS_PER_MESSAGE,
 };
 use monad_validator::signature_collection::SignatureCollection;
@@ -77,7 +77,7 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
         // NOTE(dshulyak) priority for tcp messages is ignored
         target: RouterTarget<CertificateSignaturePubKey<ST>>,
         message: OM,
-        priority: UdpPriority,
+        priority: EgressPriority,
     },
     // Primary publishing embeds epoch as group_id in chunk header. Secondary
     // publishing embeds round as group_id in chunk header, as rebroadcasting

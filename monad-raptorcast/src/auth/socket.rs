@@ -26,7 +26,7 @@ use monad_crypto::certificate_signature::PubKey;
 use monad_dataplane::{UdpSocketHandle, UnicastMsg};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain, MetricDef};
 use monad_peer_score::IdentityScore;
-use monad_types::{NodeId, UdpPriority};
+use monad_types::{EgressPriority, NodeId};
 use thiserror::Error;
 use tokio::time::Sleep;
 use tracing::{debug, trace, warn};
@@ -108,7 +108,7 @@ where
         auth_addr: Option<SocketAddr>,
         mut msg: Bytes,
         stride: u16,
-        priority: UdpPriority,
+        priority: EgressPriority,
     ) {
         let route = match auth_addr {
             Some(auth_addr) if self.is_connected_socket_and_public_key(&auth_addr, public_key) => {
@@ -224,7 +224,7 @@ where
 
     pub fn flush(&mut self) {
         while let Some((addr, packet, _)) = self.auth_protocol.next_packet() {
-            self.enqueue_packet(addr, packet, UdpPriority::High);
+            self.enqueue_packet(addr, packet, EgressPriority::High);
         }
     }
 
@@ -241,7 +241,7 @@ where
         &mut self,
         route: WriteRoute<'_, AP::PublicKey>,
         plaintext: Bytes,
-        priority: UdpPriority,
+        priority: EgressPriority,
     ) -> Result<(), ()> {
         match route {
             WriteRoute::Send(target) => self.write_encrypted_piece(target, plaintext, priority),
@@ -263,7 +263,7 @@ where
         &mut self,
         target: SendTarget<'_, AP::PublicKey>,
         plaintext: Bytes,
-        priority: UdpPriority,
+        priority: EgressPriority,
     ) -> Result<(), ()> {
         let plaintext_len = plaintext.len();
         let header_size = AP::HEADER_SIZE as usize;
@@ -293,7 +293,7 @@ where
         Ok(())
     }
 
-    fn enqueue_packet(&self, addr: SocketAddr, packet: Bytes, priority: UdpPriority) {
+    fn enqueue_packet(&self, addr: SocketAddr, packet: Bytes, priority: EgressPriority) {
         debug_assert!(!packet.is_empty());
         debug_assert!(packet.len() <= u16::MAX as usize);
         let stride = packet.len() as u16;
@@ -367,7 +367,7 @@ where
         &mut self,
         public_key: &AP::PublicKey,
         plaintext: Bytes,
-        priority: UdpPriority,
+        priority: EgressPriority,
     ) -> Result<(), ()> {
         let packets = match self.framer.frame(plaintext) {
             Ok(packets) => packets,
@@ -527,7 +527,7 @@ mod tests {
     use monad_dataplane::{DataplaneBuilder, UnicastMsg};
     use monad_peer_discovery::NameRecord;
     use monad_secp::KeyPair;
-    use monad_types::UdpPriority;
+    use monad_types::EgressPriority;
     use monad_wireauth::{Config, DEFAULT_RETRY_ATTEMPTS};
     use tracing_subscriber::EnvFilter;
 
@@ -671,7 +671,7 @@ mod tests {
             Some(bob_addr),
             Bytes::from_static(b"hello from alice"),
             16,
-            UdpPriority::Regular,
+            EgressPriority::Regular,
         );
 
         let received_bob = tokio::time::timeout(Duration::from_secs(2), bob.socket.recv())
@@ -686,7 +686,7 @@ mod tests {
             Some(alice_addr),
             Bytes::from_static(b"hello from bob"),
             14,
-            UdpPriority::Regular,
+            EgressPriority::Regular,
         );
 
         let received_alice = tokio::time::timeout(Duration::from_secs(2), alice.socket.recv())
@@ -710,7 +710,7 @@ mod tests {
             None,
             Bytes::from_static(b"existing session"),
             16,
-            UdpPriority::Regular,
+            EgressPriority::Regular,
         );
 
         let received = tokio::time::timeout(Duration::from_secs(2), bob.socket.recv())
@@ -748,7 +748,7 @@ mod tests {
             Some(SocketAddr::V4(bob_name_record.authenticated_udp_socket())),
             payload.clone(),
             payload.len() as u16,
-            UdpPriority::Regular,
+            EgressPriority::Regular,
         );
 
         let authenticated_bytes = alice
@@ -786,7 +786,7 @@ mod tests {
             Some(SocketAddr::V4(record.authenticated_udp_socket())),
             Bytes::from_static(b"buffered"),
             8,
-            UdpPriority::Regular,
+            EgressPriority::Regular,
         );
         let message = tokio::time::timeout(Duration::from_secs(3), async {
             tokio::select! {
@@ -845,7 +845,7 @@ mod tests {
             Some(SocketAddr::V4(bob_name_record.authenticated_udp_socket())),
             Bytes::from_static(b"helloworld"),
             5,
-            UdpPriority::Regular,
+            EgressPriority::Regular,
         );
 
         let first = tokio::time::timeout(Duration::from_secs(2), bob.socket.recv())
@@ -948,7 +948,7 @@ mod tests {
                 msgs: vec![(recv_addr, Bytes::from_static(b"hello"))],
                 stride: 5,
             },
-            UdpPriority::Regular,
+            EgressPriority::Regular,
         );
 
         let result = tokio::time::timeout(Duration::from_secs(2), framed_socket.recv())

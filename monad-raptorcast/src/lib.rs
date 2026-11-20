@@ -51,8 +51,8 @@ use monad_peer_discovery::{
 };
 use monad_peer_score::IdentityScore;
 use monad_types::{
-    DropTimer, Epoch, ExecutionProtocol, FullnodeBroadcastMode, NodeId, Round, RouterTarget,
-    UdpPriority,
+    DropTimer, EgressPriority, Epoch, ExecutionProtocol, FullnodeBroadcastMode, NodeId, Round,
+    RouterTarget,
 };
 use monad_validator::{
     proposer_schedule::BoxedProposerSchedule,
@@ -504,7 +504,7 @@ where
         &mut self,
         target: RouterTarget<CertificateSignaturePubKey<ST>>,
         message: OM,
-        priority: UdpPriority,
+        priority: EgressPriority,
         self_id: NodeId<CertificateSignaturePubKey<ST>>,
     ) {
         let _span = debug_span!("router publish").entered();
@@ -659,7 +659,7 @@ where
         &mut self,
         target: NodeId<CertificateSignaturePubKey<ST>>,
         message: OM,
-        priority: UdpPriority,
+        priority: EgressPriority,
         self_id: NodeId<CertificateSignaturePubKey<ST>>,
     ) {
         // fall back to raptorcast point-to-point when direct UDP is not configured.
@@ -1078,7 +1078,7 @@ where
                     );
                 }
                 RouterCommand::Publish { target, message } => {
-                    self.handle_publish(target, message, UdpPriority::Regular, self_id);
+                    self.handle_publish(target, message, EgressPriority::Regular, self_id);
                 }
                 RouterCommand::PublishWithPriority {
                     target,
@@ -1695,7 +1695,7 @@ where
     udp_socket: &'a mut auth::AuthenticatedSocketHandle<AP>,
     peer_disc_driver: &'a Arc<Mutex<PeerDiscoveryDriver<PD>>>,
     target_name_record: Option<TargetNameRecord<'a, ST>>,
-    priority: UdpPriority,
+    priority: EgressPriority,
     _signature_type: PhantomData<ST>,
 }
 
@@ -1719,14 +1719,14 @@ where
             udp_socket,
             peer_disc_driver,
             target_name_record: None,
-            priority: UdpPriority::Regular,
+            priority: EgressPriority::Regular,
             _signature_type: PhantomData,
         }
     }
 
     fn with_priority(
         mut self,
-        priority: UdpPriority,
+        priority: EgressPriority,
     ) -> AuthenticatedUdpPacketSender<'a, ST, PD, AP> {
         self.priority = priority;
         self
@@ -1859,6 +1859,6 @@ fn rebroadcast_packet<ST, PD, AP>(
         auth_addr,
         payload,
         bcast_stride,
-        UdpPriority::High,
+        EgressPriority::High,
     );
 }
