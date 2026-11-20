@@ -40,7 +40,7 @@ fn enqueue_udp_msg(queue: &mut PacingQueue<UdpMsg>, metrics: &DataplaneMetrics, 
         return;
     };
     let priority = msg.priority;
-    let _ = queue.enqueue(destination, priority, msg);
+    let _ = queue.enqueue(*destination.ip(), priority, msg);
 }
 
 pub(crate) async fn task(
@@ -131,7 +131,7 @@ pub(crate) async fn task(
                     unreachable!("only IPv4 messages enter the pacing queue")
                 };
                 assert!(
-                    queue.requeue(destination, scheduled).is_ok(),
+                    queue.requeue(*destination.ip(), scheduled).is_ok(),
                     "requeueing admitted UDP bytes cannot exceed memory"
                 );
             }

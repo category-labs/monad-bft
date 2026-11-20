@@ -460,7 +460,7 @@ mod tests {
     #[monoio::test(timer_enabled = true)]
     async fn new_peer_wakes_transmit_while_another_peer_is_cooling() {
         let regular = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let high = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let high = UdpSocket::bind("127.0.0.2:0").unwrap();
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let (dispatch_tx, dispatch_rx) = async_channel::bounded(UDP_TX_QUEUE_SIZE_PER_WORKER);
         let (startup_tx, _startup_rx) = std_mpsc::channel();
