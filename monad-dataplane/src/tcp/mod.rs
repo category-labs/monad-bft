@@ -44,6 +44,8 @@ use crate::{egress::PacedMessage, metrics::DataplaneMetrics, Addrlist};
 
 mod conn;
 pub mod rx;
+#[cfg(test)]
+mod testutil;
 pub mod tx;
 
 #[derive(Clone)]
@@ -479,17 +481,16 @@ impl TcpControl {
 mod tests {
     use std::{
         collections::HashMap,
-        io::ErrorKind,
         net::{IpAddr, Ipv4Addr},
         num::NonZeroU32,
     };
 
-    use bytes::BytesMut;
-    use monoio::io::{AsyncReadRentExt, AsyncWriteRentExt, Splitable};
     use rstest::*;
-    use zerocopy::IntoBytes;
 
-    use super::*;
+    use super::{
+        testutil::{background_message, within, Peer, PEER_TIMEOUT},
+        *,
+    };
     use crate::{addrlist::Addrlist, TcpMsg, TcpSocketId};
 
     #[fixture]
@@ -633,63 +634,6 @@ mod tests {
     }
 
     const SOCKET: TcpSocketId = TcpSocketId::Raptorcast;
-    const PEER_TIMEOUT: Duration = Duration::from_secs(2);
-
-    async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
-        monoio::time::timeout(PEER_TIMEOUT, future).await.unwrap()
-    }
-
-    struct Peer {
-        addr: SocketAddr,
-        read: TcpReadHalf,
-        write: monoio::net::tcp::TcpOwnedWriteHalf,
-    }
-
-    impl Peer {
-        fn new(stream: TcpStream, addr: SocketAddr) -> Self {
-            let (read, write) = stream.into_split();
-            Self { addr, read, write }
-        }
-
-        async fn connect(addr: SocketAddr) -> Self {
-            let stream = within(TcpStream::connect(addr)).await.unwrap();
-            let local_addr = stream.local_addr().unwrap();
-            Self::new(stream, local_addr)
-        }
-
-        async fn send(&mut self, payload: &[u8]) {
-            let frame = [TcpMsgHdr::new(payload.len() as u64).as_bytes(), payload].concat();
-            let (result, _) = within(self.write.write_all(frame)).await;
-            result.unwrap();
-        }
-
-        async fn received(&mut self, payload: &[u8]) {
-            within(async {
-                let (result, header) = self
-                    .read
-                    .read_exact(BytesMut::with_capacity(std::mem::size_of::<TcpMsgHdr>()))
-                    .await;
-                result.unwrap();
-                let header = TcpMsgHdr::read_from_bytes(&header).unwrap();
-                assert_eq!(header.magic.get(), HEADER_MAGIC);
-                assert_eq!(header.version.get(), HEADER_VERSION);
-                assert_eq!(header.length.get(), payload.len() as u64);
-                let (result, body) = self
-                    .read
-                    .read_exact(BytesMut::with_capacity(payload.len()))
-                    .await;
-                result.unwrap();
-                assert_eq!(&body[..], payload);
-            })
-            .await;
-        }
-
-        async fn closed(&mut self) {
-            let (result, _) = self.read.read_exact(BytesMut::with_capacity(1)).await;
-            assert_eq!(result.unwrap_err().kind(), ErrorKind::UnexpectedEof);
-        }
-    }
-
     struct TestDataplane {
         egress: mpsc::Sender<(TcpSocketId, SocketAddr, tx::TcpEgressMsg)>,
         ingress: HashMap<TcpSocketId, mpsc::Receiver<RecvTcpMsg>>,
@@ -742,11 +686,9 @@ mod tests {
         }
 
         async fn send_msg(&self, socket: TcpSocketId, addr: SocketAddr, msg: TcpMsg) {
-            let msg = tx::TcpEgressMsg {
-                message: msg,
-                priority: monad_types::EgressPriority::Background,
-            };
-            within(self.egress.send((socket, addr, msg))).await.unwrap();
+            within(self.egress.send((socket, addr, background_message(msg))))
+                .await
+                .unwrap();
         }
 
         async fn send(&self, socket: TcpSocketId, addr: SocketAddr, payload: &'static [u8]) {

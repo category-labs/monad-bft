@@ -582,17 +582,235 @@ async fn send_message(
 mod tests {
     use bytes::Bytes;
 
-    use super::*;
+    use super::{
+        super::testutil::{background_message, context, frame, set_buffer_sizes, tcp_pair, within},
+        *,
+    };
     use crate::addrlist::Addrlist;
 
     fn make_msg(size: usize) -> TcpEgressMsg {
-        TcpEgressMsg {
-            message: TcpMsg {
-                msg: Bytes::from(vec![0u8; size]),
+        background_message(TcpMsg {
+            msg: Bytes::from(vec![0u8; size]),
+            completion: None,
+        })
+    }
+
+    #[test]
+    fn default_tcp_writes_use_background_priority() {
+        let (egress_tx, mut received) = mpsc::channel(1);
+        let addr = "127.0.0.1:1".parse().unwrap();
+        let writer = crate::TcpSocketWriter {
+            socket_id: TcpSocketId::Raptorcast,
+            socket_addr: addr,
+            egress_tx,
+            msgs_dropped: Arc::new(AtomicUsize::new(0)),
+            metrics: DataplaneMetrics::new(),
+        };
+        for (priority, expected) in [
+            (None, EgressPriority::Background),
+            (Some(EgressPriority::High), EgressPriority::High),
+            (Some(EgressPriority::Regular), EgressPriority::Regular),
+        ] {
+            let message = TcpMsg {
+                msg: Bytes::from_static(b"paced"),
                 completion: None,
-            },
-            priority: EgressPriority::Background,
+            };
+            if let Some(priority) = priority {
+                writer.write_with_priority(addr, message, priority);
+            } else {
+                writer.write(addr, message);
+            }
+            let (_, destination, message) = received.try_recv().unwrap();
+            assert_eq!(destination, addr);
+            assert_eq!(message.priority, expected);
         }
+    }
+
+    #[monoio::test(timer_enabled = true)]
+    async fn tcp_frame_waits_for_each_chunk_and_reuses_grants_across_messages() {
+        use monoio::io::AsyncReadRentExt;
+
+        use crate::{pacing::PacingItem, tcp::split_stream};
+
+        let (addr, stream, mut peer) = tcp_pair().await;
+        let (_, mut write) = split_stream(stream);
+        let (requests, mut received) = mpsc::channel(1);
+        let metrics = DataplaneMetrics::new();
+        let sent_metrics = metrics.clone();
+        let (done, completed) = futures::channel::oneshot::channel();
+        spawn(async move {
+            let mut pacing = WriterPacing::new(addr, requests);
+            for (id, size) in [TCP_CHUNK_BYTES * 2 + 17, 0, 1].into_iter().enumerate() {
+                send_message(
+                    0,
+                    &addr,
+                    &mut write,
+                    id as u64,
+                    TcpEgressMsg {
+                        priority: EgressPriority::High,
+                        ..make_msg(size)
+                    },
+                    &sent_metrics,
+                    &mut pacing,
+                )
+                .await
+                .unwrap();
+            }
+            done.send(()).unwrap();
+        });
+
+        for size in [TCP_CHUNK_BYTES * 2 + 17, 0, 1] {
+            let expected = frame(&vec![0; size]);
+            let mut frame = Vec::new();
+            while frame.len() < expected.len() {
+                let PacedMessage::Tcp {
+                    addr: destination,
+                    priority,
+                    mut request,
+                } = within(received.recv()).await.unwrap()
+                else {
+                    panic!("expected TCP reservation")
+                };
+                assert_eq!(destination, addr);
+                assert_eq!(priority, EgressPriority::High);
+                let bytes = (expected.len() - frame.len()).min(TCP_CHUNK_BYTES);
+                assert_eq!(request.next_pacing_bytes(), bytes);
+                assert!(
+                    received.try_recv().is_err(),
+                    "only one request may be outstanding"
+                );
+                request.grant();
+                let (result, chunk) = within(peer.read_exact(vec![0; bytes])).await;
+                result.unwrap();
+                frame.extend_from_slice(&chunk);
+            }
+            assert_eq!(frame, expected);
+        }
+        within(completed).await.unwrap();
+        assert_eq!(metrics.tcp_messages_sent.get(), 3);
+        assert_eq!(
+            metrics.tcp_bytes_sent.get(),
+            (TCP_CHUNK_BYTES * 2 + 18) as u64
+        );
+    }
+
+    #[rstest::rstest]
+    #[case::closed_ingress(false)]
+    #[case::dropped_request(true)]
+    #[monoio::test(timer_enabled = true)]
+    async fn pacing_failure_closes_connection_and_fails_completion(#[case] drop_request: bool) {
+        use monoio::io::AsyncReadRent;
+
+        let (addr, stream, mut peer) = tcp_pair().await;
+        let metrics = DataplaneMetrics::new();
+        let registry = ConnectionRegistry::new();
+        let key = (TcpSocketId::Raptorcast, addr);
+        let (mut messages, registration) = registry.register(key).unwrap();
+        let (complete, completion) = futures::channel::oneshot::channel();
+        assert!(registry
+            .try_send(
+                &key,
+                background_message(TcpMsg {
+                    msg: Bytes::from_static(b"paced"),
+                    completion: Some(complete)
+                }),
+                &metrics
+            )
+            .is_none());
+        let (requests, mut received) = mpsc::channel(1);
+        if !drop_request {
+            received.close();
+        }
+        let (context, _messages) = context(key.0, metrics.clone(), requests);
+        let (done, finished) = futures::channel::oneshot::channel();
+        spawn(async move {
+            let _registration = registration;
+            let connection = TcpConnectionGuard::new(
+                context.tcp_control_map.clone(),
+                addr,
+                _registration.conn_id,
+            );
+            let error = task_connection(&context, addr, stream, &mut messages, &connection)
+                .await
+                .unwrap_err();
+            drop_queued_messages(&mut messages, &context.metrics);
+            done.send(error).unwrap();
+        });
+        if drop_request {
+            drop(within(received.recv()).await.unwrap());
+        }
+        let error = within(finished).await.unwrap();
+        assert!(error
+            .to_string()
+            .contains(&Error::from(ErrorKind::BrokenPipe).to_string()));
+        assert!(completion.await.is_err());
+        let (result, _) = within(peer.read(vec![0; 1])).await;
+        assert_eq!(
+            result.unwrap(),
+            0,
+            "connection must close without transmitting any further frame bytes"
+        );
+        assert!(!registry.contains(&key));
+        assert_eq!(metrics.tcp_egress_messages_dropped.get(), 1);
+        assert_eq!(metrics.tcp_send_errors.get(), 1);
+    }
+
+    #[rstest::rstest]
+    #[case::before_first_grant(None)]
+    #[case::between_chunks(Some(Duration::from_secs(5)))]
+    #[monoio::test(timer_enabled = true)]
+    async fn frame_timeout_includes_all_pacing_waits(#[case] first_grant_delay: Option<Duration>) {
+        use monoio::io::AsyncReadRentExt;
+
+        let (addr, stream, mut peer) = tcp_pair().await;
+        let (_, mut write) = super::super::split_stream(stream);
+        let size = 2 * TCP_CHUNK_BYTES + 17;
+        let (messages, mut receiver) = bounded_queue();
+        assert!(messages.try_send(make_msg(size)).is_ok());
+        drop(messages);
+        let (requests, mut reservations) = mpsc::channel(1);
+        let (done, finished) = futures::channel::oneshot::channel();
+        let metrics = DataplaneMetrics::new();
+        let sent_metrics = metrics.clone();
+        let started = Instant::now();
+        spawn(async move {
+            let idle = ConnectionIdle::new();
+            let result = send_messages(
+                0,
+                &addr,
+                &mut write,
+                &mut receiver,
+                &sent_metrics,
+                &idle,
+                &requests,
+            )
+            .await;
+            done.send(result).unwrap();
+        });
+        if let Some(delay) = first_grant_delay {
+            let PacedMessage::Tcp { mut request, .. } = within(reservations.recv()).await.unwrap()
+            else {
+                panic!("expected a TCP reservation")
+            };
+            monoio::time::sleep(delay).await;
+            request.grant();
+            let (result, _) = within(peer.read_exact(vec![0; TCP_CHUNK_BYTES])).await;
+            result.unwrap();
+        }
+        let _pending = within(reservations.recv()).await.unwrap();
+        let remaining = message_timeout(size).saturating_sub(started.elapsed());
+        let error = timeout(remaining + Duration::from_secs(2), finished)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains(&Error::from(ErrorKind::TimedOut).to_string()));
+        assert_eq!(metrics.tcp_messages_sent.get(), 0);
+        assert_eq!(metrics.tcp_send_errors.get(), 1);
+        assert_eq!(metrics.tcp_egress_messages_dropped.get(), 1);
+        assert!(metrics.tcp_pacing_grant_wait_micros.get() >= 9_000_000);
     }
 
     #[test]
@@ -656,10 +874,6 @@ mod tests {
 
     #[monoio::test(enable_timer = true)]
     async fn disconnect_after_connect_failure_releases_connection_slot() {
-        use std::num::NonZeroU32;
-
-        use super::super::{TcpControl, TcpRateLimit};
-
         // Use a synchronous close so the connect cannot race an io_uring close.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -678,29 +892,15 @@ mod tests {
         assert!(registry
             .try_send(
                 &key,
-                TcpEgressMsg {
-                    message: TcpMsg {
-                        msg: Bytes::from_static(b"queued while connecting"),
-                        completion: Some(complete),
-                    },
-                    priority: EgressPriority::Background,
-                },
+                background_message(TcpMsg {
+                    msg: Bytes::from_static(b"queued while connecting"),
+                    completion: Some(complete),
+                }),
                 &metrics,
             )
             .is_none());
-        let (ingress, _messages) = mpsc::channel(1);
-        let control = TcpControl::new();
-        let context = ConnectionContext {
-            socket_id: key.0,
-            rate_limit: TcpRateLimit {
-                rps: NonZeroU32::new(1).unwrap(),
-                rps_burst: NonZeroU32::new(1).unwrap(),
-            },
-            tcp_control_map: control.clone(),
-            tcp_ingress_tx: ingress,
-            metrics: metrics.clone(),
-            pacing: crate::egress::test_pacing(),
-        };
+        let (context, _messages) = context(key.0, metrics.clone(), crate::egress::test_pacing());
+        let control = context.tcp_control_map.clone();
         spawn(task_connect(context, addr, receiver, registration, permit));
         timeout(Duration::from_secs(1), async {
             assert!(completion.await.is_err());
@@ -729,35 +929,11 @@ mod tests {
 
     #[monoio::test(enable_timer = true)]
     async fn write_timeout_cancels_reader_and_removes_connection() {
-        use std::{num::NonZeroU32, os::fd::AsRawFd};
-
         use monoio::io::AsyncWriteRentExt;
 
-        use super::super::{TcpControl, TcpRateLimit};
-
-        let listener = monoio::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let stream = TcpStream::connect(addr).await.unwrap();
-        let (mut peer, _) = listener.accept().await.unwrap();
+        let (addr, stream, mut peer) = tcp_pair().await;
         // A peer that never reads must block this write even on loopback.
-        let buffer_size: libc::c_int = 4096;
-        for (socket, option) in [
-            (stream.as_raw_fd(), libc::SO_SNDBUF),
-            (peer.as_raw_fd(), libc::SO_RCVBUF),
-        ] {
-            assert_eq!(
-                unsafe {
-                    libc::setsockopt(
-                        socket,
-                        libc::SOL_SOCKET,
-                        option,
-                        &buffer_size as *const _ as _,
-                        std::mem::size_of_val(&buffer_size) as _,
-                    )
-                },
-                0
-            );
-        }
+        set_buffer_sizes(&stream, &peer, 4096);
         let metrics = DataplaneMetrics::new();
         let registry = ConnectionRegistry::new();
         let key = (TcpSocketId::Raptorcast, addr);
@@ -768,29 +944,15 @@ mod tests {
         assert!(registry
             .try_send(
                 &key,
-                TcpEgressMsg {
-                    message: TcpMsg {
-                        msg: Bytes::from(vec![0; TCP_MESSAGE_LENGTH_LIMIT]),
-                        completion: Some(complete),
-                    },
-                    priority: EgressPriority::Background,
-                },
+                background_message(TcpMsg {
+                    msg: Bytes::from(vec![0; TCP_MESSAGE_LENGTH_LIMIT]),
+                    completion: Some(complete),
+                }),
                 &metrics,
             )
             .is_none());
-        let (ingress, _messages) = mpsc::channel(1);
-        let control = TcpControl::new();
-        let context = ConnectionContext {
-            socket_id: key.0,
-            rate_limit: TcpRateLimit {
-                rps: NonZeroU32::new(1).unwrap(),
-                rps_burst: NonZeroU32::new(1).unwrap(),
-            },
-            tcp_control_map: control.clone(),
-            tcp_ingress_tx: ingress,
-            metrics: metrics.clone(),
-            pacing: crate::egress::test_pacing(),
-        };
+        let (context, _messages) = context(key.0, metrics.clone(), crate::egress::test_pacing());
+        let control = context.tcp_control_map.clone();
         spawn(async move {
             let _registration = registration;
             let connection = TcpConnectionGuard::new(
@@ -809,7 +971,7 @@ mod tests {
         // Deliver a full inbound frame halfway through the blocked write so
         // the preserved reader deadline cannot mask a missing write timeout.
         monoio::time::sleep(Duration::from_secs(5)).await;
-        let frame = [TcpMsgHdr::new(1).as_bytes(), &[1]].concat();
+        let frame = frame(&[1]);
         let (result, _) = peer.write_all(frame).await;
         result.unwrap();
         monoio::time::timeout(Duration::from_secs(7), async {
