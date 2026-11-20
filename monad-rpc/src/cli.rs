@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 
+use alloy_primitives::Address;
 use clap::Parser;
 use monad_metrics::{MetricsConfig, MetricsDefaults};
 
@@ -56,6 +57,11 @@ pub struct Cli {
         ]
     )]
     pub domain_chain_id: Option<u64>,
+
+    /// Set the accounts that operate the private domain, as a comma-separated list of
+    /// addresses. Operators are served every method
+    #[arg(long, value_delimiter = ',', requires = "domain_chain_id")]
+    pub operators: Vec<Address>,
 
     /// Set the address for RPC to bind to
     #[arg(long, default_value_t = String::from("0.0.0.0"))]
@@ -316,9 +322,30 @@ pub struct Cli {
 
 #[cfg(test)]
 mod tests {
+    use alloy_primitives::Address;
     use clap::{error::ErrorKind, Parser};
 
     use super::Cli;
+
+    #[test]
+    fn operators_are_a_comma_separated_list() {
+        let parse = |flags: &[&str]| {
+            let required = ["monad-rpc", "--node-config=node.toml"];
+            Cli::try_parse_from(required.iter().chain(flags)).map(|cli| cli.operators)
+        };
+        let domain = ["--domain-chain-id=85679", "--triedb-path=triedb"];
+        let first = Address::repeat_byte(0x11);
+        let second = Address::repeat_byte(0x22);
+
+        assert!(parse(&domain).unwrap().is_empty());
+        let operators = format!("--operators={first},{second}");
+        assert_eq!(
+            parse(&[domain[0], domain[1], &operators]).unwrap(),
+            [first, second]
+        );
+        assert!(parse(&[&operators]).is_err());
+        assert!(parse(&[domain[0], domain[1], &format!("--operators={first},0x1234")]).is_err());
+    }
 
     #[test]
     fn domain_conflicts_with_the_services_of_the_l1() {
