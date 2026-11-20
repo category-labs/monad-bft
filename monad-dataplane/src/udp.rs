@@ -42,7 +42,7 @@ const DEFAULT_RINGBUF_SIZE: u32 = ETHERNET_SEGMENT_SIZE as u32;
 pub const DEFAULT_MTU: u16 = monad_types::DEFAULT_MTU;
 
 const MAX_AGGREGATED_WRITE_SIZE: u16 = u16::MAX - IPV4_HDR_SIZE - UDP_HDR_SIZE;
-pub(crate) const MAX_AGGREGATED_SEGMENTS: u16 = 128;
+const MAX_AGGREGATED_SEGMENTS: u16 = 128;
 const UDP_TX_QUEUE_SIZE_PER_WORKER: usize = 8;
 
 pub(crate) struct UdpSend {
@@ -380,7 +380,7 @@ fn record_send_error(metrics: &DataplaneMetrics, err: Error, len: usize) {
     }
 }
 
-pub(crate) fn max_write_size_for_segment_size(segment_size: u16) -> u16 {
+fn max_write_size_for_segment_size(segment_size: u16) -> u16 {
     (MAX_AGGREGATED_WRITE_SIZE / segment_size).min(MAX_AGGREGATED_SEGMENTS) * segment_size
 }
 
@@ -428,9 +428,9 @@ mod tests {
             dst: "127.0.0.1:1".parse().unwrap(),
             payload: Bytes::from_static(&[1]),
             stride: 1,
-            priority: monad_types::UdpPriority::High,
+            priority: monad_types::EgressPriority::High,
         };
-        assert!(sender.try_send(message()).is_ok());
+        assert!(sender.try_send(message().into()).is_ok());
         let mut pacing = std::pin::pin!(crate::egress::task(
             dispatch_tx,
             receiver,
@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(metrics.udp_egress_messages_dropped.get(), 0);
 
         dispatch_rx.close();
-        assert!(sender.try_send(message()).is_ok());
+        assert!(sender.try_send(message().into()).is_ok());
         time::timeout(Duration::from_millis(100), pacing)
             .await
             .unwrap();
@@ -473,13 +473,16 @@ mod tests {
         let (sender, receiver) = mpsc::channel(4);
         for _ in 0..2 {
             assert!(sender
-                .try_send(UdpMsg {
-                    socket_id: UdpSocketId::Raptorcast,
-                    dst: regular.local_addr().unwrap(),
-                    payload: vec![1; 60_000].into(),
-                    stride: 60_000,
-                    priority: monad_types::UdpPriority::Regular,
-                })
+                .try_send(
+                    UdpMsg {
+                        socket_id: UdpSocketId::Raptorcast,
+                        dst: regular.local_addr().unwrap(),
+                        payload: vec![1; 60_000].into(),
+                        stride: 60_000,
+                        priority: monad_types::EgressPriority::Regular,
+                    }
+                    .into()
+                )
                 .is_ok());
         }
         spawn(crate::egress::task(
@@ -498,13 +501,16 @@ mod tests {
         assert_eq!(result.unwrap().0, 60_000);
         // Regular traffic is cooling for about 480 ms; the new peer need not wait.
         assert!(sender
-            .try_send(UdpMsg {
-                socket_id: UdpSocketId::Raptorcast,
-                dst: high.local_addr().unwrap(),
-                payload: Bytes::from_static(&[2]),
-                stride: 1,
-                priority: monad_types::UdpPriority::High,
-            })
+            .try_send(
+                UdpMsg {
+                    socket_id: UdpSocketId::Raptorcast,
+                    dst: high.local_addr().unwrap(),
+                    payload: Bytes::from_static(&[2]),
+                    stride: 1,
+                    priority: monad_types::EgressPriority::High,
+                }
+                .into()
+            )
             .is_ok());
         let (result, payload) =
             time::timeout(Duration::from_millis(100), high.recv_from(vec![0; 1]))
