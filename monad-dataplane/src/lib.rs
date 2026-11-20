@@ -104,7 +104,7 @@ pub const MAX_UDP_TX_WORKERS: usize = 64;
 /// Configuration for the UDP pacing queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UdpPacingConfig {
-    /// Uniform per-destination bandwidth cap.
+    /// Uniform per-destination-IP bandwidth cap shared across ports.
     pub peer_bandwidth_mbps: u64,
     /// Payload byte budget independently applied to each pacing traffic class.
     pub max_queued_bytes: usize,

@@ -22,7 +22,7 @@ use std::{
     cell::{RefCell, RefMut},
     cmp::{Ordering, Reverse},
     collections::{binary_heap::PeekMut, BTreeMap, BinaryHeap, HashMap},
-    net::SocketAddrV4,
+    net::IpAddr,
     num::NonZeroU64,
     rc::Rc,
     time::{Duration, Instant},
@@ -134,7 +134,7 @@ impl<'a, T> PeerMut<'a, T> {
     }
 
     /// Add this peer to the ready index, returning false if its queue is empty.
-    fn make_ready(&mut self, key: SocketAddrV4) -> bool {
+    fn make_ready(&mut self, key: IpAddr) -> bool {
         debug_assert!(self.state.ready.is_none());
         let Some(message) = self.state.messages.peek() else {
             return false;
@@ -200,11 +200,11 @@ impl<'a, T> PeerMut<'a, T> {
 struct ReadyKey {
     priority: UdpPriority,
     order: u64,
-    key: SocketAddrV4,
+    key: IpAddr,
 }
 
 impl ReadyKey {
-    fn new<T>(key: SocketAddrV4, message: &Queued<T>) -> Self {
+    fn new<T>(key: IpAddr, message: &Queued<T>) -> Self {
         Self {
             priority: message.priority,
             order: message.order,
@@ -219,7 +219,7 @@ type Peer<T> = Rc<RefCell<PeerState<T>>>;
 
 struct PeerDeadline<T> {
     next_at: Duration,
-    key: SocketAddrV4,
+    key: IpAddr,
     peer: Peer<T>,
 }
 
@@ -245,9 +245,9 @@ impl<T> Ord for PeerDeadline<T> {
     }
 }
 
-/// Socket-address keyed queue with global and uniform per-peer pacing.
+/// IP-address keyed queue with global and uniform per-peer pacing.
 pub struct PacingQueue<T> {
-    peers: HashMap<SocketAddrV4, Peer<T>>,
+    peers: HashMap<IpAddr, Peer<T>>,
     next_peers: BinaryHeap<Reverse<PeerDeadline<T>>>,
     ready: BTreeMap<ReadyKey, Peer<T>>,
     global_bytes_per_second: NonZeroU64,
@@ -321,7 +321,7 @@ impl<T: PacingItem> PacingQueue<T> {
 
     pub fn enqueue(
         &mut self,
-        key: SocketAddrV4,
+        key: impl Into<IpAddr>,
         priority: UdpPriority,
         item: T,
     ) -> Result<(), EnqueueError<T>> {
@@ -329,21 +329,26 @@ impl<T: PacingItem> PacingQueue<T> {
         // equal priority, including across peers. Requeued messages retain their order.
         let order = self.next_order;
         self.next_order = self.next_order.wrapping_add(1);
-        self.enqueue_inner(key, priority, item, order)
+        self.enqueue_inner(key.into(), priority, item, order)
     }
 
     /// Return a partially sent message without changing its priority or FIFO order.
     pub(crate) fn requeue(
         &mut self,
-        key: SocketAddrV4,
+        key: impl Into<IpAddr>,
         scheduled: Scheduled<T>,
     ) -> Result<(), EnqueueError<T>> {
-        self.enqueue_inner(key, scheduled.priority, scheduled.item, scheduled.order)
+        self.enqueue_inner(
+            key.into(),
+            scheduled.priority,
+            scheduled.item,
+            scheduled.order,
+        )
     }
 
     fn enqueue_inner(
         &mut self,
-        key: SocketAddrV4,
+        key: IpAddr,
         priority: UdpPriority,
         item: T,
         order: u64,
@@ -466,6 +471,8 @@ impl<T: PacingItem> PacingQueue<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use super::*;
 
     const UNLIMITED: u64 = 1_000_000_000_000;
@@ -490,8 +497,9 @@ mod tests {
         NonZeroU64::new(bytes_per_second).unwrap()
     }
 
-    fn key(port: u16) -> SocketAddrV4 {
-        SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port)
+    fn key(peer: u16) -> Ipv4Addr {
+        let [high, low] = peer.to_be_bytes();
+        Ipv4Addr::new(127, 0, high, low)
     }
 
     fn item(id: u64, bytes: usize) -> Item {
@@ -536,13 +544,16 @@ mod tests {
                     .enqueue(key(port), UdpPriority::High, item(id, 64))
                     .unwrap();
             }
-            assert_eq!(queue.peers[&key(port)].borrow().messages.capacity(), 128);
+            assert_eq!(
+                queue.peers[&key(port).into()].borrow().messages.capacity(),
+                128
+            );
 
             for id in 1..128 {
-                let capacity = queue.peers[&key(port)].borrow().messages.capacity();
+                let capacity = queue.peers[&key(port).into()].borrow().messages.capacity();
                 let now = queue.next_wakeup(queue.service_at).unwrap();
                 assert_eq!(queue.dequeue(now, usize::MAX).unwrap().item.id, id);
-                let state = queue.peers[&key(port)].borrow();
+                let state = queue.peers[&key(port).into()].borrow();
                 let len = state.messages.len();
                 let expected = if capacity > 16 && len <= capacity / 4 {
                     (len * 2).max(16)
@@ -805,9 +816,9 @@ mod tests {
         queue
             .enqueue(key(2), UdpPriority::Regular, item(2, 1))
             .unwrap();
-        drop(PeerMut::new(&queue.peers[&key(1)], &mut queue.ready));
+        drop(PeerMut::new(&queue.peers[&key(1).into()], &mut queue.ready));
         assert!(queue.ready.is_empty());
-        assert!(PeerMut::new(&queue.peers[&key(1)], &mut queue.ready)
+        assert!(PeerMut::new(&queue.peers[&key(1).into()], &mut queue.ready)
             .pop(usize::MAX)
             .is_none());
         assert_eq!(queue.len(), 2);
@@ -1100,7 +1111,7 @@ mod tests {
         let mut queue = PacingQueue::new(rate(UNLIMITED), rate(UNLIMITED), 6, metrics.clone());
         let message = |bytes| crate::UdpMsg {
             socket_id: crate::UdpSocketId::Raptorcast,
-            dst: key(1).into(),
+            dst: (key(1), 1).into(),
             payload: Bytes::from(vec![0; bytes]),
             stride: 2,
             priority: UdpPriority::Regular,
