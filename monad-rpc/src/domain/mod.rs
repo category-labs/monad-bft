@@ -17,10 +17,11 @@
 //!
 //! A private domain is a chain of its own, whose triedb `monad-domain` writes. Started with
 //! `--domain-chain-id`, the server serves that triedb through [`rpc_handler`] in place of
-//! [`crate::handlers::rpc_handler`].
+//! [`crate::handlers::rpc_handler`]. Every request must carry an access token; see [`auth`].
 
 pub use self::dispatch::{rpc_handler, DomainRpc};
 
+pub mod auth;
 mod dispatch;
 
 /// Whether `domain_chain_id` is a private domain of the L1 `l1_chain_id`: the L1's chain id
