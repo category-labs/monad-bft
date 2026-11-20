@@ -304,6 +304,7 @@ impl DataplaneBuilder {
                 let tcp_control_map = tcp_control_map.clone();
                 let addrlist = addrlist.clone();
                 let metrics = metrics.clone();
+                let pacing_tx = pacing_tx.clone();
                 move || {
                     RuntimeBuilder::<IoUringDriver>::new()
                         .enable_timer()
@@ -322,6 +323,7 @@ impl DataplaneBuilder {
                                 addrlist.clone(),
                                 tcp_socket_configs,
                                 tcp_egress_rx,
+                                pacing_tx,
                                 tcp_bound_addrs_tx,
                                 metrics.clone(),
                             );
@@ -653,9 +655,13 @@ pub struct TcpSocketWriter {
 }
 
 impl TcpSocketWriter {
-    pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
+    /// Enqueues a TCP message with the caller's egress priority.
+    pub fn write(&self, addr: SocketAddr, msg: TcpMsg, priority: EgressPriority) {
         let msg_length = msg.msg.len();
-        let msg = TcpEgressMsg { message: msg };
+        let msg = TcpEgressMsg {
+            message: msg,
+            priority,
+        };
 
         match self.egress_tx.try_send((self.socket_id, addr, msg)) {
             Ok(()) => {}
@@ -692,8 +698,8 @@ impl TcpSocketHandle {
         self.reader.recv().await
     }
 
-    pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
-        self.writer.write(addr, msg)
+    pub fn write(&self, addr: SocketAddr, msg: TcpMsg, priority: EgressPriority) {
+        self.writer.write(addr, msg, priority)
     }
 
     pub fn writer(&self) -> &TcpSocketWriter {

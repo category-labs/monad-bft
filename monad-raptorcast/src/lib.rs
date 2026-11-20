@@ -438,6 +438,7 @@ where
                         msg: signed_message.freeze(),
                         completion,
                     },
+                    EgressPriority::Background,
                 );
             }
         };

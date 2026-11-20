@@ -40,7 +40,7 @@ use zerocopy::{
 };
 
 use super::{RecvTcpMsg, TcpSocketId};
-use crate::{metrics::DataplaneMetrics, Addrlist};
+use crate::{egress::PacedMessage, metrics::DataplaneMetrics, Addrlist};
 
 mod conn;
 pub mod rx;
@@ -53,6 +53,7 @@ pub(crate) struct ConnectionContext {
     pub(crate) tcp_control_map: TcpControl,
     pub(crate) tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
     pub(crate) metrics: DataplaneMetrics,
+    pub(crate) pacing: mpsc::Sender<PacedMessage>,
 }
 
 const TCP_MESSAGE_LENGTH_LIMIT: usize = 3 * 1024 * 1024;
@@ -300,8 +301,9 @@ pub(crate) async fn task_connection(
     // 2. if either side closes or fails, close the whole connection.
     // 3. if a header or body read or a frame write exceeds 10 seconds, close
     //    the whole connection regardless of activity on the other side. the header
-    //    deadline starts after its first byte arrives; the body deadline starts
-    //    after the header is complete. progress does not reset these deadlines.
+    //    deadline starts after its first byte arrives and the body deadline starts
+    //    after the header is complete. the write deadline includes all pacing waits
+    //    for the frame. progress does not reset these deadlines.
     select! {
         biased;
         _ = connection.connection.disconnected() => Ok(()),
@@ -310,7 +312,7 @@ pub(crate) async fn task_connection(
             let idle = ConnectionIdle::new();
             select! {
                 _ = rx::read_messages(context, conn_id, addr, &mut read_half, &idle) => Err(ErrorKind::UnexpectedEof.into()),
-                result = tx::send_messages(conn_id, &addr, &mut write_half, msg_receiver, metrics, &idle) => result,
+                result = tx::send_messages(conn_id, &addr, &mut write_half, msg_receiver, metrics, &idle, &context.pacing) => result,
                 _ = idle.both_idle() => {
                     trace!(conn_id, ?addr, "closing idle TCP connection");
                     Ok(())
@@ -326,6 +328,7 @@ pub(crate) fn spawn_tasks(
     addrlist: Arc<Addrlist>,
     socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
     tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, tx::TcpEgressMsg)>,
+    pacing: mpsc::Sender<PacedMessage>,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(TcpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
 ) {
@@ -356,6 +359,7 @@ pub(crate) fn spawn_tasks(
             tcp_control_map: tcp_control_map.clone(),
             tcp_ingress_tx: ingress_tx,
             metrics: metrics.clone(),
+            pacing: pacing.clone(),
         };
         contexts.insert(socket_id, context.clone());
         spawn(rx::task(
@@ -385,9 +389,9 @@ const MINIMUM_TRANSFER_SPEED: u64 = 1_000_000;
 // a chance to be transferred successfully.
 const MINIMUM_TRANSFER_TIME: Duration = Duration::from_secs(10);
 
-// RX applies this deadline to the body after its header completes; TX applies
-// it to the whole frame. With the current message size limit, it is 10 seconds
-// for every valid message. Partial progress never restarts either deadline.
+// RX applies this deadline to the body after its header completes. TX applies
+// it to the whole frame, including all pacing waits. With the current size
+// limit, it is 10 seconds for every valid message.
 fn message_timeout(len: usize) -> Duration {
     Duration::from_millis(u64::try_from(len).unwrap() / (MINIMUM_TRANSFER_SPEED / 1000))
         .max(MINIMUM_TRANSFER_TIME)
@@ -723,6 +727,7 @@ mod tests {
                 Arc::new(Addrlist::new()),
                 configs,
                 receiver,
+                crate::egress::test_pacing(),
                 bound_tx,
                 metrics.clone(),
             );
@@ -737,7 +742,10 @@ mod tests {
         }
 
         async fn send_msg(&self, socket: TcpSocketId, addr: SocketAddr, msg: TcpMsg) {
-            let msg = tx::TcpEgressMsg { message: msg };
+            let msg = tx::TcpEgressMsg {
+                message: msg,
+                priority: monad_types::EgressPriority::Background,
+            };
             within(self.egress.send((socket, addr, msg))).await.unwrap();
         }
 
