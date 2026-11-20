@@ -17,11 +17,9 @@ use std::{
     collections::HashMap,
     io::{Error, ErrorKind},
     net::SocketAddr,
-    num::NonZeroU64,
     os::fd::{AsRawFd, FromRawFd},
     sync::mpsc as std_mpsc,
     thread,
-    time::Instant,
 };
 
 use async_channel::{Receiver, Sender};
@@ -30,18 +28,16 @@ use futures::future::join_all;
 use monoio::{
     buf::{Ipv4RecvMsgParser, UserRecvMsgRingBuf},
     net::udp::UdpSocket,
-    select, spawn,
-    time::sleep,
-    IoUringDriver, RuntimeBuilder,
+    spawn, IoUringDriver, RuntimeBuilder,
 };
-use tokio::sync::mpsc::{self, error::TryRecvError};
+use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
-use super::{RecvUdpMsg, UdpMsg, UdpPacingConfig, UdpSocketId, IPV4_HDR_SIZE, UDP_HDR_SIZE};
+use super::{RecvUdpMsg, UdpMsg, UdpSocketId, IPV4_HDR_SIZE, UDP_HDR_SIZE};
 use crate::{
     buffer_ext::SocketBufferExt,
     metrics::DataplaneMetrics,
-    pacing::{PacingItem, PacingQueue, Scheduled},
+    pacing::{PacingItem, Scheduled},
 };
 
 const DEFAULT_RINGBUF_COUNT: u32 = 2048;
@@ -50,14 +46,13 @@ const DEFAULT_RINGBUF_SIZE: u32 = ETHERNET_SEGMENT_SIZE as u32;
 pub const DEFAULT_MTU: u16 = monad_types::DEFAULT_MTU;
 
 const MAX_AGGREGATED_WRITE_SIZE: u16 = u16::MAX - IPV4_HDR_SIZE - UDP_HDR_SIZE;
-const MAX_AGGREGATED_SEGMENTS: u16 = 128;
-const MAX_CHANNEL_DRAIN: usize = 64;
+pub(crate) const MAX_AGGREGATED_SEGMENTS: u16 = 128;
 const UDP_TX_QUEUE_SIZE_PER_WORKER: usize = 8;
 
-struct UdpSend {
-    socket_id: UdpSocketId,
-    dst: SocketAddr,
-    payload: Bytes,
+pub(crate) struct UdpSend {
+    pub(crate) socket_id: UdpSocketId,
+    pub(crate) dst: SocketAddr,
+    pub(crate) payload: Bytes,
 }
 
 impl PacingItem for UdpMsg {
@@ -88,8 +83,6 @@ pub const DEFAULT_SEGMENT_SIZE: u16 = segment_size_for_mtu(DEFAULT_MTU);
 pub const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(monad_types::ETHERNET_MTU);
 
 pub(crate) struct UdpTaskConfig {
-    pub up_bandwidth_mbps: u64,
-    pub pacing: UdpPacingConfig,
     pub buffer_size: Option<usize>,
     pub use_multishot: bool,
     pub workers: usize,
@@ -150,14 +143,11 @@ fn set_mtu_discovery(socket: &UdpSocket) {
 
 pub(crate) fn spawn_tasks(
     socket_configs: Vec<(UdpSocketId, SocketAddr, mpsc::Sender<RecvUdpMsg>)>,
-    udp_egress_rx: mpsc::Receiver<UdpMsg>,
     config: UdpTaskConfig,
     bound_addrs_tx: std_mpsc::SyncSender<Vec<(UdpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
-) {
+) -> Sender<Vec<UdpSend>> {
     let UdpTaskConfig {
-        up_bandwidth_mbps,
-        pacing,
         buffer_size,
         use_multishot,
         workers: worker_count,
@@ -225,13 +215,7 @@ pub(crate) fn spawn_tasks(
             .expect("UDP TX worker exited during startup");
     }
     bound_addrs_tx.send(bound_addrs).unwrap();
-    spawn(tx_pacing(
-        dispatch_tx,
-        udp_egress_rx,
-        up_bandwidth_mbps,
-        pacing,
-        metrics,
-    ));
+    dispatch_tx
 }
 
 async fn rx_single_socket(
@@ -360,145 +344,6 @@ async fn rx_multishot_socket(
     }
 }
 
-fn enqueue_udp_msg(queue: &mut PacingQueue<UdpMsg>, metrics: &DataplaneMetrics, msg: UdpMsg) {
-    let SocketAddr::V4(destination) = msg.dst else {
-        metrics.udp_egress_messages_dropped.inc();
-        debug!(destination = ?msg.dst, "IPv6 UDP message is not supported");
-        return;
-    };
-    let priority = msg.priority;
-    let _ = queue.enqueue(destination, priority, msg);
-}
-
-async fn tx_pacing(
-    dispatch_tx: Sender<Vec<UdpSend>>,
-    mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
-    up_bandwidth_mbps: u64,
-    pacing_config: UdpPacingConfig,
-    metrics: DataplaneMetrics,
-) {
-    let global_bytes_per_second = NonZeroU64::new(
-        u64::try_from(u128::from(up_bandwidth_mbps) * 1_000_000 / 8)
-            .expect("UDP bandwidth overflows bytes per second"),
-    )
-    .expect("UDP bandwidth must be non-zero");
-    let peer_bytes_per_second = NonZeroU64::new(
-        u64::try_from(u128::from(pacing_config.peer_bandwidth_mbps) * 1_000_000 / 8)
-            .expect("UDP peer bandwidth overflows bytes per second"),
-    )
-    .expect("UDP peer bandwidth must be non-zero");
-    let mut queue = PacingQueue::new(
-        global_bytes_per_second,
-        peer_bytes_per_second,
-        pacing_config.max_queued_bytes,
-        metrics.clone(),
-    );
-    let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
-    let max_batch_items = MAX_AGGREGATED_SEGMENTS as usize;
-    let mut incoming = Vec::with_capacity(MAX_CHANNEL_DRAIN);
-
-    loop {
-        for _ in 0..MAX_CHANNEL_DRAIN {
-            match udp_egress_rx.try_recv() {
-                Ok(msg) => enqueue_udp_msg(&mut queue, &metrics, msg),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return,
-            }
-        }
-
-        if queue.is_empty() {
-            incoming.clear();
-            if udp_egress_rx
-                .recv_many(&mut incoming, MAX_CHANNEL_DRAIN)
-                .await
-                == 0
-            {
-                return;
-            }
-            for msg in incoming.drain(..) {
-                enqueue_udp_msg(&mut queue, &metrics, msg);
-            }
-        }
-
-        let now = queue.elapsed();
-        let Some(at) = queue.next_wakeup(now) else {
-            continue;
-        };
-        let delay = at.saturating_sub(now);
-        if !delay.is_zero() {
-            select! {
-                message = udp_egress_rx.recv() => {
-                    let Some(message) = message else { return };
-                    enqueue_udp_msg(&mut queue, &metrics, message);
-                    continue;
-                }
-                _ = sleep(delay) => {}
-            }
-        }
-
-        let now = queue.elapsed();
-        if queue.next_wakeup(now).is_none_or(|at| at > now) {
-            continue;
-        }
-
-        let queue_len = queue.len();
-        let mut batch = Vec::with_capacity(max_batch_items);
-        let mut total_bytes = 0;
-        while batch.len() < max_batch_items && total_bytes < max_batch_bytes {
-            let Some(mut scheduled) = queue.dequeue(now, max_batch_bytes - total_bytes) else {
-                break;
-            };
-            let chunk = scheduled.take_chunk();
-            let msg = &scheduled.item;
-            let socket_id = msg.socket_id;
-            let dst = msg.dst;
-
-            if !msg.payload.is_empty() {
-                let SocketAddr::V4(destination) = dst else {
-                    unreachable!("only IPv4 messages enter the pacing queue")
-                };
-                assert!(
-                    queue.requeue(destination, scheduled).is_ok(),
-                    "requeueing admitted UDP bytes cannot exceed memory"
-                );
-            }
-
-            total_bytes += chunk.len();
-            trace!(?socket_id, dst_addr = ?dst, chunk_len = chunk.len(), "preparing udp send");
-            batch.push(UdpSend {
-                socket_id,
-                dst,
-                payload: chunk,
-            });
-        }
-
-        if batch.is_empty() {
-            continue;
-        }
-        let batch_count = batch.len();
-        if batch_count > 1 {
-            trace!(
-                batch_size = batch_count,
-                total_bytes,
-                queue_size = queue_len,
-                "sending udp batch"
-            );
-        }
-
-        let started = Instant::now();
-        let result = dispatch_tx.send(batch).await;
-        metrics
-            .udp_tx_queue_wait_micros
-            .add(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
-        if let Err(error) = result {
-            metrics
-                .udp_egress_messages_dropped
-                .add(u64::try_from(error.0.len()).unwrap_or(u64::MAX));
-            return;
-        }
-    }
-}
-
 async fn tx_worker(
     tx_sockets: Vec<(UdpSocketId, std::net::UdpSocket)>,
     dispatch_rx: Receiver<Vec<UdpSend>>,
@@ -545,7 +390,7 @@ fn record_send_error(metrics: &DataplaneMetrics, err: Error, len: usize) {
     }
 }
 
-fn max_write_size_for_segment_size(segment_size: u16) -> u16 {
+pub(crate) fn max_write_size_for_segment_size(segment_size: u16) -> u16 {
     (MAX_AGGREGATED_WRITE_SIZE / segment_size).min(MAX_AGGREGATED_SEGMENTS) * segment_size
 }
 
@@ -578,6 +423,7 @@ mod tests {
     use monoio::time;
 
     use super::*;
+    use crate::UdpPacingConfig;
 
     #[monoio::test(timer_enabled = true)]
     async fn pacing_waits_for_worker_queue_space_and_counts_closed_queue_drops() {
@@ -595,7 +441,7 @@ mod tests {
             priority: monad_types::UdpPriority::High,
         };
         assert!(sender.try_send(message()).is_ok());
-        let mut pacing = std::pin::pin!(tx_pacing(
+        let mut pacing = std::pin::pin!(crate::egress::task(
             dispatch_tx,
             receiver,
             1_000,
@@ -646,7 +492,7 @@ mod tests {
                 })
                 .is_ok());
         }
-        spawn(tx_pacing(
+        spawn(crate::egress::task(
             dispatch_tx,
             receiver,
             1_000,

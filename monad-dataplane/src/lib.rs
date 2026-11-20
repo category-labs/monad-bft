@@ -38,6 +38,7 @@ use tracing::{debug, warn};
 pub(crate) mod addrlist;
 pub(crate) mod ban_expiry;
 pub(crate) mod buffer_ext;
+mod egress;
 mod metrics;
 pub mod pacing;
 pub mod tcp;
@@ -323,19 +324,23 @@ impl DataplaneBuilder {
                                 tcp_bound_addrs_tx,
                                 metrics.clone(),
                             );
-                            udp::spawn_tasks(
+                            let dispatch_tx = udp::spawn_tasks(
                                 udp_socket_configs,
-                                udp_egress_rx,
                                 udp::UdpTaskConfig {
-                                    up_bandwidth_mbps,
-                                    pacing: udp_pacing_config,
                                     buffer_size: udp_buffer_size,
                                     use_multishot: udp_multishot,
                                     workers: udp_tx_workers,
                                 },
                                 udp_bound_addrs_tx,
-                                metrics,
+                                metrics.clone(),
                             );
+                            spawn(egress::task(
+                                dispatch_tx,
+                                udp_egress_rx,
+                                up_bandwidth_mbps,
+                                udp_pacing_config,
+                                metrics,
+                            ));
 
                             ready_clone.store(true, Ordering::Release);
 
