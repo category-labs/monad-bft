@@ -78,6 +78,7 @@ define_metrics! {
     tcp_send_errors => TCP_SEND_ERRORS("monad.dataplane.tcp.total_send_errors", "Total TCP payload send errors or timeouts"),
     tcp_egress_messages_dropped => TCP_EGRESS_MESSAGES_DROPPED("monad.dataplane.tcp.total_egress_messages_dropped", "Total TCP egress messages dropped by bans, dataplane limits, full queues, or failed connections"),
     tcp_egress_messages_dropped_banned => TCP_EGRESS_MESSAGES_DROPPED_BANNED("monad.dataplane.tcp.total_egress_messages_dropped_banned", "Total TCP egress messages rejected for a banned destination during send queue registration or before dialing"),
+    tcp_pacing_memory_limit_drops => TCP_PACING_MEMORY_LIMIT_DROPS("monad.dataplane.tcp.pacing.total_memory_limit_drops", "Total TCP pacing reservations rejected because the pacing queue memory limit was reached"),
     tcp_connections_rate_limited => TCP_CONNECTIONS_RATE_LIMITED("monad.dataplane.tcp.total_connections_rate_limited", "Total inbound TCP connections closed after exceeding the per-connection message rate limit"),
 }
 

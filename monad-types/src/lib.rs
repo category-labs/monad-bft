@@ -753,20 +753,24 @@ pub enum FullnodeBroadcastMode {
     Broadcast,
 }
 
+/// Egress scheduling priority shared by UDP and TCP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(usize)]
-pub enum UdpPriority {
+pub enum EgressPriority {
     High = 0,
     Regular = 1,
+    /// Bulk traffic; TCP uses this priority by default.
+    Background = 2,
 }
 
-impl TryFrom<usize> for UdpPriority {
+impl TryFrom<usize> for EgressPriority {
     type Error = &'static str;
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(UdpPriority::High),
-            1 => Ok(UdpPriority::Regular),
+            0 => Ok(EgressPriority::High),
+            1 => Ok(EgressPriority::Regular),
+            2 => Ok(EgressPriority::Background),
             _ => Err("invalid priority index"),
         }
     }

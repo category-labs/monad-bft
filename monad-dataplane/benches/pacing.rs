@@ -20,7 +20,7 @@ use monad_dataplane::{
     pacing::{PacingItem, PacingQueue},
     DataplaneMetrics,
 };
-use monad_types::UdpPriority;
+use monad_types::EgressPriority;
 
 #[derive(Debug)]
 struct Item(u16);
@@ -42,7 +42,7 @@ fn scheduler(c: &mut Criterion) {
     for peer in 0..PEERS {
         let key = Ipv4Addr::new(127, 0, 0, peer as u8);
         queue
-            .enqueue(key, UdpPriority::Regular, Item(peer as u16))
+            .enqueue(key, EgressPriority::Regular, Item(peer as u16))
             .unwrap();
     }
     let mut group = c.benchmark_group("dataplane/pacing");
@@ -54,7 +54,7 @@ fn scheduler(c: &mut Criterion) {
             let item = black_box(scheduled.item);
             let peer = item.0;
             let key = Ipv4Addr::new(127, 0, 0, peer as u8);
-            queue.enqueue(key, UdpPriority::Regular, item).unwrap();
+            queue.enqueue(key, EgressPriority::Regular, item).unwrap();
             black_box(peer)
         });
     });
