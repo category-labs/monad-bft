@@ -6120,6 +6120,7 @@ dependencies = [
  "alloy-rpc-types",
  "alloy-signer",
  "alloy-signer-local",
+ "alloy-sol-types",
  "arbitrary",
  "async-stream",
  "async-trait",
