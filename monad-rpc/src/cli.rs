@@ -37,6 +37,26 @@ pub struct Cli {
     #[arg(long)]
     pub triedb_path: Option<PathBuf>,
 
+    /// Serve the private domain with this chain id, whose triedb `monad-domain` writes, in
+    /// place of the L1. The node config is the L1's
+    #[arg(
+        long,
+        requires = "triedb_path",
+        conflicts_with_all = [
+            "ipc_path",
+            "ws_enabled",
+            "exec_event_path",
+            "rpc_comparison_endpoint",
+            "s3_bucket",
+            "region",
+            "archive_url",
+            "archive_api_key",
+            "mongo_url",
+            "mongo_db_name",
+        ]
+    )]
+    pub domain_chain_id: Option<u64>,
+
     /// Set the address for RPC to bind to
     #[arg(long, default_value_t = String::from("0.0.0.0"))]
     pub rpc_addr: String,
@@ -292,4 +312,45 @@ pub struct Cli {
 
     #[arg(long)]
     pub manytrace_socket: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{error::ErrorKind, Parser};
+
+    use super::Cli;
+
+    #[test]
+    fn domain_conflicts_with_the_services_of_the_l1() {
+        let parse = |flags: &[&str]| {
+            let required = ["monad-rpc", "--node-config=node.toml"];
+            Cli::try_parse_from(required.iter().chain(flags)).map_err(|err| err.kind())
+        };
+        let domain = ["--domain-chain-id=85679", "--triedb-path=triedb"];
+
+        assert!(parse(&domain).is_ok());
+        assert_eq!(
+            parse(&domain[..1]).unwrap_err(),
+            ErrorKind::MissingRequiredArgument
+        );
+        for flag in [
+            "--ipc-path=mempool.sock",
+            "--ws-enabled",
+            "--exec-event-path=events",
+            "--rpc-comparison-endpoint=http://localhost:8080",
+            "--s3-bucket=bucket",
+            "--region=region",
+            "--archive-url=http://localhost:8080",
+            "--archive-api-key=key",
+            "--mongo-url=mongodb://localhost",
+            "--mongo-db-name=db",
+        ] {
+            assert!(parse(&[flag]).is_ok(), "{flag}");
+            assert_eq!(
+                parse(&[domain[0], domain[1], flag]).unwrap_err(),
+                ErrorKind::ArgumentConflict,
+                "{flag}"
+            );
+        }
+    }
 }
