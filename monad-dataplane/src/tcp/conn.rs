@@ -24,8 +24,8 @@ use std::{
 use tracing::{trace, warn};
 
 use super::{
-    tx::{bounded_queue, BoundedQueueReceiver, BoundedQueueSender},
-    TcpMsg, TcpSocketId,
+    tx::{bounded_queue, BoundedQueueReceiver, BoundedQueueSender, TcpEgressMsg},
+    TcpSocketId,
 };
 use crate::{
     addrlist::{Addrlist, Status},
@@ -221,9 +221,9 @@ impl ConnectionRegistry {
     pub(crate) fn try_send(
         &self,
         key: &(TcpSocketId, SocketAddr),
-        msg: TcpMsg,
+        msg: TcpEgressMsg,
         metrics: &DataplaneMetrics,
-    ) -> Option<TcpMsg> {
+    ) -> Option<TcpEgressMsg> {
         let inner = self.0.borrow();
         let Some(sender) = inner.send_queues.get(key) else {
             return Some(msg);

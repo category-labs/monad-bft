@@ -31,7 +31,7 @@ use bytes::Bytes;
 use futures::channel::oneshot;
 use monad_types::UdpPriority;
 use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
-use tcp::{TcpConfig, TcpControl, TcpRateLimit};
+use tcp::{tx::TcpEgressMsg, TcpConfig, TcpControl, TcpRateLimit};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, warn};
 
@@ -643,7 +643,7 @@ impl TcpSocketReader {
 pub struct TcpSocketWriter {
     socket_id: TcpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
+    egress_tx: mpsc::Sender<(TcpSocketId, SocketAddr, TcpEgressMsg)>,
     msgs_dropped: Arc<AtomicUsize>,
     metrics: DataplaneMetrics,
 }
@@ -651,6 +651,7 @@ pub struct TcpSocketWriter {
 impl TcpSocketWriter {
     pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
         let msg_length = msg.msg.len();
+        let msg = TcpEgressMsg { message: msg };
 
         match self.egress_tx.try_send((self.socket_id, addr, msg)) {
             Ok(()) => {}

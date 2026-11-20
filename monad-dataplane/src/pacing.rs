@@ -1117,7 +1117,10 @@ mod tests {
         let mut scheduled = queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         assert_eq!(scheduled.batch_bytes, 2);
         assert_eq!(metrics.udp_pacing_queued_bytes.get(), 0);
-        assert_eq!(scheduled.take_chunk(), Bytes::from_static(&[0, 0]));
+        assert_eq!(
+            scheduled.item.payload.split_to(scheduled.batch_bytes),
+            Bytes::from_static(&[0, 0])
+        );
         assert_eq!(scheduled.item.payload.len(), 3);
         assert!(queue.requeue(key(1), scheduled).is_ok());
         assert_eq!(metrics.udp_pacing_queued_bytes.get(), 3);
