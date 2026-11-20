@@ -37,7 +37,10 @@ use super::{
     ConnectionContext, ConnectionIdle, IoGuard, RecvTcpMsg, TcpConnectionGuard, TcpMsgHdr,
     TcpReadHalf, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
 };
-use crate::metrics::{ActiveConnectionGuard, DataplaneMetrics};
+use crate::{
+    metrics::{ActiveConnectionGuard, DataplaneMetrics},
+    TcpProtocol,
+};
 
 // Finish the remaining header within this deadline after its first byte arrives.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -135,7 +138,7 @@ pub(crate) async fn read_messages(
     // RX is idle only while waiting for the first byte of the next message.
     // Hold the returned guard until this message is queued for the consumer,
     // including any wait for queue space.
-    while let Some((message, _reading)) =
+    while let Some((protocol, message, _reading)) =
         read_message(conn_id, addr, message_id, read_half, &context.metrics, idle).await
     {
         if rate_limiter.check().is_err() {
@@ -146,6 +149,7 @@ pub(crate) async fn read_messages(
         if let Err(err) = context
             .tcp_ingress_tx
             .send(RecvTcpMsg {
+                protocol,
                 src_addr: addr,
                 payload: message,
             })
@@ -171,7 +175,7 @@ async fn read_message<'a>(
     read_half: &mut TcpReadHalf,
     metrics: &DataplaneMetrics,
     idle: &'a ConnectionIdle,
-) -> Option<(Bytes, IoGuard<'a>)> {
+) -> Option<(TcpProtocol, Bytes, IoGuard<'a>)> {
     let start_time = if enabled!(Level::DEBUG) {
         Some(Instant::now())
     } else {
@@ -255,17 +259,21 @@ async fn read_message<'a>(
         );
         return None;
     }
-    if header_version.get() != HEADER_VERSION {
-        metrics.tcp_receive_errors.inc();
-        debug!(
-            conn_id,
-            ?addr,
-            message_id,
-            ?header,
-            "received incorrect version number on TCP connection"
-        );
-        return None;
-    }
+    let protocol = match header_version.get() {
+        HEADER_VERSION => TcpProtocol::Signature,
+        2 => TcpProtocol::WireAuth,
+        _ => {
+            metrics.tcp_receive_errors.inc();
+            debug!(
+                conn_id,
+                ?addr,
+                message_id,
+                ?header,
+                "received incorrect version number on TCP connection"
+            );
+            return None;
+        }
+    };
 
     let message_length: usize = header_length.get() as usize;
 
@@ -354,5 +362,5 @@ async fn read_message<'a>(
 
     metrics.tcp_messages_received.inc();
     metrics.tcp_bytes_received.add(message_length as u64);
-    Some((message.freeze(), reading))
+    Some((protocol, message.freeze(), reading))
 }
