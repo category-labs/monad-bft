@@ -24,6 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use monad_types::EgressPriority;
 use monoio::{
     net::TcpStream,
     select, spawn,
@@ -39,11 +40,13 @@ use zerocopy::IntoBytes;
 use super::{
     conn::{ConnectionRegistration, ConnectionRegistry, LimitError, Limits, Permit},
     message_timeout, task_connection, ConnectionContext, ConnectionIdle, TcpConnectionGuard,
-    TcpMsg, TcpMsgHdr, TcpWriteHalf, TCP_MESSAGE_LENGTH_LIMIT,
+    TcpMsgHdr, TcpWriteHalf, TCP_MESSAGE_LENGTH_LIMIT,
 };
 use crate::{
+    egress::PacedMessage,
     metrics::{ActiveConnectionGuard, DataplaneMetrics},
-    TcpSocketId,
+    pacing::PacingRequest,
+    TcpMsg, TcpSocketId,
 };
 
 // These are per-peer limits.
@@ -54,6 +57,70 @@ pub const QUEUED_MESSAGE_BYTE_LIMIT: usize = 4 * 1024 * 1024;
 
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_FAILURE_LINGER_WAIT: Duration = Duration::from_secs(1);
+const TCP_CHUNK_BYTES: usize = 64 * 1024;
+const _: () = assert!(TCP_CHUNK_BYTES < crate::egress::MAX_BURST_SIZE);
+
+struct WriterPacing {
+    addr: SocketAddr,
+    requests: mpsc::Sender<PacedMessage>,
+    ready: mpsc::Sender<Result<(), ErrorKind>>,
+    grants: mpsc::Receiver<Result<(), ErrorKind>>,
+}
+
+impl WriterPacing {
+    fn new(addr: SocketAddr, requests: mpsc::Sender<PacedMessage>) -> Self {
+        let (ready, grants) = mpsc::channel(1);
+        Self {
+            addr,
+            requests,
+            ready,
+            grants,
+        }
+    }
+
+    async fn acquire(
+        &mut self,
+        bytes: usize,
+        priority: EgressPriority,
+        metrics: &DataplaneMetrics,
+    ) -> Result<(), Error> {
+        let _wait = PacingGrantWait {
+            started: Instant::now(),
+            metrics,
+        };
+        self.requests
+            .send(PacedMessage::Tcp {
+                addr: self.addr,
+                priority,
+                request: PacingRequest::new(bytes, self.ready.clone()),
+            })
+            .await
+            .map_err(|_| Error::from(ErrorKind::BrokenPipe))?;
+        self.grants
+            .recv()
+            .await
+            .unwrap_or(Err(ErrorKind::BrokenPipe))
+            .map_err(Error::from)
+    }
+}
+
+struct PacingGrantWait<'a> {
+    started: Instant,
+    metrics: &'a DataplaneMetrics,
+}
+
+impl Drop for PacingGrantWait<'_> {
+    fn drop(&mut self) {
+        self.metrics
+            .tcp_pacing_grant_wait_micros
+            .add(u64::try_from(self.started.elapsed().as_micros()).unwrap_or(u64::MAX));
+    }
+}
+
+pub(crate) struct TcpEgressMsg {
+    pub(crate) message: TcpMsg,
+    pub(crate) priority: EgressPriority,
+}
 
 enum BoundedQueueError {
     ByteLimitExceeded,
@@ -62,12 +129,12 @@ enum BoundedQueueError {
 }
 
 pub(super) struct BoundedQueueSender {
-    tx: mpsc::Sender<TcpMsg>,
+    tx: mpsc::Sender<TcpEgressMsg>,
     queued_bytes: Arc<AtomicUsize>,
 }
 
 pub(crate) struct BoundedQueueReceiver {
-    rx: mpsc::Receiver<TcpMsg>,
+    rx: mpsc::Receiver<TcpEgressMsg>,
     queued_bytes: Arc<AtomicUsize>,
 }
 
@@ -87,8 +154,8 @@ pub(super) fn bounded_queue() -> (BoundedQueueSender, BoundedQueueReceiver) {
 }
 
 impl BoundedQueueSender {
-    fn try_send(&self, msg: TcpMsg) -> Result<(), BoundedQueueError> {
-        let msg_len = msg.msg.len();
+    fn try_send(&self, msg: TcpEgressMsg) -> Result<(), BoundedQueueError> {
+        let msg_len = msg.message.msg.len();
         let mut current = self.queued_bytes.load(Ordering::Relaxed);
         loop {
             if msg_len > QUEUED_MESSAGE_BYTE_LIMIT.saturating_sub(current) {
@@ -119,7 +186,7 @@ impl BoundedQueueSender {
         }
     }
 
-    pub(super) fn enqueue(&self, addr: SocketAddr, msg: TcpMsg, metrics: &DataplaneMetrics) {
+    pub(super) fn enqueue(&self, addr: SocketAddr, msg: TcpEgressMsg, metrics: &DataplaneMetrics) {
         match self.try_send(msg) {
             Ok(()) => {
                 let message_count = self.message_count();
@@ -165,17 +232,17 @@ impl BoundedQueueSender {
 }
 
 impl BoundedQueueReceiver {
-    fn try_recv(&mut self) -> Result<TcpMsg, TryRecvError> {
+    fn try_recv(&mut self) -> Result<TcpEgressMsg, TryRecvError> {
         let msg = self.rx.try_recv()?;
         self.queued_bytes
-            .fetch_sub(msg.msg.len(), Ordering::Relaxed);
+            .fetch_sub(msg.message.msg.len(), Ordering::Relaxed);
         Ok(msg)
     }
 
-    async fn recv(&mut self) -> Option<TcpMsg> {
+    async fn recv(&mut self) -> Option<TcpEgressMsg> {
         let msg = self.rx.recv().await?;
         self.queued_bytes
-            .fetch_sub(msg.msg.len(), Ordering::Relaxed);
+            .fetch_sub(msg.message.msg.len(), Ordering::Relaxed);
         Some(msg)
     }
 }
@@ -193,7 +260,7 @@ fn reject_banned(limits: &Limits, addr: SocketAddr, metrics: &DataplaneMetrics) 
 pub(crate) async fn task(
     limits: Limits,
     registry: ConnectionRegistry,
-    mut tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpMsg)>,
+    mut tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpEgressMsg)>,
     contexts: BTreeMap<TcpSocketId, ConnectionContext>,
     metrics: DataplaneMetrics,
 ) {
@@ -201,7 +268,7 @@ pub(crate) async fn task(
         debug!(
             ?socket_id,
             ?addr,
-            len = msg.msg.len(),
+            len = msg.message.msg.len(),
             "queueing up TCP message"
         );
         if reject_banned(&limits, addr, &metrics) {
@@ -332,30 +399,23 @@ pub(super) async fn send_messages(
     msg_receiver: &mut BoundedQueueReceiver,
     metrics: &DataplaneMetrics,
     idle: &ConnectionIdle,
+    pacing: &mpsc::Sender<PacedMessage>,
 ) -> Result<(), Error> {
-    write_half.set_cork(true);
-
+    let mut pacing = WriterPacing::new(*addr, pacing.clone());
     let mut message_id: u64 = 0;
 
     loop {
         let msg = match msg_receiver.try_recv() {
             Ok(msg) => msg,
             Err(TryRecvError::Disconnected) => break,
-            Err(TryRecvError::Empty) => {
-                write_half.set_cork(false);
-
-                match msg_receiver.recv().await {
-                    None => break,
-                    Some(msg) => {
-                        write_half.set_cork(true);
-                        msg
-                    }
-                }
-            }
+            Err(TryRecvError::Empty) => match msg_receiver.recv().await {
+                None => break,
+                Some(msg) => msg,
+            },
         };
 
         let _writing = idle.writing();
-        let len = msg.msg.len();
+        let len = msg.message.msg.len();
 
         if len > TCP_MESSAGE_LENGTH_LIMIT {
             metrics.tcp_egress_messages_dropped.inc();
@@ -376,9 +436,21 @@ pub(super) async fn send_messages(
             metrics,
             sent: false,
         };
+        // The receiver waits up to 10 s for the body after reading the header,
+        // so count every pacing wait and socket write toward the sender's 10 s
+        // frame deadline. Concurrent Background frames need enough bandwidth
+        // left by higher-priority traffic to complete within their deadlines.
         timeout(
             message_timeout(len),
-            send_message(conn_id, addr, write_half, message_id, msg, metrics),
+            send_message(
+                conn_id,
+                addr,
+                write_half,
+                message_id,
+                msg,
+                metrics,
+                &mut pacing,
+            ),
         )
         .await
         .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
@@ -401,9 +473,12 @@ async fn send_message(
     addr: &SocketAddr,
     write_half: &mut TcpWriteHalf,
     message_id: u64,
-    message: TcpMsg,
+    message: TcpEgressMsg,
     metrics: &DataplaneMetrics,
+    pacing: &mut WriterPacing,
 ) -> Result<(), Error> {
+    let priority = message.priority;
+    let message = message.message;
     trace!(
         conn_id,
         ?addr,
@@ -422,13 +497,37 @@ async fn send_message(
 
     let header = TcpMsgHdr::new(message_len as u64);
 
-    let (ret, _header) = write_half
+    let mut payload = message.msg;
+    let header_len = header.as_bytes().len();
+    let mut chunk_bytes = payload.len().min(TCP_CHUNK_BYTES - header_len);
+    pacing
+        .acquire(chunk_bytes + header_len, priority, metrics)
+        .await?;
+
+    // TODO(dshulyak): experiment with TCP_NOTSENT_LOWAT to bound kernel-buffered
+    // unsent traffic between pacing grants.
+    write_half.set_cork(true);
+    let (result, _) = write_half
         .write_all(Box::<[u8]>::from(header.as_bytes()))
         .await;
-    ret?;
+    result?;
 
-    let (ret, _message) = write_half.write_all(message.msg).await;
-    ret?;
+    loop {
+        let (result, _) = write_half.write_all(payload.split_to(chunk_bytes)).await;
+        result?;
+        write_half.set_cork(false);
+        if payload.is_empty() {
+            break;
+        }
+
+        chunk_bytes = payload.len().min(TCP_CHUNK_BYTES);
+        // Each chunk gets a fresh FIFO position to share bandwidth across
+        // pending TCP connections as they become eligible at this priority.
+        // We may revisit this in the future to share traffic across batches
+        // of requests.
+        pacing.acquire(chunk_bytes, priority, metrics).await?;
+        write_half.set_cork(true);
+    }
 
     metrics.tcp_messages_sent.inc();
     metrics.tcp_bytes_sent.add(message_len as u64);
@@ -487,10 +586,13 @@ mod tests {
     use super::*;
     use crate::addrlist::Addrlist;
 
-    fn make_msg(size: usize) -> TcpMsg {
-        TcpMsg {
-            msg: Bytes::from(vec![0u8; size]),
-            completion: None,
+    fn make_msg(size: usize) -> TcpEgressMsg {
+        TcpEgressMsg {
+            message: TcpMsg {
+                msg: Bytes::from(vec![0u8; size]),
+                completion: None,
+            },
+            priority: EgressPriority::Background,
         }
     }
 
@@ -503,7 +605,7 @@ mod tests {
         assert_eq!(sender.message_count(), 1);
 
         let msg = receiver.try_recv().unwrap();
-        assert_eq!(msg.msg.len(), 1024);
+        assert_eq!(msg.message.msg.len(), 1024);
         assert_eq!(sender.queued_bytes(), 0);
 
         let large_msg_size = QUEUED_MESSAGE_BYTE_LIMIT + 1;
@@ -577,9 +679,12 @@ mod tests {
         assert!(registry
             .try_send(
                 &key,
-                TcpMsg {
-                    msg: Bytes::from_static(b"queued while connecting"),
-                    completion: Some(complete),
+                TcpEgressMsg {
+                    message: TcpMsg {
+                        msg: Bytes::from_static(b"queued while connecting"),
+                        completion: Some(complete),
+                    },
+                    priority: EgressPriority::Background,
                 },
                 &metrics,
             )
@@ -595,6 +700,7 @@ mod tests {
             tcp_control_map: control.clone(),
             tcp_ingress_tx: ingress,
             metrics: metrics.clone(),
+            pacing: crate::egress::test_pacing(),
         };
         spawn(task_connect(context, addr, receiver, registration, permit));
         timeout(Duration::from_secs(1), async {
@@ -663,9 +769,12 @@ mod tests {
         assert!(registry
             .try_send(
                 &key,
-                TcpMsg {
-                    msg: Bytes::from(vec![0; TCP_MESSAGE_LENGTH_LIMIT]),
-                    completion: Some(complete),
+                TcpEgressMsg {
+                    message: TcpMsg {
+                        msg: Bytes::from(vec![0; TCP_MESSAGE_LENGTH_LIMIT]),
+                        completion: Some(complete),
+                    },
+                    priority: EgressPriority::Background,
                 },
                 &metrics,
             )
@@ -681,6 +790,7 @@ mod tests {
             tcp_control_map: control.clone(),
             tcp_ingress_tx: ingress,
             metrics: metrics.clone(),
+            pacing: crate::egress::test_pacing(),
         };
         spawn(async move {
             let _registration = registration;
