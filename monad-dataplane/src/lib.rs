@@ -622,11 +622,19 @@ impl Debug for UdpSocketHandle {
 
 pub struct TcpSocketReader {
     socket_id: TcpSocketId,
-    ingress_rx: mpsc::Receiver<RecvTcpMsg>,
+    ingress_rx: mpsc::Receiver<TcpIngressEvent>,
 }
 
 impl TcpSocketReader {
     pub async fn recv(&mut self) -> RecvTcpMsg {
+        loop {
+            if let TcpIngressEvent::Message(message) = self.recv_event().await {
+                return message;
+            }
+        }
+    }
+
+    pub async fn recv_event(&mut self) -> TcpIngressEvent {
         self.ingress_rx
             .recv()
             .await
@@ -680,6 +688,10 @@ impl TcpSocketHandle {
 
     pub async fn recv(&mut self) -> RecvTcpMsg {
         self.reader.recv().await
+    }
+
+    pub async fn recv_event(&mut self) -> TcpIngressEvent {
+        self.reader.recv_event().await
     }
 
     pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
@@ -854,6 +866,11 @@ pub struct RecvTcpMsg {
     pub protocol: TcpProtocol,
     pub src_addr: SocketAddr,
     pub payload: Bytes,
+}
+
+pub enum TcpIngressEvent {
+    Message(RecvTcpMsg),
+    Closed(SocketAddr),
 }
 
 pub struct TcpMsg {

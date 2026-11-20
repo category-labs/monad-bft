@@ -1,7 +1,14 @@
 // Copyright (C) 2026 Category Labs, Inc.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    future::{poll_fn, Future},
+    net::SocketAddr,
+    pin::pin,
+    sync::Arc,
+    task::Poll,
+    time::Duration,
+};
 
 use bytes::Bytes;
 use futures::channel::oneshot;
@@ -12,6 +19,7 @@ use monad_raptorcast::auth::{
     WireAuthProtocol,
 };
 use monad_secp::{KeyPair, PubKey, SecpSignature};
+use rstest::rstest;
 
 type Socket = SharedTcpSocket<SecpSignature, WireAuthProtocol>;
 const DEADLINE: Duration = Duration::from_secs(3);
@@ -173,6 +181,50 @@ async fn buffer_limit_preserves_accepted_completion_and_cancels_rejected_one() {
     assert_eq!(alice.metric("monad.raptorcast.tcp.signature_bytes_sent"), 0);
 }
 
+#[rstest]
+#[case::initiator(false)]
+#[case::responder(true)]
+#[tokio::test]
+async fn tcp_close_allows_fresh_handshake(#[case] responder_sends: bool) {
+    let mut alice = Node::new(8, wireauth_config());
+    let mut bob = Node::new(9, wireauth_config());
+    let wireauth = TcpProtocol::WireAuth;
+    let completion = alice.send(&bob, wireauth, Bytes::from_static(b"before close"));
+    deliver(&mut alice, &mut bob, b"before close").await;
+    completion.await.unwrap();
+
+    let transports = "monad.wireauth.tcp.state.transport_sessions";
+    assert_eq!(alice.metric(transports), 1);
+    assert_eq!(bob.metric(transports), 1);
+    alice.dp.control.disconnect(bob.addr);
+
+    tokio::time::timeout(
+        DEADLINE,
+        poll_fn(|cx| {
+            assert!(pin!(alice.socket.recv()).poll(cx).is_pending());
+            assert!(pin!(bob.socket.recv()).poll(cx).is_pending());
+            if alice.metric(transports) == 0 && bob.metric(transports) == 0 {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }),
+    )
+    .await
+    .unwrap();
+
+    let (sender, receiver) = if responder_sends {
+        (&mut bob, &mut alice)
+    } else {
+        (&mut alice, &mut bob)
+    };
+    let completion = sender.send(receiver, wireauth, Bytes::from_static(b"after close"));
+    deliver(sender, receiver, b"after close").await;
+    completion.await.unwrap();
+    assert_eq!(sender.metric(transports), 1);
+    assert_eq!(receiver.metric(transports), 1);
+}
+
 #[tokio::test]
 async fn closed_connection_does_not_cancel_handshake_until_its_timer_expires() {
     let config = monad_wireauth::Config {
@@ -185,7 +237,11 @@ async fn closed_connection_does_not_cancel_handshake_until_its_timer_expires() {
     // Bob's dataplane accepts the frame, but its application never dispatches the handshake.
     tokio::time::sleep(Duration::from_millis(30)).await;
     alice.dp.control.disconnect_ip(bob.addr.ip());
-    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), alice.socket.recv())
+            .await
+            .is_err()
+    );
     assert!(completion.try_recv().unwrap().is_none());
     assert_eq!(alice.metric("monad.wireauth.tcp.api.disconnect"), 0);
     tokio::time::timeout(DEADLINE, async {

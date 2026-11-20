@@ -678,6 +678,24 @@ impl<M> State<M> {
         }
     }
 
+    pub(crate) fn terminate_transports_by_socket(&mut self, addr: SocketAddr) {
+        let Some(sessions) = self.last_established_session_by_socket.get(&addr) else {
+            return;
+        };
+        let session_ids: Vec<_> = sessions
+            .initiator
+            .iter()
+            .chain(sessions.responder.iter())
+            .map(|(id, _)| id)
+            .collect();
+        for id in session_ids {
+            if let Some(transport) = self.transport_sessions.get(&id) {
+                let public_key = transport.remote_public_key;
+                self.terminate_session(id, &public_key, addr);
+            }
+        }
+    }
+
     pub fn terminate_by_public_key(&mut self, public_key: &monad_secp::PubKey) -> Vec<SocketAddr> {
         let mut session_ids = HashSet::new();
 

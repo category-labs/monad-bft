@@ -32,14 +32,14 @@ use zerocopy::FromBytes;
 
 use super::{
     conn::{ConnectionRegistration, ConnectionRegistry, LimitError, Limits, Permit},
-    message_timeout, task_connection,
+    message_timeout, report_close, task_connection,
     tx::{drop_queued_messages, BoundedQueueReceiver},
-    ConnectionContext, ConnectionIdle, IoGuard, RecvTcpMsg, TcpConnectionGuard, TcpMsgHdr,
-    TcpReadHalf, HEADER_MAGIC, SIGNATURE_VERSION, TCP_MESSAGE_LENGTH_LIMIT, WIREAUTH_VERSION,
+    ConnectionContext, ConnectionIdle, IoGuard, TcpConnectionGuard, TcpMsgHdr, TcpReadHalf,
+    HEADER_MAGIC, SIGNATURE_VERSION, TCP_MESSAGE_LENGTH_LIMIT, WIREAUTH_VERSION,
 };
 use crate::{
     metrics::{ActiveConnectionGuard, DataplaneMetrics},
-    TcpProtocol,
+    RecvTcpMsg, TcpIngressEvent, TcpProtocol,
 };
 
 // Finish the remaining header within this deadline after its first byte arrives.
@@ -104,7 +104,7 @@ async fn task_accepted_connection(
     mut msg_receiver: BoundedQueueReceiver,
     registration: ConnectionRegistration,
     permit: Permit,
-    _active_connection: ActiveConnectionGuard,
+    active_connection: ActiveConnectionGuard,
 ) {
     let conn_id = registration.conn_id;
     let connection = TcpConnectionGuard::new(context.tcp_control_map.clone(), addr, conn_id);
@@ -124,6 +124,8 @@ async fn task_accepted_connection(
         warn!(conn_id, ?addr, ?err, "error in tcp connection task");
     }
     drop_queued_messages(&mut msg_receiver, &context.metrics);
+    drop((active_connection, msg_receiver, connection));
+    report_close(&context, addr, registration).await;
 }
 
 pub(crate) async fn read_messages(
@@ -146,7 +148,11 @@ pub(crate) async fn read_messages(
             warn!(conn_id, ?addr, "rate limit exceeded");
             break;
         }
-        if let Err(err) = context.tcp_ingress_tx.send(message).await {
+        if let Err(err) = context
+            .tcp_ingress_tx
+            .send(TcpIngressEvent::Message(message))
+            .await
+        {
             warn!(
                 conn_id,
                 ?addr,
