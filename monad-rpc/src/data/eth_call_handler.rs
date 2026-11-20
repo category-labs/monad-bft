@@ -45,6 +45,9 @@ pub struct EthCallHandlerConfig {
     pub provider_gas_limit_eth_simulate: u64,
     pub provider_max_calls_eth_simulate: usize,
     pub provider_max_blocks_eth_simulate: usize,
+
+    /// Chain id of the chain whose rules calls execute with.
+    pub execution_chain_id: u64,
 }
 
 #[derive(Clone)]

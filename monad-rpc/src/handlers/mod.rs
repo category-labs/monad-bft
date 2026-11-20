@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::future::Future;
+
 use actix_web::{web, HttpResponse};
 use futures::StreamExt;
 use monad_tracing_timing::TimingSpanExtension;
@@ -101,12 +103,50 @@ pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
     }
 }
 
+/// Answers the JSON-RPC requests of an endpoint.
+pub trait RpcDispatcher {
+    fn resources(&self) -> &MonadRpcResources;
+
+    fn dispatch(
+        &self,
+        method: &str,
+        params: RequestParams<'_>,
+        request_id: TimingRequestId,
+    ) -> impl Future<Output = Result<Box<RawValue>, JsonRpcError>>;
+}
+
+impl RpcDispatcher for MonadRpcResources {
+    fn resources(&self) -> &MonadRpcResources {
+        self
+    }
+
+    async fn dispatch(
+        &self,
+        method: &str,
+        params: RequestParams<'_>,
+        request_id: TimingRequestId,
+    ) -> Result<Box<RawValue>, JsonRpcError> {
+        rpc_select(self, method, params, request_id).await
+    }
+}
+
 pub async fn rpc_handler(
     root_span: RootSpan,
     body: bytes::Bytes,
     app_state: web::Data<MonadRpcResources>,
     request_id: TimingRequestId,
 ) -> HttpResponse {
+    handle_request(root_span, body, app_state.get_ref(), request_id).await
+}
+
+/// Answers the request, or batch of requests, in an HTTP body.
+pub async fn handle_request<D: RpcDispatcher>(
+    root_span: RootSpan,
+    body: bytes::Bytes,
+    dispatcher: &D,
+    request_id: TimingRequestId,
+) -> HttpResponse {
+    let app_state = dispatcher.resources();
     let request = match RequestWrapper::from_body_bytes(&body) {
         Ok(req) => req,
         Err(e) => {
@@ -125,7 +165,9 @@ pub async fn rpc_handler(
                 )));
             };
             root_span.record("json_method", &request.method);
-            let result = rpc_select(&app_state, &request.method, request.params, request_id).await;
+            let result = dispatcher
+                .dispatch(&request.method, request.params, request_id)
+                .await;
             let response = Response::from_result(request.id.clone(), result);
 
             if let Some(comparator) = &app_state.rpc_comparator {
@@ -176,24 +218,19 @@ pub async fn rpc_handler(
             let mut batch_response_json_serialized_len = 0usize;
 
             let batch_response = futures::stream::iter(json_batch_request)
-                .map(|json_request| {
-                    let app_state = app_state.clone();
+                .map(|json_request| async move {
+                    let Ok(request) = Request::from_raw_value(json_request) else {
+                        return Response::from_result(
+                            RequestId::Null,
+                            Err(JsonRpcError::new(ErrorCode::InvalidRequest)),
+                        );
+                    };
 
-                    async move {
-                        let Ok(request) = Request::from_raw_value(json_request) else {
-                            return Response::from_result(
-                                RequestId::Null,
-                                Err(JsonRpcError::new(ErrorCode::InvalidRequest)),
-                            );
-                        };
+                    let result = dispatcher
+                        .dispatch(&request.method, request.params, request_id)
+                        .await;
 
-                        let (state, id, method, params) =
-                            (app_state, request.id, request.method, request.params);
-
-                        let result = rpc_select(&state, &method, params, request_id).await;
-
-                        Response::from_result(id, result)
-                    }
+                    Response::from_result(request.id, result)
                 })
                 .buffered(app_state.batch_concurrent_limit as usize)
                 .take_while(|response| {

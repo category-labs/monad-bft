@@ -19,7 +19,7 @@ use std::{sync::Arc, time::Duration};
 
 use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
-use clap::Parser;
+use clap::{error::ErrorKind, CommandFactory, Parser};
 use monad_archive::archive_reader::{redact_mongo_url, ArchiveReader};
 use monad_event_ring::{EventRing, EventRingPath};
 use monad_node_config::MonadNodeConfig;
@@ -31,6 +31,7 @@ use monad_rpc::{
         eth_call_handler::{EthCallHandler, EthCallHandlerConfig},
         DataProvider,
     },
+    domain::{self, DomainRpc},
     event::EventServer,
     handlers::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
@@ -64,12 +65,46 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[export_name = "malloc_conf"]
 pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 
+/// The RPC endpoint. A private domain is served by its own handler only.
+fn rpc_endpoint(
+    app_state: MonadRpcResources,
+    domain_rpc: Option<DomainRpc>,
+) -> impl Fn(&mut web::ServiceConfig) + Clone {
+    let domain_rpc = domain_rpc.map(web::Data::new);
+    move |app| {
+        let rpc = web::resource("/");
+        match &domain_rpc {
+            Some(domain_rpc) => app
+                .app_data(domain_rpc.clone())
+                .service(rpc.route(web::post().to(domain::rpc_handler))),
+            None => app
+                .app_data(web::Data::new(app_state.clone()))
+                .service(rpc.route(web::post().to(rpc_handler))),
+        };
+    }
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
     let node_config: MonadNodeConfig = toml::from_str(&std::fs::read_to_string(&args.node_config)?)
         .expect("node toml parse error");
+
+    if let Some(domain_chain_id) = args
+        .domain_chain_id
+        .filter(|&domain_chain_id| !domain::is_domain_of(domain_chain_id, node_config.chain_id))
+    {
+        Cli::command()
+            .error(
+                ErrorKind::ValueValidation,
+                format!(
+                    "the low 16 bits of --domain-chain-id {domain_chain_id:#x} must be the L1 chain id {:#x}, below a nonzero domain number",
+                    node_config.chain_id
+                ),
+            )
+            .exit();
+    }
 
     let _agent = if let Some(socket_path) = &args.manytrace_socket {
         let extension = Arc::new(TracingExtension::new());
@@ -293,6 +328,9 @@ async fn main() -> std::io::Result<()> {
                 provider_gas_limit_eth_simulate: args.eth_simulate_gas_limit,
                 provider_max_calls_eth_simulate: args.eth_simulate_max_calls,
                 provider_max_blocks_eth_simulate: args.eth_simulate_max_blocks,
+                // TODO: the calls of a private domain run under the L1's rules; the executor
+                // has no private domain support yet.
+                execution_chain_id: node_config.chain_id,
             },
             triedb_path,
         )
@@ -368,7 +406,7 @@ async fn main() -> std::io::Result<()> {
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
         eth_call_handler,
-        node_config.chain_id,
+        args.domain_chain_id.unwrap_or(node_config.chain_id),
         data_provider,
         event_server_client.clone(),
         args.batch_request_limit,
@@ -406,6 +444,16 @@ async fn main() -> std::io::Result<()> {
         .workers(args.ws_worker_threads)
     });
 
+    let domain_rpc = args.domain_chain_id.map(|domain_chain_id| {
+        info!(
+            domain_chain_id,
+            l1_chain_id = node_config.chain_id,
+            "serving the triedb of a private domain"
+        );
+        DomainRpc::new(app_state.clone())
+    });
+    let rpc_endpoint = rpc_endpoint(app_state, domain_rpc);
+
     // Configure the rpc server with or without metrics
     let app = match with_metrics {
         Some(metrics) => HttpServer::new(move || {
@@ -415,8 +463,7 @@ async fn main() -> std::io::Result<()> {
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
-                .app_data(web::Data::new(app_state.clone()))
-                .service(web::resource("/").route(web::post().to(rpc_handler)))
+                .configure(rpc_endpoint.clone())
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
@@ -428,8 +475,7 @@ async fn main() -> std::io::Result<()> {
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
-                .app_data(web::Data::new(app_state.clone()))
-                .service(web::resource("/").route(web::post().to(rpc_handler)))
+                .configure(rpc_endpoint.clone())
         })
         .bind((args.rpc_addr, args.rpc_port))?
         .shutdown_timeout(1)
@@ -456,4 +502,57 @@ async fn main() -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::{
+        test::{call_and_read_body_json, init_service, TestRequest},
+        App,
+    };
+    use monad_rpc::{
+        domain::DomainRpc,
+        handlers::resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
+        txpool::EthTxPoolBridgeClient,
+        types::jsonrpc::ErrorCode,
+    };
+    use serde_json::{json, Value};
+    use tracing_actix_web::TracingLogger;
+
+    use super::rpc_endpoint;
+
+    fn app_state() -> MonadRpcResources {
+        let txpool = Some(EthTxPoolBridgeClient::for_testing());
+        MonadRpcResources::new(
+            txpool, None, 20143, None, None, 5, 5, 25_000_000, false, 1000, 0, 0, false, false,
+            200, false, None, None, 100,
+        )
+    }
+
+    /// The error code of the endpoint's response to a method that only the L1 serves.
+    async fn l1_method_error_code(domain_rpc: Option<DomainRpc>) -> Value {
+        let app = init_service(
+            App::new()
+                .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
+                .configure(rpc_endpoint(app_state(), domain_rpc)),
+        )
+        .await;
+        let request = TestRequest::post().uri("/").set_json(
+            json!({"jsonrpc": "2.0", "method": "txpool_statusByHash", "params": [], "id": 1}),
+        );
+        let response: Value = call_and_read_body_json(&app, request.to_request()).await;
+        response["error"]["code"].clone()
+    }
+
+    #[actix_web::test]
+    async fn private_domain_is_served_by_its_own_handler_only() {
+        assert_eq!(
+            l1_method_error_code(None).await,
+            ErrorCode::InvalidParams as i32
+        );
+        assert_eq!(
+            l1_method_error_code(Some(DomainRpc::new(app_state()))).await,
+            ErrorCode::MethodNotFound as i32
+        );
+    }
 }
