@@ -34,11 +34,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
 use super::{RecvUdpMsg, UdpMsg, UdpSocketId, IPV4_HDR_SIZE, UDP_HDR_SIZE};
-use crate::{
-    buffer_ext::SocketBufferExt,
-    metrics::DataplaneMetrics,
-    pacing::{PacingItem, Scheduled},
-};
+use crate::{buffer_ext::SocketBufferExt, metrics::DataplaneMetrics, pacing::PacingItem};
 
 const DEFAULT_RINGBUF_COUNT: u32 = 2048;
 const DEFAULT_RINGBUF_SIZE: u32 = ETHERNET_SEGMENT_SIZE as u32;
@@ -66,12 +62,6 @@ impl PacingItem for UdpMsg {
             .min(self.stride.max(1) as usize)
             .min(usize::from(u16::MAX - IPV4_HDR_SIZE - UDP_HDR_SIZE))
             .min(max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize)
-    }
-}
-
-impl Scheduled<UdpMsg> {
-    pub(crate) fn take_chunk(&mut self) -> Bytes {
-        self.item.payload.split_to(self.batch_bytes)
     }
 }
 

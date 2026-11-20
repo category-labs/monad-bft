@@ -121,7 +121,7 @@ pub(crate) async fn task(
             let Some(mut scheduled) = queue.dequeue(now, max_batch_bytes - total_bytes) else {
                 break;
             };
-            let chunk = scheduled.take_chunk();
+            let chunk = scheduled.item.payload.split_to(scheduled.batch_bytes);
             let msg = &scheduled.item;
             let socket_id = msg.socket_id;
             let dst = msg.dst;

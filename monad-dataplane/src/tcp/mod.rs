@@ -39,7 +39,7 @@ use zerocopy::{
     FromBytes, Immutable, IntoBytes,
 };
 
-use super::{TcpIngressEvent, TcpMsg, TcpProtocol, TcpSocketId};
+use super::{TcpIngressEvent, TcpProtocol, TcpSocketId};
 use crate::{metrics::DataplaneMetrics, Addrlist};
 
 mod conn;
@@ -343,7 +343,7 @@ pub(crate) fn spawn_tasks(
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
     socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<TcpIngressEvent>)>,
-    tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpMsg)>,
+    tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, tx::TcpEgressMsg)>,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(TcpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
 ) {
@@ -507,7 +507,7 @@ mod tests {
     use zerocopy::IntoBytes;
 
     use super::*;
-    use crate::{addrlist::Addrlist, TcpSocketId};
+    use crate::{addrlist::Addrlist, TcpMsg, TcpSocketId};
 
     #[fixture]
     fn tcp_control() -> TcpControl {
@@ -752,7 +752,7 @@ mod tests {
     }
 
     struct TestDataplane {
-        egress: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
+        egress: mpsc::Sender<(TcpSocketId, SocketAddr, tx::TcpEgressMsg)>,
         ingress: HashMap<TcpSocketId, TcpSocketReader>,
         addrs: HashMap<TcpSocketId, SocketAddr>,
         control: TcpControl,
@@ -808,6 +808,7 @@ mod tests {
         }
 
         async fn send_msg(&self, socket: TcpSocketId, addr: SocketAddr, msg: TcpMsg) {
+            let msg = tx::TcpEgressMsg { message: msg };
             within(self.egress.send((socket, addr, msg))).await.unwrap();
         }
 

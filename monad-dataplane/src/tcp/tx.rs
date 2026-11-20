@@ -39,11 +39,11 @@ use zerocopy::IntoBytes;
 use super::{
     conn::{ConnectionRegistration, ConnectionRegistry, LimitError, Limits, Permit},
     message_timeout, task_connection, ConnectionContext, ConnectionIdle, TcpConnectionGuard,
-    TcpMsg, TcpMsgHdr, TcpWriteHalf, TCP_MESSAGE_LENGTH_LIMIT,
+    TcpMsgHdr, TcpWriteHalf, TCP_MESSAGE_LENGTH_LIMIT,
 };
 use crate::{
     metrics::{ActiveConnectionGuard, DataplaneMetrics},
-    TcpSocketId,
+    TcpMsg, TcpSocketId,
 };
 
 // These are per-peer limits.
@@ -55,6 +55,10 @@ pub const QUEUED_MESSAGE_BYTE_LIMIT: usize = 4 * 1024 * 1024;
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_FAILURE_LINGER_WAIT: Duration = Duration::from_secs(1);
 
+pub(crate) struct TcpEgressMsg {
+    pub(crate) message: TcpMsg,
+}
+
 enum BoundedQueueError {
     ByteLimitExceeded,
     Full,
@@ -62,12 +66,12 @@ enum BoundedQueueError {
 }
 
 pub(super) struct BoundedQueueSender {
-    tx: mpsc::Sender<TcpMsg>,
+    tx: mpsc::Sender<TcpEgressMsg>,
     queued_bytes: Arc<AtomicUsize>,
 }
 
 pub(crate) struct BoundedQueueReceiver {
-    rx: mpsc::Receiver<TcpMsg>,
+    rx: mpsc::Receiver<TcpEgressMsg>,
     queued_bytes: Arc<AtomicUsize>,
 }
 
@@ -87,8 +91,8 @@ pub(super) fn bounded_queue() -> (BoundedQueueSender, BoundedQueueReceiver) {
 }
 
 impl BoundedQueueSender {
-    fn try_send(&self, msg: TcpMsg) -> Result<(), BoundedQueueError> {
-        let msg_len = msg.msg.len();
+    fn try_send(&self, msg: TcpEgressMsg) -> Result<(), BoundedQueueError> {
+        let msg_len = msg.message.msg.len();
         let mut current = self.queued_bytes.load(Ordering::Relaxed);
         loop {
             if msg_len > QUEUED_MESSAGE_BYTE_LIMIT.saturating_sub(current) {
@@ -119,7 +123,7 @@ impl BoundedQueueSender {
         }
     }
 
-    pub(super) fn enqueue(&self, addr: SocketAddr, msg: TcpMsg, metrics: &DataplaneMetrics) {
+    pub(super) fn enqueue(&self, addr: SocketAddr, msg: TcpEgressMsg, metrics: &DataplaneMetrics) {
         match self.try_send(msg) {
             Ok(()) => {
                 let message_count = self.message_count();
@@ -165,17 +169,17 @@ impl BoundedQueueSender {
 }
 
 impl BoundedQueueReceiver {
-    fn try_recv(&mut self) -> Result<TcpMsg, TryRecvError> {
+    fn try_recv(&mut self) -> Result<TcpEgressMsg, TryRecvError> {
         let msg = self.rx.try_recv()?;
         self.queued_bytes
-            .fetch_sub(msg.msg.len(), Ordering::Relaxed);
+            .fetch_sub(msg.message.msg.len(), Ordering::Relaxed);
         Ok(msg)
     }
 
-    async fn recv(&mut self) -> Option<TcpMsg> {
+    async fn recv(&mut self) -> Option<TcpEgressMsg> {
         let msg = self.rx.recv().await?;
         self.queued_bytes
-            .fetch_sub(msg.msg.len(), Ordering::Relaxed);
+            .fetch_sub(msg.message.msg.len(), Ordering::Relaxed);
         Some(msg)
     }
 }
@@ -193,7 +197,7 @@ fn reject_banned(limits: &Limits, addr: SocketAddr, metrics: &DataplaneMetrics) 
 pub(crate) async fn task(
     limits: Limits,
     registry: ConnectionRegistry,
-    mut tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpMsg)>,
+    mut tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpEgressMsg)>,
     contexts: BTreeMap<TcpSocketId, ConnectionContext>,
     metrics: DataplaneMetrics,
 ) {
@@ -201,7 +205,7 @@ pub(crate) async fn task(
         debug!(
             ?socket_id,
             ?addr,
-            len = msg.msg.len(),
+            len = msg.message.msg.len(),
             "queueing up TCP message"
         );
         if reject_banned(&limits, addr, &metrics) {
@@ -361,7 +365,7 @@ pub(super) async fn send_messages(
         };
 
         let _writing = idle.writing();
-        let len = msg.msg.len();
+        let len = msg.message.msg.len();
 
         if len > TCP_MESSAGE_LENGTH_LIMIT {
             metrics.tcp_egress_messages_dropped.inc();
@@ -384,7 +388,7 @@ pub(super) async fn send_messages(
         };
         timeout(
             message_timeout(len),
-            send_message(conn_id, addr, write_half, message_id, msg, metrics),
+            send_message(conn_id, addr, write_half, message_id, msg.message, metrics),
         )
         .await
         .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
@@ -493,11 +497,13 @@ mod tests {
     use super::*;
     use crate::{addrlist::Addrlist, TcpProtocol::Signature};
 
-    fn make_msg(size: usize) -> TcpMsg {
-        TcpMsg {
-            protocol: Signature,
-            msg: Bytes::from(vec![0u8; size]),
-            completion: None,
+    fn make_msg(size: usize) -> TcpEgressMsg {
+        TcpEgressMsg {
+            message: TcpMsg {
+                protocol: Signature,
+                msg: Bytes::from(vec![0u8; size]),
+                completion: None,
+            },
         }
     }
 
@@ -510,7 +516,7 @@ mod tests {
         assert_eq!(sender.message_count(), 1);
 
         let msg = receiver.try_recv().unwrap();
-        assert_eq!(msg.msg.len(), 1024);
+        assert_eq!(msg.message.msg.len(), 1024);
         assert_eq!(sender.queued_bytes(), 0);
 
         let large_msg_size = QUEUED_MESSAGE_BYTE_LIMIT + 1;
@@ -584,10 +590,12 @@ mod tests {
         assert!(registry
             .try_send(
                 &key,
-                TcpMsg {
-                    protocol: Signature,
-                    msg: Bytes::from_static(b"queued while connecting"),
-                    completion: Some(complete),
+                TcpEgressMsg {
+                    message: TcpMsg {
+                        protocol: Signature,
+                        msg: Bytes::from_static(b"queued while connecting"),
+                        completion: Some(complete),
+                    },
                 },
                 &metrics,
             )
@@ -671,10 +679,12 @@ mod tests {
         assert!(registry
             .try_send(
                 &key,
-                TcpMsg {
-                    protocol: Signature,
-                    msg: Bytes::from(vec![0; TCP_MESSAGE_LENGTH_LIMIT]),
-                    completion: Some(complete),
+                TcpEgressMsg {
+                    message: TcpMsg {
+                        protocol: Signature,
+                        msg: Bytes::from(vec![0; TCP_MESSAGE_LENGTH_LIMIT]),
+                        completion: Some(complete),
+                    },
                 },
                 &metrics,
             )
