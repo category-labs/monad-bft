@@ -448,9 +448,10 @@ async fn main() -> std::io::Result<()> {
         info!(
             domain_chain_id,
             l1_chain_id = node_config.chain_id,
+            operators = ?args.operators,
             "serving the triedb of a private domain"
         );
-        DomainRpc::new(app_state.clone())
+        DomainRpc::new(app_state.clone(), args.operators.iter().copied().collect())
     });
     let rpc_endpoint = rpc_endpoint(app_state, domain_rpc);
 
@@ -551,7 +552,7 @@ mod tests {
             ErrorCode::InvalidParams as i32
         );
         assert_eq!(
-            l1_method_error_code(Some(DomainRpc::new(app_state()))).await,
+            l1_method_error_code(Some(DomainRpc::new(app_state(), Default::default()))).await,
             UNAUTHORIZED_ERROR_CODE
         );
     }
