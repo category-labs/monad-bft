@@ -347,6 +347,7 @@ fn tcp_rapid() {
     let num_msgs = 512;
 
     let mut rx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_rps_burst(10_000, 2_000)
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
         .build();
     let mut tx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
@@ -437,6 +438,7 @@ fn tcp_exceed_queue_limits() {
     let num_msgs = 100 * QUEUED_MESSAGE_LIMIT;
 
     let mut rx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_rps_burst(10_000, 2_000)
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
         .build();
     let mut tx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
