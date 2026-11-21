@@ -78,7 +78,7 @@ define_metrics! {
     tcp_send_errors => TCP_SEND_ERRORS("monad.dataplane.tcp.total_send_errors", "Total TCP payload send errors or timeouts"),
     tcp_egress_messages_dropped => TCP_EGRESS_MESSAGES_DROPPED("monad.dataplane.tcp.total_egress_messages_dropped", "Total TCP egress messages dropped by bans, dataplane limits, full queues, or failed connections"),
     tcp_egress_messages_dropped_banned => TCP_EGRESS_MESSAGES_DROPPED_BANNED("monad.dataplane.tcp.total_egress_messages_dropped_banned", "Total TCP egress messages rejected for a banned destination during send queue registration or before dialing"),
-    tcp_connections_rate_limited => TCP_CONNECTIONS_RATE_LIMITED("monad.dataplane.tcp.total_connections_rate_limited", "Total inbound TCP connections closed after exceeding the per-connection message rate limit"),
+    tcp_receive_rate_limit_waits => TCP_RECEIVE_RATE_LIMIT_WAITS("monad.dataplane.tcp.total_receive_rate_limit_waits", "Total TCP frames delayed while waiting for per-connection receive quota"),
 }
 
 pub(crate) struct ActiveConnectionGuard(Gauge);

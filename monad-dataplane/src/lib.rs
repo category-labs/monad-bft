@@ -156,8 +156,8 @@ impl DataplaneBuilder {
             trusted_addresses: vec![],
             tcp_config: TcpConfig {
                 rate_limit: TcpRateLimit {
-                    rps: NonZeroU32::new(10000).unwrap(),
-                    rps_burst: NonZeroU32::new(2000).unwrap(),
+                    rps: NonZeroU32::new(40).unwrap(),
+                    rps_burst: NonZeroU32::new(80).unwrap(),
                 },
                 connections_limit: 10000,
                 per_ip_connections_limit: 100,
