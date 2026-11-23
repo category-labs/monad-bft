@@ -5710,15 +5710,9 @@ dependencies = [
  "criterion",
  "derive_more",
  "hex",
- "libc",
  "monad-mcp-common",
- "proptest",
  "rand 0.8.5",
- "serde",
- "serde_json",
- "tempfile",
  "thiserror 1.0.69",
- "tiny-keccak",
  "tracing",
  "tracing-test",
 ]
@@ -5730,6 +5724,8 @@ dependencies = [
  "bytes",
  "monad-mcp-cadence",
  "monad-mcp-common",
+ "monad-mcp-epoch",
+ "monad-mcp-proposing",
  "monad-sim",
  "monad-sim-swarm",
  "tracing",
@@ -5760,11 +5756,19 @@ dependencies = [
  "monad-mcp-cadence",
  "monad-mcp-common",
  "monad-mcp-da",
+ "monad-mcp-epoch",
  "monad-merkle",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "reed-solomon-simd",
  "tracing",
+]
+
+[[package]]
+name = "monad-mcp-epoch"
+version = "0.1.0"
+dependencies = [
+ "monad-mcp-common",
 ]
 
 [[package]]
@@ -5778,12 +5782,30 @@ dependencies = [
  "clap",
  "flate2",
  "hex",
- "monad-mcp-cadence",
+ "monad-mcp-ledger",
  "serde",
  "serde_json",
  "tempfile",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "monad-mcp-ledger"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "hex",
+ "libc",
+ "monad-mcp-common",
+ "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tiny-keccak",
+ "tracing",
 ]
 
 [[package]]
@@ -5795,7 +5817,10 @@ dependencies = [
  "monad-mcp-cadence",
  "monad-mcp-common",
  "monad-mcp-da",
+ "monad-mcp-epoch",
+ "monad-mcp-ledger",
  "monad-mcp-node",
+ "monad-mcp-proposing",
  "monad-sim",
  "monad-sim-swarm",
  "rand 0.8.5",
@@ -5804,11 +5829,26 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "monad-mcp-proposing"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "monad-mcp-cadence",
+ "monad-mcp-common",
+ "monad-mcp-epoch",
+ "monad-mcp-ledger",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -5820,8 +5860,8 @@ dependencies = [
  "bytes",
  "clap",
  "hex",
- "monad-mcp-cadence",
  "monad-mcp-common",
+ "monad-mcp-ledger",
  "monad-mcp-node",
  "rand 0.8.5",
  "reqwest 0.12.28",

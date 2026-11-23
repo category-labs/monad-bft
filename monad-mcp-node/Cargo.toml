@@ -10,7 +10,12 @@ path = "src/main.rs"
 required-features = ["enable_stub"]
 
 [features]
-enable_stub = ["monad-mcp-cadence/enable_stub", "monad-mcp-da/enable_stub"]
+enable_stub = [
+    "monad-mcp-cadence/enable_stub",
+    "monad-mcp-da/enable_stub",
+    "monad-mcp-epoch/enable_stub",
+    "monad-mcp-proposing/enable_stub",
+]
 # a node that speaks the hollow scheme, for a network inside one process.
 enable_hollow = ["enable_stub", "monad-mcp-cadence/enable_hollow", "monad-mcp-da/enable_hollow"]
 
@@ -20,7 +25,6 @@ bytes = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
 toml = { workspace = true }
 tracing = { workspace = true }
@@ -29,6 +33,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 monad-mcp-cadence = { workspace = true }
 monad-mcp-common = { workspace = true }
 monad-mcp-da = { workspace = true }
+monad-mcp-epoch = { workspace = true }
+monad-mcp-ledger = { workspace = true }
+monad-mcp-proposing = { workspace = true }
 
 [dev-dependencies]
 # turns on enable_stub and enable_hollow for the tests and examples

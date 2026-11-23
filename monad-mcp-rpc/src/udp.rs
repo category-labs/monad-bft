@@ -23,7 +23,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_mcp_cadence::ledger::Tx;
+use monad_mcp_ledger::Tx;
 use monad_mcp_node::{common::NodeId, network::WireAppMessage, transport::udp::encode_frame};
 
 // what a validator's receive loop takes as a tx from `sender`

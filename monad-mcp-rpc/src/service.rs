@@ -23,8 +23,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use monad_mcp_cadence::ledger::{Hash, LedgerReader, Tx};
 use monad_mcp_common::{Lane, Timestamp};
+use monad_mcp_ledger::{Hash, LedgerReader, Tx};
 use monad_mcp_node::common::NodeId;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};

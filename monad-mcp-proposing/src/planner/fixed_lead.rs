@@ -43,20 +43,20 @@
 //! blind-window knowledge a proposer needs — the in-flight proposals at
 //! its own lane — it has by construction: mid-phase they are its own
 //! proposals, and at a phase handoff the schedule's rotation vacancy of
-//! `y` slots guarantees there are none (see [`super::proposers`]); the
-//! planner sees vacancy simply as "not scheduled". The `state^{r−x}` half
-//! arrives with the component that owns execution progress; it slots in as
-//! an additional prerequisite next to the chaining gate.
+//! `y` slots guarantees there are none (see the election of
+//! `monad-mcp-epoch`); the planner sees vacancy simply as "not scheduled".
+//! The `state^{r−x}` half arrives with the component that owns execution
+//! progress; it slots in as an additional prerequisite next to the chaining
+//! gate.
 //!
 //! The timing policy itself is deliberately simple for now: a fixed,
-//! configurable [`PlannerConfig::lead`] before the deadline, covering
+//! configurable [`FixedLeadConfig::lead`] before the deadline, covering
 //! dissemination latency plus clock skew. Refinements (adaptive leads from
 //! DA feedback, payload-economic strategies) replace the policy inside this
 //! component without touching consensus: the planner's interface to the
-//! outside — facts in ([`ProposalPlanner::handle_slot_open`],
-//! [`ProposalPlanner::handle_cap_advance`]), the next due time and the
-//! seals out ([`ProposalPlanner::next_due`], [`ProposalPlanner::poll`]) —
-//! is the seam.
+//! outside — facts in ([`FixedLeadPlanner::handle_lifecycle`]), the next
+//! due time and the seals out ([`FixedLeadPlanner::next_due`],
+//! [`FixedLeadPlanner::poll`]) — is the seam.
 //!
 //! The planner is deliberately not part of the consensus core: it holds no
 //! consensus state, and a missed or skipped seal only costs the proposal
@@ -64,19 +64,15 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use tracing::{info, trace, warn};
+use monad_mcp_common::{Lane, Slot, SlotLifecycle, Timestamp, TimestampDelta};
+use tracing::{info, warn};
 
-use super::{
-    slot::chorus::{Entry, FinalizationPath},
-    types::{
-        Lane, Lanes, NodeId, ProposerSchedule, Slot, Timestamp, TimestampDelta, ValidatorIndex,
-    },
-};
+use super::super::env::{common::NodeId, epoch::election::ProposerSchedule};
 
 /// Timing parameters of the proposal planner. Node-local policy, not
 /// protocol: a bad value costs proposals, never consensus.
 #[derive(Debug, Clone)]
-pub struct PlannerConfig {
+pub struct FixedLeadConfig {
     /// How long before a slot's deadline the proposal is sealed and handed
     /// to the DA layer. Must cover dissemination-plus-decode latency at a
     /// supermajority, plus clock skew; a conservative constant for now.
@@ -101,22 +97,11 @@ struct PendingSeal {
     due: Timestamp,
 }
 
-/// Fact: the first vote of `voter` for `lane` of `slot` arrived at `at`, with
-/// its `entry`. Its signature is not checked.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct VoteReceived {
-    pub slot: Slot,
-    pub voter: ValidatorIndex,
-    pub lane: Lane,
-    pub entry: Entry,
-    pub at: Timestamp,
-}
-
 /// See the module docs.
-pub struct ProposalPlanner {
+pub struct FixedLeadPlanner {
     me: NodeId,
     schedule: Arc<dyn ProposerSchedule + Send + Sync>,
-    config: PlannerConfig,
+    config: FixedLeadConfig,
 
     /// The chained prefix frontier: every slot strictly below is finalized.
     chained_cap: Slot,
@@ -124,11 +109,11 @@ pub struct ProposalPlanner {
     pending: BTreeMap<Slot, PendingSeal>,
 }
 
-impl ProposalPlanner {
+impl FixedLeadPlanner {
     pub fn new(
         me: NodeId,
         schedule: Arc<dyn ProposerSchedule + Send + Sync>,
-        config: PlannerConfig,
+        config: FixedLeadConfig,
     ) -> Self {
         // a lead at or inside the withhold window means no proposal ever ships
         if config.min_lead >= config.lead {
@@ -147,9 +132,17 @@ impl ProposalPlanner {
         }
     }
 
+    pub fn handle_lifecycle(&mut self, event: SlotLifecycle, now: Timestamp) {
+        match event {
+            SlotLifecycle::Opened { slot, deadline } => self.handle_slot_open(now, slot, deadline),
+            SlotLifecycle::CapAdvance { cap } => self.handle_cap_advance(now, cap),
+            SlotLifecycle::Completed { .. } => {}
+        }
+    }
+
     /// Fact: the conductor opened `slot` with `deadline`. Registers a seal
     /// due at `deadline − lead` if this node's proposer set includes it.
-    pub fn handle_slot_open(&mut self, now: Timestamp, slot: Slot, deadline: Timestamp) {
+    fn handle_slot_open(&mut self, now: Timestamp, slot: Slot, deadline: Timestamp) {
         let lane = match self.schedule.lane_at(slot, &self.me) {
             Ok(Some(lane)) => lane,
             Ok(None) => return,
@@ -172,7 +165,7 @@ impl ProposalPlanner {
 
     /// Fact: the chained prefix advanced to `cap` (exclusive). Drops slots
     /// the chain already passed; seals gated on it surface via `next_due`.
-    pub fn handle_cap_advance(&mut self, now: Timestamp, cap: Slot) {
+    fn handle_cap_advance(&mut self, now: Timestamp, cap: Slot) {
         if cap <= self.chained_cap {
             return;
         }
@@ -188,23 +181,6 @@ impl ProposalPlanner {
             self.pending.remove(&slot);
         }
         self.drop_late(now);
-    }
-
-    /// Every lane and every voter is reported, this node included. A
-    /// validator that saw a fast block before its deadline sends no batch
-    /// vote: missing, not negative.
-    pub fn handle_vote_received(&mut self, vote: &VoteReceived) {
-        trace!(?vote, "vote received");
-    }
-
-    /// Fact: `slot` finalized, committing the `committed` lanes over `path`.
-    pub fn handle_finalized(
-        &mut self,
-        slot: Slot,
-        committed: &Lanes<bool>,
-        path: FinalizationPath,
-    ) {
-        trace!(?slot, ?committed, ?path, "slot finalized");
     }
 
     /// When `poll` may next seal. May already be in the past (a seal
@@ -273,23 +249,20 @@ impl ProposalPlanner {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        super::types::{FixedProposerSchedule, NodeId},
-        *,
-    };
+    use super::{super::super::env::epoch::election::FixedProposerSchedule, *};
 
     const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
     const MIN_LEAD: TimestampDelta = TimestampDelta::from_millis(20);
     const INTERVAL: u64 = 100;
 
-    fn planner(observation_cutoff: u64) -> ProposalPlanner {
+    fn planner(observation_cutoff: u64) -> FixedLeadPlanner {
         let me = NodeId::dummy(0);
         let other = NodeId::dummy(1);
         let schedule = Arc::new(FixedProposerSchedule::new(vec![other, me]));
-        ProposalPlanner::new(
+        FixedLeadPlanner::new(
             me,
             schedule,
-            PlannerConfig {
+            FixedLeadConfig {
                 lead: LEAD,
                 min_lead: MIN_LEAD,
                 observation_cutoff,
@@ -310,7 +283,7 @@ mod tests {
     }
 
     // opened at genesis, so no due time is clamped
-    fn open(planner: &mut ProposalPlanner, slots: impl IntoIterator<Item = u64>) {
+    fn open(planner: &mut FixedLeadPlanner, slots: impl IntoIterator<Item = u64>) {
         for slot in slots {
             planner.handle_slot_open(Timestamp::GENESIS, Slot(slot), deadline(slot));
         }
@@ -377,10 +350,10 @@ mod tests {
         let me = NodeId::dummy(0);
         let others = vec![NodeId::dummy(1), NodeId::dummy(2)];
         let schedule = Arc::new(FixedProposerSchedule::new(others));
-        let mut planner = ProposalPlanner::new(
+        let mut planner = FixedLeadPlanner::new(
             me,
             schedule,
-            PlannerConfig {
+            FixedLeadConfig {
                 lead: LEAD,
                 min_lead: MIN_LEAD,
                 observation_cutoff: 0,

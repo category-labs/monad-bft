@@ -25,9 +25,9 @@ use std::{cmp::Reverse, collections::HashMap, fmt, sync::Arc, time::Duration};
 use monad_mcp_common::{Lane, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     NodeProposerSchedule,
-    cadence::types::{ProposerConfig, ProposerSchedule, ScheduleError},
     common::NodeId,
     config::NodeConfig,
+    election::{ProposerConfig, ProposerSchedule, ScheduleError},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -13,6 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use crate::stub::{KeyPair, NodeId, PubKey, Signature, Stake};
+pub use crate::stub::{KeyPair, NodeId, PubKey, Signature, Stake, ValidatorData};
 
 // TODO: fill in the actual production implementation for above types

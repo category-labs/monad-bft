@@ -18,13 +18,11 @@ mod repeater;
 use std::{collections::VecDeque, fmt::Debug};
 
 use bytes::Bytes;
-use monad_mcp_cadence::{
-    ledger::{Tx, TxError},
-    spec::validator::ValidatorData as _,
-};
 use monad_mcp_common::{
     Inbound, Outbound, Qos, RepeatUntil, Slot, Timestamp, ValidatorSet, WirePriority,
+    spec::ValidatorData as _,
 };
+use monad_mcp_ledger::{Tx, TxError};
 
 use self::repeater::Repeater;
 pub use self::repeater::RepeaterConfig;

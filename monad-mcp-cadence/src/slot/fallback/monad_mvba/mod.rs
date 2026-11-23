@@ -69,6 +69,7 @@ use messages::{
     CommitVoteMsg, FallbackCommitVote, Justification, PrePrepareMsg, PrepareVote, PrepareVoteMsg,
     TimeoutMsg,
 };
+use monad_mcp_common::spec::ValidatorData as _;
 use phases::{Decided, Phase, Transition};
 
 use super::{
@@ -82,7 +83,6 @@ use super::{
     FallbackView, MVBAOutput, Metablock, Mvba, MvbaScope, Outbound, ValidateCert, ValidateInput,
     Votable,
 };
-use crate::spec::validator::ValidatorData as _;
 
 /// Caps memory usage of this buffer
 const MAX_FUTURE_VIEWS: u64 = 10;

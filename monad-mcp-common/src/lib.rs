@@ -28,7 +28,7 @@ pub mod stub;
 // demonstration only. reuses all stub types.
 pub mod prod;
 
-use std::{fmt, time::Duration};
+use std::time::Duration;
 
 use alloy_rlp::{Decodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 
@@ -233,11 +233,71 @@ impl<M, R> Outbound<M, R, Qos> {
     }
 }
 
+// What a conductor does to a slot, as the other components see it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlotLifecycle {
+    Opened { slot: Slot, deadline: Timestamp },
+    Completed { slot: Slot },
+    // every slot below cap (exclusive) is closed, finalized locally or not
+    CapAdvance { cap: Slot },
+}
+
+// The path a slot took to its finalization.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[repr(u8)]
+pub enum FinalizationPath {
+    Fast = 0,
+    Fallback = 1,
+}
+
+impl FinalizationPath {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Fallback => "fallback",
+        }
+    }
+}
+
+impl alloy_rlp::Encodable for FinalizationPath {
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        (*self as u8).encode(out)
+    }
+
+    fn length(&self) -> usize {
+        (*self as u8).length()
+    }
+}
+
+impl Decodable for FinalizationPath {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        match u8::decode(buf)? {
+            v if v == Self::Fast as u8 => Ok(Self::Fast),
+            v if v == Self::Fallback as u8 => Ok(Self::Fallback),
+            _ => Err(alloy_rlp::Error::Custom("unknown finalization path")),
+        }
+    }
+}
+
 // the max number of lanes we currently permit
 pub const MAX_PROPOSER_SET_SIZE: usize = 5;
 
 // the most validators an epoch may have
 pub const MAX_VALIDATORS: usize = 300;
+
+// Which lanes of a slot have a proposer. Consensus reads the proposer
+// schedule through this question only.
+pub trait LaneOccupancy {
+    // None if the schedule has no answer for the slot
+    fn occupied_lanes(&self, slot: Slot) -> Option<Lanes<bool>>;
+}
+
+// the same lanes at every slot
+impl LaneOccupancy for Lanes<bool> {
+    fn occupied_lanes(&self, _slot: Slot) -> Option<Lanes<bool>> {
+        Some(self.clone())
+    }
+}
 
 /// The slot and lane authenticated by a per-proposal vote.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
@@ -393,44 +453,6 @@ impl std::ops::Mul<usize> for TimestampDelta {
 
 pub type SlotDeadline = Timestamp;
 
-// Identifies a window of contiguous slots, starting from 0.
-#[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodableWrapper, RlpDecodableWrapper,
-)]
-pub struct WindowId(pub u64);
-
-impl WindowId {
-    pub const FIRST: Self = Self(0);
-
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-
-    pub fn checked_next(self) -> Option<Self> {
-        self.0.checked_add(1).map(Self)
-    }
-
-    pub fn checked_prev(self) -> Option<Self> {
-        self.0.checked_sub(1).map(Self)
-    }
-
-    pub fn to_index(self) -> Option<usize> {
-        usize::try_from(self.0).ok()
-    }
-}
-
-impl fmt::Debug for WindowId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("WindowId").field(&self.get()).finish()
-    }
-}
-
-impl Default for WindowId {
-    fn default() -> Self {
-        Self::FIRST
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,9 +485,5 @@ mod tests {
     fn identities_are_zero_indexed() {
         assert_eq!(Slot::FIRST, Slot(0));
         assert_eq!(Slot::MIN, Slot(0));
-
-        assert_eq!(WindowId::FIRST, WindowId(0));
-        assert_eq!(WindowId::default(), WindowId(0));
-        assert_eq!(WindowId(0).to_index(), Some(0));
     }
 }

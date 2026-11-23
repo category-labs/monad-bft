@@ -43,16 +43,15 @@ mod fixtures {
             CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, Metablock,
             Mvba as _, monad_mvba::MvbaContext,
         },
-        types::{
-            HeaderAuth, IsVote, ProposalId, StrongQc, ValidatorData, VoteMsg, VotePool, WeakQc,
-        },
+        types::{HeaderAuth, IsVote, ProposalId, StrongQc, VoteMsg, VotePool, WeakQc},
     };
-    use monad_mcp_cadence::{
-        spec::{ProposalHeader as _, validator::ValidatorData as _},
-        stub as cadence,
-    };
+    use monad_mcp_cadence::{spec::ProposalHeader as _, stub as cadence};
     use monad_mcp_cadence_sim::MonadMvba;
-    use monad_mcp_common::{Lane, Lanes, ProposalScope, Slot, TimestampDelta, stub::NodeId};
+    use monad_mcp_common::{
+        Lane, Lanes, ProposalScope, Slot, TimestampDelta,
+        spec::ValidatorData as _,
+        stub::{NodeId, ValidatorData},
+    };
 
     const NUM_NODES: u64 = 4;
 

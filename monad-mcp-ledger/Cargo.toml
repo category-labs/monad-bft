@@ -1,0 +1,27 @@
+[package]
+name = "monad-mcp-ledger"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alloy-rlp = { workspace = true, features = ["derive"] }
+bytes = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tiny-keccak = { workspace = true, features = ["keccak"] }
+tracing = { workspace = true }
+
+monad-mcp-common = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[lints.clippy]
+# outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
+iter_over_hash_type = "deny"

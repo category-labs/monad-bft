@@ -23,12 +23,12 @@ use std::{collections::HashMap, sync::Arc};
 use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use monad_mcp_cadence::{
-    spec::{validator::ValidatorData as _, vote::SigningDomain},
-    stub::types::{IsVote, ValidatorData, ValidatorIndex, VoteMsg, VotePool},
+    spec::vote::SigningDomain,
+    stub::types::{IsVote, ValidatorIndex, VoteMsg, VotePool},
 };
 use monad_mcp_common::{
-    spec::KeyPair as _,
-    stub::{NodeId, Stake},
+    spec::{KeyPair as _, ValidatorData as _},
+    stub::{NodeId, Stake, ValidatorData},
 };
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]

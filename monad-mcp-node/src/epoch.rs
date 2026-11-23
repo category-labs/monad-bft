@@ -18,12 +18,10 @@ use std::sync::Arc;
 use monad_mcp_common::{Slot, ValidatorIndex};
 
 use crate::{
-    cadence::{
-        slot::chorus::ChorusContext,
-        types::{HeaderAuth, RotatingProposerSchedule, RoundRobinLeaderSchedule, ValidatorData},
-    },
-    common::{KeyPair, NodeId},
+    cadence::{slot::chorus::ChorusContext, types::HeaderAuth},
+    common::{KeyPair, NodeId, ValidatorData},
     da::{self, ProposalKeyPair},
+    election::{RotatingProposerSchedule, RoundRobinLeaderSchedule},
 };
 
 /// The node's proposer schedule: the real rotating schedule over the
@@ -63,7 +61,7 @@ impl EpochHandle {
             key: self.key.clone(),
             validator_data: self.validator_data.clone(),
             header_auth: self.header_auth.clone(),
-            proposers: self.proposers.clone(),
+            occupancy: self.proposers.clone(),
         };
         Some(context)
     }

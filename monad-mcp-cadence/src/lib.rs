@@ -24,8 +24,6 @@ mod env;
 // the specification for types used in cadence.
 pub mod spec;
 
-pub mod ledger;
-
 #[cfg(feature = "enable_stub")]
 // override to top-level path
 #[path = ""]

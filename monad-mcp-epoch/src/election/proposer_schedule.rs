@@ -102,7 +102,9 @@
 //! also holds across the boundary. Pass an empty tail at genesis, or wherever
 //! the protocol drains all proposer phases across a boundary.
 
-use super::types::{NodeId, Slot, ValidatorData};
+use monad_mcp_common::Slot;
+
+use super::super::env::{NodeId, ValidatorData};
 
 /// Parameters of the proposer schedule. Protocol-wide constants; changing any
 /// of them is a consensus-breaking change.
@@ -336,9 +338,7 @@ impl EpochSchedule<NodeId> {
         validators: &ValidatorData,
         prev_epoch_tail: &[NodeId],
     ) -> Result<Self, ScheduleError> {
-        use monad_mcp_common::spec::Stake as _;
-
-        use crate::spec::validator::ValidatorData as _;
+        use monad_mcp_common::spec::{Stake as _, ValidatorData as _};
 
         let stake = |index| (*validators.node_id(index), validators.stake(index).amount());
         Self::build(cfg, epoch, validators.indices().map(stake), prev_epoch_tail)

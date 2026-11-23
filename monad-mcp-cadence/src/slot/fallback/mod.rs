@@ -242,7 +242,7 @@ where
 
     // the boundary of a standalone instance: its recipients get their slot here
     fn send(&mut self, outbound: Outbound<A::Message, SlotRecipients>) {
-        use crate::spec::validator::ValidatorData as _;
+        use monad_mcp_common::spec::ValidatorData as _;
 
         let Outbound { to, message, qos } = outbound;
         let to = to.at(self.mvba.slot(), self.mvba.validator_data().len());
@@ -276,7 +276,7 @@ where
 
     fn receive(&mut self, now: Timestamp, inbound: Inbound<A::Message>) {
         let Inbound { sender, message } = inbound;
-        use crate::spec::validator::ValidatorData as _;
+        use monad_mcp_common::spec::ValidatorData as _;
 
         // the boundary of a standalone instance: a sender becomes a validator
         // index here, as in Chorus::handle_message

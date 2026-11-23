@@ -1,0 +1,25 @@
+[package]
+name = "monad-mcp-proposing"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# exposes the stub instantiation (crate::stub).
+enable_stub = ["monad-mcp-cadence/enable_stub", "monad-mcp-epoch/enable_stub"]
+
+[dependencies]
+alloy-rlp = { workspace = true }
+bytes = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+monad-mcp-cadence = { workspace = true }
+monad-mcp-common = { workspace = true }
+monad-mcp-epoch = { workspace = true }
+monad-mcp-ledger = { workspace = true }
+
+[lints.clippy]
+# outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
+iter_over_hash_type = "deny"

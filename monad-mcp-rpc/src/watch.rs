@@ -15,9 +15,7 @@
 
 use std::time::Instant;
 
-use monad_mcp_cadence::ledger::{
-    BlockMeta, Hash, LedgerError, LedgerFollower, LedgerReader, decode_batch,
-};
+use monad_mcp_ledger::{BlockMeta, Hash, LedgerError, LedgerFollower, LedgerReader, decode_batch};
 use tracing::warn;
 
 use crate::pending::Commit;
@@ -140,7 +138,7 @@ fn lane_commits(
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use monad_mcp_cadence::ledger::{
+    use monad_mcp_ledger::{
         CommittedLane, FinalizationPath, LedgerWriter, NewBlock, NewLane, Tx, encode_batch,
         lane_file_name,
     };

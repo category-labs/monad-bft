@@ -26,8 +26,8 @@ toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
-monad-mcp-cadence = { workspace = true }
 monad-mcp-common = { workspace = true }
+monad-mcp-ledger = { workspace = true }
 monad-mcp-node = { path = "../monad-mcp-node", features = ["enable_stub"] }
 
 [dev-dependencies]

@@ -23,7 +23,7 @@ use super::{
     slot::{SlotConsensus, SlotOutput},
     slot_manager::SlotManager,
     timers::Timers,
-    types::{NodeId, Slot, SlotScoped, Timestamp, ValidatorData},
+    types::{NodeId, Slot, SlotLifecycle, SlotScoped, Timestamp, ValidatorData},
 };
 
 // A Runtime is a process that exchanges messages with peers, takes local
@@ -171,7 +171,7 @@ where
                     .schedule(now + delta, PendingWake::SlotTimer(slot, timer));
             }
             SlotOutput::Send(outbound) => {
-                use crate::spec::validator::ValidatorData as _;
+                use monad_mcp_common::spec::ValidatorData as _;
 
                 let Outbound { to, message, qos } = outbound;
                 debug_assert_eq!(message.slot(), slot);
@@ -278,12 +278,4 @@ where
     fn next_due(&self) -> Option<Timestamp> {
         self.timers.next_due()
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SlotLifecycle {
-    Opened { slot: Slot, deadline: Timestamp },
-    Completed { slot: Slot },
-    // every slot below cap (exclusive) is closed, finalized locally or not
-    CapAdvance { cap: Slot },
 }

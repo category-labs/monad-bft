@@ -20,8 +20,7 @@
 
 use monad_mcp_common::{Slot, TimestampDelta};
 use monad_mcp_node::{
-    Node, cadence::types::ProposerSchedule as _, common::NodeId, config::SourceKind,
-    da::ProposalScheme,
+    Node, common::NodeId, config::SourceKind, da::ProposalScheme, election::ProposerSchedule as _,
 };
 use monad_sim_swarm::{RegionTable, Swarm};
 

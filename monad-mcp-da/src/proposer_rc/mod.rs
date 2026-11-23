@@ -275,7 +275,7 @@ impl ProposerRaptorcast {
         pid: &ProposalId,
         epoch_handle: &EpochHandle,
     ) -> Option<MissingChunks> {
-        use monad_mcp_cadence::spec::validator::ValidatorData as _;
+        use monad_mcp_common::spec::ValidatorData as _;
 
         match self.tracked.get(pid) {
             Some(instance) => instance.missing_chunks(),
@@ -296,7 +296,7 @@ impl ProposerRaptorcast {
         missing: MissingHeaders,
         validator_data: &ValidatorData,
     ) -> Vec<(NodeId, ChunkRequest)> {
-        use monad_mcp_cadence::spec::validator::ValidatorData as _;
+        use monad_mcp_common::spec::ValidatorData as _;
 
         let mut subset = match self.pin {
             // heuristic, HeaderOnly alone is also correct.
@@ -360,7 +360,7 @@ mod tests {
 
     // the validators of the epoch with these dummy ids
     fn validators<const N: usize>(epoch_handle: &EpochHandle, ids: [u64; N]) -> ValidatorSet {
-        use monad_mcp_cadence::spec::validator::ValidatorData as _;
+        use monad_mcp_common::spec::ValidatorData as _;
 
         ids.into_iter()
             .map(|id| {

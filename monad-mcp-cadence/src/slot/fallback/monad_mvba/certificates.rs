@@ -81,9 +81,9 @@ pub(crate) struct TimeoutGroup {
 
 impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutCertificate<E> {
     pub(crate) fn verify(&self, validator_data: &ValidatorData) -> bool {
-        use monad_mcp_common::spec::Stake as _;
+        use monad_mcp_common::spec::{Stake as _, ValidatorData as _};
 
-        use crate::spec::{validator::ValidatorData as _, vote::SignatureCollection as _};
+        use crate::spec::vote::SignatureCollection as _;
 
         let scope = MvbaScope::new(self.slot, self.view);
 

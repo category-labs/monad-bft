@@ -7,6 +7,8 @@ edition = "2024"
 bytes = { workspace = true }
 monad-mcp-cadence = { workspace = true, features = ["enable_stub"] }
 monad-mcp-common = { workspace = true }
+monad-mcp-epoch = { workspace = true, features = ["enable_stub"] }
+monad-mcp-proposing = { workspace = true, features = ["enable_stub"] }
 monad-sim = { workspace = true }
 monad-sim-swarm = { workspace = true }
 tracing = { workspace = true }

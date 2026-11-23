@@ -25,10 +25,8 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_mcp_cadence::ledger::{
-    LedgerReader, MAX_TX_PAYLOAD, Tx, decode_batch, lane_json_file_name,
-};
 use monad_mcp_common::Timestamp;
+use monad_mcp_ledger::{LedgerReader, MAX_TX_PAYLOAD, Tx, decode_batch, lane_json_file_name};
 use monad_mcp_node::{
     common::{KeyPair, NodeId},
     config::{NodeConfig, ValidatorConfig},

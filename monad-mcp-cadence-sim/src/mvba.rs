@@ -26,12 +26,12 @@ use std::{
     time::Duration,
 };
 
-use cadence::{
-    slot::fallback::{EnterFallbackCert, Metablock, MvbaRuntime, monad_mvba},
-    types::ValidatorData,
-};
+use cadence::slot::fallback::{EnterFallbackCert, Metablock, MvbaRuntime, monad_mvba};
 use monad_mcp_cadence::stub as cadence;
-use monad_mcp_common::{Timestamp, stub::NodeId};
+use monad_mcp_common::{
+    Timestamp,
+    stub::{NodeId, ValidatorData},
+};
 use monad_sim::{RunOutcome, StepLabel, Time};
 use monad_sim_swarm::{Network, Swarm};
 

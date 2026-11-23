@@ -25,17 +25,18 @@ use std::{num::NonZeroU64, sync::Arc, time::Duration};
 use cadence::{
     conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
-    types::{
-        CreditLotterySchedule, HeaderAuth, ProposerConfig, ProposerSchedule,
-        RotatingProposerSchedule, ValidatorData,
-    },
+    types::HeaderAuth,
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
+use monad_mcp_cadence::stub as cadence;
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
 use monad_mcp_common::{
     Lane, Slot, SlotDeadline, Timestamp, TimestampDelta,
-    stub::{NodeId, Stake},
+    spec::ValidatorData as _,
+    stub::{NodeId, Stake, ValidatorData},
+};
+use monad_mcp_epoch::stub::election::{
+    CreditLotterySchedule, ProposerConfig, ProposerSchedule, RotatingProposerSchedule,
 };
 
 const NODES: u64 = 8;
@@ -126,7 +127,7 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
             key: Arc::new(node_id.keypair()),
             validator_data: val_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            proposers: schedule,
+            occupancy: schedule,
         };
         builder.add_node(node_id, conductor(&val_data), config, context);
     }
@@ -249,7 +250,7 @@ fn vacant_indices_do_not_delay_the_fast_path() {
             key: Arc::new(node_id.keypair()),
             validator_data: val_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            proposers: schedule.clone(),
+            occupancy: schedule.clone(),
         };
         builder.add_node(node_id, conductor(&val_data), chorus_config, context);
     }

@@ -21,9 +21,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-pub(crate) use super::cadence::types::FixedProposerSchedule;
 #[cfg(feature = "enable_hollow")]
 use super::encoding_scheme::Hollow;
+pub(crate) use super::epoch::election::FixedProposerSchedule;
 use super::{
     assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
@@ -116,7 +116,7 @@ pub(crate) fn scheme_at(epoch_handle: &EpochHandle, slot: Slot) -> D33 {
 
 // the d33 scheme a proposer at `lane` picks for a MESSAGE_LEN message
 pub(crate) fn d33_scheme_at(epoch_handle: &EpochHandle, slot: Slot, lane: Lane) -> D33 {
-    use monad_mcp_cadence::spec::validator::ValidatorData as _;
+    use monad_mcp_common::spec::ValidatorData as _;
 
     let num_validators = epoch_handle.validator_data.len();
     d33::for_message(slot, MESSAGE_LEN, 0, lane, num_validators).expect("fits a depth")

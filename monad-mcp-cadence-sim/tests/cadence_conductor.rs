@@ -29,14 +29,19 @@ use cadence::{
         chorus::{Chorus, ChorusConfig, ChorusContext},
         dummy::{DummySlotConsensus, DummySlotConsensusConfig},
     },
-    types::{
-        CreditLotterySchedule, HeaderAuth, ProposerConfig, RotatingProposerSchedule, ValidatorData,
-    },
+    types::HeaderAuth,
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
+use monad_mcp_cadence::stub as cadence;
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
-use monad_mcp_common::{SlotDeadline, Timestamp, TimestampDelta, stub::NodeId};
+use monad_mcp_common::{
+    SlotDeadline, Timestamp, TimestampDelta,
+    spec::ValidatorData as _,
+    stub::{NodeId, ValidatorData},
+};
+use monad_mcp_epoch::stub::election::{
+    CreditLotterySchedule, ProposerConfig, RotatingProposerSchedule,
+};
 use monad_sim::Time;
 use monad_sim_swarm::Network;
 
@@ -153,7 +158,7 @@ fn full_window_rolls_over_with_chorus() {
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            proposers: proposer_schedule(&val_data),
+            occupancy: proposer_schedule(&val_data),
         };
         builder.add_node(id, conductor(&val_data), slot_config, context);
     }
@@ -201,7 +206,7 @@ fn a_partitioned_node_jumps_its_cap_to_the_majority() {
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            proposers: proposer_schedule(&val_data),
+            occupancy: proposer_schedule(&val_data),
         };
         builder.add_node(id, conductor(&val_data), slot_config, context);
     }

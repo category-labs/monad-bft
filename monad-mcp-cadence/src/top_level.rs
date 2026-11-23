@@ -20,11 +20,7 @@
 use super::env;
 
 pub mod conductor;
-pub mod da;
 pub mod message;
-pub mod proposer_schedule;
-pub mod proposers;
-pub mod proposing;
 pub mod runtime;
 pub mod slot;
 pub mod slot_manager;
@@ -35,6 +31,7 @@ pub mod types;
 
 pub use conductor::{Conductor, ConductorOutput};
 pub use message::{CadenceMessage, CadenceWireMsg, Inbound, Outbound, Recipients};
-pub use runtime::{CadenceOutput, CadenceRuntime, Runtime, SlotLifecycle};
+pub use monad_mcp_common::SlotLifecycle;
+pub use runtime::{CadenceOutput, CadenceRuntime, Runtime};
 pub use slot::{SlotConsensus, SlotOutput};
 pub use slot_manager::SlotManager;

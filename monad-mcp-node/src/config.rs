@@ -16,8 +16,11 @@
 use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc};
 
 use alloy_rlp::Encodable as _;
-use monad_mcp_cadence::{ledger::BatchBuilder, spec::validator::ValidatorData as _};
-use monad_mcp_common::{Timestamp, TimestampDelta, spec::KeyPair as _};
+use monad_mcp_common::{
+    Timestamp, TimestampDelta,
+    spec::{KeyPair as _, ValidatorData as _},
+};
+use monad_mcp_ledger::BatchBuilder;
 use rand::SeedableRng as _;
 use rand_chacha::ChaCha8Rng;
 use serde::Deserialize;
@@ -25,18 +28,14 @@ use serde::Deserialize;
 use crate::{
     cadence::{
         conductor::{ConductorConfig, ConductorError},
-        proposing::PlannerConfig,
         slot::chorus::ChorusConfig,
-        types::{
-            ProposerConfig, RotatingProposerSchedule, RoundRobinLeaderSchedule, ScheduleError,
-            ValidatorData,
-        },
     },
-    common::{KeyPair, NodeId, PubKey, Stake},
-    component::mempool,
+    common::{KeyPair, NodeId, PubKey, Stake, ValidatorData},
     da::{self, ProposalKeyPair, header_auth},
+    election::{ProposerConfig, RotatingProposerSchedule, RoundRobinLeaderSchedule, ScheduleError},
     epoch::{EpochHandle, NodeProposerSchedule},
     network::RepeaterConfig,
+    proposing::{self, FixedLeadConfig, source::mempool},
 };
 
 #[derive(Deserialize)]
@@ -402,8 +401,8 @@ impl ProposalConfig {
     }
 
     // the gate's cutoff is the schedule's own: the two cannot disagree
-    pub fn planner(&self, proposers: &NodeProposerSchedule) -> PlannerConfig {
-        PlannerConfig {
+    pub fn planner(&self, proposers: &NodeProposerSchedule) -> FixedLeadConfig {
+        FixedLeadConfig {
             lead: self.propose_before_deadline,
             min_lead: self.withhold_before_deadline,
             observation_cutoff: proposers.config().observation_cutoff,
@@ -435,6 +434,16 @@ pub struct MempoolConfig {
     pub max_bytes: usize,
     // committed tx hashes remembered to reject re-sends as duplicates
     pub recent_txs: usize,
+}
+
+impl From<MempoolConfig> for proposing::MempoolConfig {
+    fn from(config: MempoolConfig) -> Self {
+        Self {
+            max_txs: config.max_txs,
+            max_bytes: config.max_bytes,
+            recent_txs: config.recent_txs,
+        }
+    }
 }
 
 impl Default for MempoolConfig {
@@ -519,7 +528,7 @@ mod tests {
     use monad_mcp_common::Slot;
 
     use super::*;
-    use crate::cadence::types::ProposerSchedule as _;
+    use crate::election::ProposerSchedule as _;
 
     fn validator_data(n: u64) -> Arc<ValidatorData> {
         let valset = (0..n)
@@ -710,7 +719,7 @@ max_txs = 7
         let mut config =
             NodeConfig::single_node(9000, Timestamp::from_millis(0), "/var/mcp/ledger");
         config.validate().unwrap();
-        let largest = crate::component::mempool::largest_tx().length();
+        let largest = mempool::largest_tx().length();
         config.proposal.max_payload_bytes = Some(largest);
         assert!(config.validate().is_err());
         // demo(tx-timeline): the lane header (outer list + 8-byte seal time) counts too

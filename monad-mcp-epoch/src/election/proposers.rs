@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Cadence-facing proposer selection: who may propose at which lane
+//! Proposer selection: who may propose at which lane
 //! for a given slot.
 //!
 //! Every slot runs `K` concurrent proposals, one per *lane*
@@ -91,12 +91,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use monad_mcp_common::{Lane, LaneOccupancy, Lanes, MAX_PROPOSER_SET_SIZE, ProposalScope, Slot};
+
 use super::{
+    super::env::{NodeId, ValidatorData},
     proposer_schedule::{EpochSchedule, ScheduleConfig, ScheduleError},
-    types::{
-        HeaderAuth, Lane, MAX_PROPOSER_SET_SIZE, NodeId, ProposalScope, SignedProposalHeader, Slot,
-        ValidatorData,
-    },
 };
 
 /// Slot-timeline parameters of proposer selection. Protocol-wide constants;
@@ -378,6 +377,10 @@ impl ProposerSet {
         let lanes = (0..self.num_lanes()).map(|j| Lane::new_unchecked(j as u8));
         lanes.zip(self.proposers.iter().copied())
     }
+
+    pub fn occupancy(&self) -> Lanes<bool> {
+        Lanes::new(self.num_lanes(), |lane| self.proposer(lane).is_some())
+    }
 }
 
 /// Who may propose at which lane for a given slot.
@@ -504,9 +507,7 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
         validator_data: Arc<ValidatorData>,
         anchor: EpochAnchor,
     ) -> Result<Self, ScheduleError> {
-        use monad_mcp_common::spec::Stake as _;
-
-        use crate::spec::validator::ValidatorData as _;
+        use monad_mcp_common::spec::{Stake as _, ValidatorData as _};
 
         cfg.validate()?;
         let mut stakes: Vec<(NodeId, u64)> = Vec::with_capacity(validator_data.len());
@@ -664,6 +665,13 @@ fn boundary_tail(leaders: &[NodeId], tail_len: usize) -> Vec<NodeId> {
     leaders[leaders.len().saturating_sub(tail_len)..].to_vec()
 }
 
+impl<A: LeaderSchedule> LaneOccupancy for RotatingProposerSchedule<A> {
+    fn occupied_lanes(&self, slot: Slot) -> Option<Lanes<bool>> {
+        let proposers = self.proposers_at(slot).ok()?;
+        Some(proposers.occupancy())
+    }
+}
+
 impl<A: LeaderSchedule> ProposerSchedule for RotatingProposerSchedule<A> {
     fn num_lanes(&self) -> usize {
         self.cfg.concurrent_proposers
@@ -755,6 +763,13 @@ impl FixedProposerSchedule {
     }
 }
 
+impl LaneOccupancy for FixedProposerSchedule {
+    fn occupied_lanes(&self, slot: Slot) -> Option<Lanes<bool>> {
+        let proposers = self.proposers_at(slot).ok()?;
+        Some(proposers.occupancy())
+    }
+}
+
 impl ProposerSchedule for FixedProposerSchedule {
     fn num_lanes(&self) -> usize {
         self.proposers.len()
@@ -771,27 +786,6 @@ impl ProposerSchedule for FixedProposerSchedule {
                 .collect(),
         })
     }
-}
-
-/// The [`HeaderAuth`] backed by a proposer schedule: a header authenticates
-/// when its signer holds the header's lane at the header's slot.
-///
-/// This is the whole policy for an environment whose proposal signature
-/// names its signer outright. The production data-availability layer owns
-/// two further checks the header carries for it -- the encoding scheme is
-/// the canonical one for the validator set, and the author is *recovered*
-/// from the signature rather than taken at its word -- and then checks
-/// the lane against this very same schedule, so consensus and DA cannot
-/// disagree about who proposes where (see `monad-mcp-da`'s `header_auth`).
-pub fn header_auth<S>(schedule: Arc<S>) -> HeaderAuth
-where
-    S: ProposerSchedule + Send + Sync + 'static,
-{
-    HeaderAuth::new(move |header: &SignedProposalHeader| {
-        use crate::spec::ProposalHeader as _;
-
-        is_proposer(&header.sig.signer, header.scope(), &*schedule)
-    })
 }
 
 /// Whether `node` is the proposer at `scope`. An unavailable schedule has no
@@ -811,7 +805,7 @@ pub fn is_proposer(
 mod tests {
     use monad_mcp_common::spec::KeyPair as _;
 
-    use super::{super::types::Stake, *};
+    use super::{super::super::env::Stake, *};
 
     fn validator_data(stakes: &[(u64, u64)]) -> Arc<ValidatorData> {
         let valset = stakes

@@ -15,7 +15,8 @@
 
 use std::collections::HashSet;
 
-use monad_mcp_cadence::spec::{proposal::ProposalHeader as _, validator::ValidatorData as _};
+use monad_mcp_cadence::spec::proposal::ProposalHeader as _;
+use monad_mcp_common::spec::ValidatorData as _;
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},

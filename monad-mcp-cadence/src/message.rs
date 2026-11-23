@@ -90,10 +90,11 @@ mod rlp_tests {
     use super::{
         super::{
             conductor::{
-                CapAdvance, ConductorMessage, deadline_agreement::DeadlineAgreementMessage,
+                CapAdvance, ConductorMessage, cadence::WindowId,
+                deadline_agreement::DeadlineAgreementMessage,
             },
             test_utils::{assert_roundtrip, dummy_index},
-            types::{Slot, SlotScoped, Timestamp, WindowId},
+            types::{Slot, SlotScoped, Timestamp},
         },
         *,
     };

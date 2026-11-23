@@ -40,6 +40,9 @@ monad-ledger = { path = "./monad-ledger" }
 monad-mcp-cadence = { path = "./monad-mcp-cadence" }
 monad-mcp-common = { path = "./monad-mcp-common" }
 monad-mcp-da = { path = "./monad-mcp-da" }
+monad-mcp-epoch = { path = "./monad-mcp-epoch" }
+monad-mcp-ledger = { path = "./monad-mcp-ledger" }
+monad-mcp-proposing = { path = "./monad-mcp-proposing" }
 monad-merkle = { path = "./monad-merkle" }
 monad-mock-swarm = { path = "./monad-mock-swarm" }
 monad-multi-sig = { path = "./monad-multi-sig" }

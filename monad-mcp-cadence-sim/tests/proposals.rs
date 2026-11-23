@@ -29,18 +29,22 @@ use std::{
 
 use cadence::{
     conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
-    proposers::header_auth,
-    proposing::{PlannerConfig, ProposalPlanner},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext, Entry, SlotFinalization},
-    types::{
-        ProposerConfig, ProposerSchedule, RotatingProposerSchedule, RoundRobinLeaderSchedule,
-        ValidatorData,
-    },
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
-use monad_mcp_cadence_sim::{CadenceSwarm, CadenceSwarmBuilder, MockDa, mock_header, mock_payload};
-use monad_mcp_common::{Lane, Slot, SlotDeadline, Timestamp, TimestampDelta, stub::NodeId};
+use monad_mcp_cadence::stub as cadence;
+use monad_mcp_cadence_sim::{
+    CadenceSwarm, CadenceSwarmBuilder, MockDa, header_auth, mock_header, mock_payload,
+};
+use monad_mcp_common::{
+    Lane, Slot, SlotDeadline, Timestamp, TimestampDelta,
+    spec::ValidatorData as _,
+    stub::{NodeId, ValidatorData},
+};
+use monad_mcp_epoch::stub::election::{
+    ProposerConfig, ProposerSchedule, RotatingProposerSchedule, RoundRobinLeaderSchedule,
+};
+use monad_mcp_proposing::stub::{FixedLeadConfig, FixedLeadPlanner};
 
 const NODES: u64 = 4;
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
@@ -54,7 +58,7 @@ const DELTA: TimestampDelta = TimestampDelta::from_millis(100); // Chorus latenc
 // margin; small enough that the chaining gate is really exercised (see the
 // staggered-rotation test).
 const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
-// below LEAD: the withhold gate is exercised in proposing.rs, not here
+// below LEAD: the withhold gate is exercised in monad-mcp-proposing, not here
 const MIN_LEAD: TimestampDelta = TimestampDelta::from_millis(30);
 
 type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
@@ -107,18 +111,18 @@ fn build_swarm(
         // consensus and the node's DA layer: they cannot disagree about
         // who proposes where.
         let header_auth = Arc::new(header_auth(schedule.clone()));
-        let da = Arc::new(MockDa::new(id, header_auth.clone()));
+        let da = MockDa::new(id, header_auth.clone());
         let context = ChorusContext {
             self_index: val_data.index_of(&id).expect("a validator"),
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
             header_auth,
-            proposers: schedule.clone(),
+            occupancy: schedule.clone(),
         };
-        let planner = ProposalPlanner::new(
+        let planner = FixedLeadPlanner::new(
             id,
             schedule.clone(),
-            PlannerConfig {
+            FixedLeadConfig {
                 lead: LEAD,
                 min_lead: MIN_LEAD,
                 observation_cutoff: proposer_config.observation_cutoff,

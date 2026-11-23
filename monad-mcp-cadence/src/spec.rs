@@ -17,49 +17,6 @@ use monad_mcp_common::spec as common_spec;
 pub use proposal::{MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader};
 pub use vote::SignatureCollection;
 
-pub mod validator {
-    use monad_mcp_common::{ValidatorIndex, ValidatorSet, spec as common_spec};
-
-    // One epoch's validators. Each has a ValidatorIndex, dense from 0 in a
-    // stable order across all nodes, which addresses the validator in
-    // ValidatorSet and ValidatorMap. A NodeId is resolved to its index once,
-    // where a sender is checked against the set.
-    #[expect(clippy::len_without_is_empty)]
-    pub trait ValidatorData {
-        type NodeId: common_spec::NodeId;
-        type PubKey: common_spec::PubKey;
-        type Stake: common_spec::Stake;
-
-        fn len(&self) -> usize;
-
-        // in index order
-        fn indices(&self) -> impl Iterator<Item = ValidatorIndex> {
-            (0..self.len()).map(ValidatorIndex::new_unchecked)
-        }
-
-        // None if the node is not a validator
-        fn index_of(&self, node_id: &Self::NodeId) -> Option<ValidatorIndex>;
-
-        // the caller must guarantee that the index came from this
-        // validator data.
-        fn node_id(&self, index: ValidatorIndex) -> &Self::NodeId;
-
-        // the caller must guarantee that the index came from this
-        // validator data.
-        fn vote_key(&self, index: ValidatorIndex) -> &Self::PubKey;
-
-        // the caller must guarantee that the index came from this
-        // validator data.
-        fn stake(&self, index: ValidatorIndex) -> &Self::Stake;
-
-        // the caller must guarantee that the validators came from this
-        // validator data.
-        fn sum_stake(&self, validators: &ValidatorSet) -> Self::Stake;
-
-        fn total_stake(&self) -> Self::Stake;
-    }
-}
-
 pub mod vote {
     use alloy_rlp::{EMPTY_LIST_CODE, Encodable};
     use bytes::{BufMut, Bytes};
@@ -129,7 +86,7 @@ pub mod vote {
         // The validator context for this signature collection. It may
         // carry implementation-dependent data for optimized
         // performance.
-        type ValidatorData: super::validator::ValidatorData<PubKey = SigColPubKey<Self>>;
+        type ValidatorData: common_spec::ValidatorData<PubKey = SigColPubKey<Self>>;
 
         // The caller must ensure the indices come from the validator
         // data and are distinct, and all signatures are well-formed (see
@@ -160,8 +117,7 @@ pub mod vote {
     pub trait VoteAggregation<'a, Stake>
     where
         Stake: common_spec::Stake,
-        SigColValidatorData<Self::SignatureCollection>:
-            super::validator::ValidatorData<Stake = Stake>,
+        SigColValidatorData<Self::SignatureCollection>: common_spec::ValidatorData<Stake = Stake>,
     {
         type SignatureCollection: SignatureCollection;
 
@@ -276,7 +232,7 @@ where
     PubKey: common_spec::PubKey,
     KeyPair: common_spec::KeyPair<PubKey = PubKey, Signature = Signature>,
     Signature: common_spec::Signature<PubKey = PubKey>,
-    ValidatorData: validator::ValidatorData<NodeId = NodeId, PubKey = PubKey, Stake = Stake>,
+    ValidatorData: common_spec::ValidatorData<NodeId = NodeId, PubKey = PubKey, Stake = Stake>,
     SignatureCollection:
         vote::SignatureCollection<Signature = Signature, ValidatorData = ValidatorData>,
     VoteAggregation: vote::VoteAggregation<'a, Stake, SignatureCollection = SignatureCollection>,

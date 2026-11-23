@@ -29,9 +29,9 @@ use common::{horizon_of, most_tenured, node_config, run_of, schedule_of};
 use monad_mcp_common::{Lane, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     NodeProposerSchedule,
-    cadence::types::{FixedProposerSchedule, ProposerSchedule, ProposerSet, ScheduleError},
     common::NodeId,
     config::NodeConfig,
+    election::{FixedProposerSchedule, ProposerSchedule, ProposerSet, ScheduleError},
 };
 use monad_mcp_rpc::schedule::{
     Latency, Planner, Route, SlotClock, choose_leader, choose_nearest, lead, tenure_horizon,

@@ -20,14 +20,19 @@ use std::{num::NonZeroU64, sync::Arc};
 use cadence::{
     conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
-    types::{
-        CreditLotterySchedule, HeaderAuth, ProposerConfig, RotatingProposerSchedule, ValidatorData,
-    },
+    types::HeaderAuth,
 };
 use helper::expect_finalized_at;
-use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
+use monad_mcp_cadence::stub as cadence;
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
-use monad_mcp_common::{SlotDeadline, TimestampDelta, stub::NodeId};
+use monad_mcp_common::{
+    SlotDeadline, TimestampDelta,
+    spec::ValidatorData as _,
+    stub::{NodeId, ValidatorData},
+};
+use monad_mcp_epoch::stub::election::{
+    CreditLotterySchedule, ProposerConfig, RotatingProposerSchedule,
+};
 
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
 const LAG_THRESHOLD: NonZeroU64 = SLOTS_PER_WINDOW; // one window behind triggers a cap jump
@@ -75,7 +80,7 @@ fn add_node(
         key: Arc::new(node_id.keypair()),
         validator_data: val_data.clone(),
         header_auth: Arc::new(HeaderAuth::new(|_| false)),
-        proposers: proposer_schedule(val_data),
+        occupancy: proposer_schedule(val_data),
     };
     let config = ChorusConfig { delta: DELTA };
 

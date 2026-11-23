@@ -18,31 +18,20 @@ use std::{hash::Hash, sync::Arc};
 use alloy_rlp::{Decodable, Encodable, RlpEncodable};
 use arrayvec::ArrayVec;
 use bytes::Bytes;
-use monad_mcp_common::spec::{KeyPair as _, Stake as _};
+use monad_mcp_common::spec::{KeyPair as _, Stake as _, ValidatorData as _};
 pub(crate) use monad_mcp_common::{
-    Lane, Lanes, MAX_PROPOSER_SET_SIZE, ProposalScope, RepeatUntil, Slot, SlotScoped, Timestamp,
-    TimestampDelta, WindowId,
+    FinalizationPath, Lane, LaneOccupancy, Lanes, ProposalScope, RepeatUntil, Slot, SlotLifecycle,
+    SlotScoped, Timestamp, TimestampDelta,
 };
 pub use monad_mcp_common::{ValidatorIndex, ValidatorMap, ValidatorSet};
 
+pub use super::env::{
+    HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignatureCollection, SignedProposalHeader,
+    VoteAggregation,
+};
 // the environment this module subtree is instantiated.
-pub(crate) use super::env::{KeyPair, NodeId, PubKey, Signature, Stake};
-pub use super::{
-    da::{DaHandle, DataAvailability, NullDa},
-    env::{
-        HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignatureCollection,
-        SignedProposalHeader, ValidatorData, VoteAggregation,
-    },
-    proposer_schedule::ScheduleError,
-    proposers::{
-        CreditLotterySchedule, EpochAnchor, FixedProposerSchedule, ProposerConfig,
-        ProposerSchedule, ProposerSet, RotatingProposerSchedule, RoundRobinLeaderSchedule,
-    },
-};
-use crate::spec::{
-    validator::ValidatorData as _,
-    vote::{SignatureCollection as _, SigningDomain, signing_bytes},
-};
+pub(crate) use super::env::{KeyPair, NodeId, PubKey, Signature, Stake, ValidatorData};
+use crate::spec::vote::{SignatureCollection as _, SigningDomain, signing_bytes};
 
 pub trait IsVote: Clone + Hash + Eq + Encodable {
     type Scope: Clone + Hash + Eq + std::fmt::Debug + Encodable + Decodable;

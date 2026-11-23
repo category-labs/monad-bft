@@ -23,9 +23,9 @@ pub mod store;
 pub mod tx;
 
 pub use block::{
-    BlockMeta, CommittedLane, FinalizationPath, LEDGER_VERSION, LaneMeta, LanePid, NewBlock,
-    NewLane, lane_json,
+    BlockMeta, CommittedLane, LEDGER_VERSION, LaneMeta, LanePid, NewBlock, NewLane, lane_json,
 };
+pub use monad_mcp_common::FinalizationPath;
 pub use store::{
     BLOCKS_DIR, LedgerError, LedgerFollower, LedgerReader, LedgerWriter, META_FILE, META_JSON_FILE,
     PROOF_FILE, Since, Timeline, block_dir_name, lane_file_name, lane_json_file_name,

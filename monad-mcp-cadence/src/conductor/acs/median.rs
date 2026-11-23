@@ -37,7 +37,7 @@ where
     type Context = Arc<ValidatorData>;
 
     fn new(val_data: &Arc<ValidatorData>) -> Self {
-        use crate::spec::validator::ValidatorData as _;
+        use monad_mcp_common::spec::ValidatorData as _;
 
         let num_validators = val_data.len();
         assert!(num_validators > 0);
@@ -89,13 +89,12 @@ where
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
-    use monad_mcp_common::spec::KeyPair as _;
+    use monad_mcp_common::spec::{KeyPair as _, ValidatorData as _};
 
     use super::{
         super::types::{NodeId, Stake, Timestamp},
         *,
     };
-    use crate::spec::validator::ValidatorData as _;
 
     fn context(validators: &[NodeId]) -> Arc<ValidatorData> {
         let valset = validators

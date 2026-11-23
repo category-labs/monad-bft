@@ -20,12 +20,15 @@ use std::{num::NonZeroU64, sync::Arc};
 use cadence::{
     conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     slot::dummy::{DummySlotConsensus, DummySlotConsensusConfig},
-    types::ValidatorData,
 };
 use helper::expect_finalized_at;
-use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
+use monad_mcp_cadence::stub as cadence;
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
-use monad_mcp_common::{SlotDeadline, TimestampDelta, stub::NodeId};
+use monad_mcp_common::{
+    SlotDeadline, TimestampDelta,
+    spec::ValidatorData as _,
+    stub::{NodeId, ValidatorData},
+};
 
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
 const LAG_THRESHOLD: NonZeroU64 = SLOTS_PER_WINDOW; // one window behind triggers a cap jump

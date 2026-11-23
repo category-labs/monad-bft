@@ -565,8 +565,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::ledger::{
-        block::{CommittedLane, FinalizationPath, NewLane},
+    use crate::{
+        FinalizationPath,
+        block::{CommittedLane, NewLane},
         tx::encode_batch,
     };
 

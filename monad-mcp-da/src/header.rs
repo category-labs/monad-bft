@@ -35,11 +35,10 @@ pub fn header_auth<S>(schedule: Arc<S>, validator_data: Arc<ValidatorData>) -> H
 where
     S: ProposerSchedule + Send + Sync + 'static,
 {
-    use monad_mcp_cadence::spec::{
-        ProposalHeader as _, SignedProposalHeader as _, validator::ValidatorData as _,
-    };
+    use monad_mcp_cadence::spec::{ProposalHeader as _, SignedProposalHeader as _};
+    use monad_mcp_common::spec::ValidatorData as _;
 
-    use super::{cadence::proposers::is_proposer, encoding_scheme::is_canonical};
+    use super::{encoding_scheme::is_canonical, epoch::election::is_proposer};
     use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
 
     HeaderAuth::new(move |signed: &SignedProposalHeader| {

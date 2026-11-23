@@ -15,6 +15,7 @@
 
 use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError};
 use bytes::Bytes;
+use monad_mcp_common::FinalizationPath;
 
 use super::{
     json::{Object, array},
@@ -24,42 +25,6 @@ use super::{
 pub const LEDGER_VERSION: u8 = 1;
 
 pub type LanePid = [u8; 32];
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u8)]
-pub enum FinalizationPath {
-    Fast = 0,
-    Fallback = 1,
-}
-
-impl FinalizationPath {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Fast => "fast",
-            Self::Fallback => "fallback",
-        }
-    }
-}
-
-impl Encodable for FinalizationPath {
-    fn encode(&self, out: &mut dyn BufMut) {
-        (*self as u8).encode(out)
-    }
-
-    fn length(&self) -> usize {
-        (*self as u8).length()
-    }
-}
-
-impl Decodable for FinalizationPath {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        match u8::decode(buf)? {
-            v if v == Self::Fast as u8 => Ok(Self::Fast),
-            v if v == Self::Fallback as u8 => Ok(Self::Fallback),
-            _ => Err(RlpError::Custom("unknown finalization path")),
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaneMeta {
@@ -373,7 +338,7 @@ pub(crate) mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::ledger::tx::{decode_batch, encode_batch};
+    use crate::tx::{decode_batch, encode_batch};
 
     pub(crate) fn arb_lane(lane: u32) -> impl Strategy<Value = LaneMeta> {
         (

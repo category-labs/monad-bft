@@ -26,11 +26,11 @@
 //! conflicts are only logged.
 //!
 //! Availability reaches consensus the way the real layer reports it: as
-//! `ChorusDAEvent`s, which the node wiring (see [`crate::node`]) drains
-//! from [`MockDa::drain_available`] and injects into the runtime. A newly
-//! available proposal yields a `HeaderSeen` for its signed header followed
-//! by a `Decoded` for its root — the mock treats availability as whole
-//! rather than per chunk.
+//! `ChorusDAEvent`s, which the node wiring (see [`crate::node`]) takes
+//! from [`MockDa::poll`] and injects into the runtime. A newly available
+//! proposal yields a `HeaderSeen` for its signed header followed by a
+//! `Decoded` for its root — the mock treats availability as whole rather
+//! than per chunk.
 //!
 //! The mock owns the header check the real layer owns: an announcement is
 //! accepted only if the header authenticates to the announced proposal
@@ -38,18 +38,19 @@
 //! two cannot disagree about who proposes where.
 
 use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
 };
 
 use bytes::Bytes;
 use cadence::{
-    da::DataAvailability,
     env::{D33, EncodingScheme, MerkleHash, ProposalSignature},
+    slot::chorus::{ChorusDAEvent, ProposalDAEvent},
     types::{HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader},
 };
 use monad_mcp_cadence::{spec::proposal::ProposalHeader as _, stub as cadence};
-use monad_mcp_common::{Lane, Slot, stub::NodeId};
+use monad_mcp_common::{Lane, Proposal, Slot, stub::NodeId};
+use monad_mcp_epoch::stub::election::{ProposerSchedule, is_proposer};
 
 /// The mock's dissemination unit: the signed header a receiver needs to
 /// treat the proposal at `(header.slot, lane)` as available.
@@ -73,23 +74,21 @@ impl DaAnnouncement {
     }
 }
 
-#[derive(Default)]
-struct MockDaState {
-    /// Locally available (decoded) proposals.
-    available: BTreeMap<(Slot, Lane), SignedProposalHeader>,
-    /// Announcements queued for broadcast by the node wiring.
-    outbox: Vec<DaAnnouncement>,
-    /// Proposals that became available since the last drain, to be reported
-    /// to consensus as DA events.
-    fresh: Vec<DaAnnouncement>,
+pub enum MockDaOutput {
+    // for broadcast to the other nodes
+    Announce(DaAnnouncement),
+    // for the slot consensus of this node
+    Event(Slot, ChorusDAEvent),
 }
 
-/// One node's [`DataAvailability`] instance; see the module docs.
+/// One node's mock DA layer; see the module docs.
 pub struct MockDa {
     me: NodeId,
     /// The authenticator consensus votes with; see the module docs.
     header_auth: Arc<HeaderAuth>,
-    state: Mutex<MockDaState>,
+    /// Locally available (decoded) proposals.
+    available: BTreeMap<(Slot, Lane), SignedProposalHeader>,
+    outputs: VecDeque<MockDaOutput>,
 }
 
 impl MockDa {
@@ -97,7 +96,8 @@ impl MockDa {
         Self {
             me,
             header_auth,
-            state: Mutex::new(MockDaState::default()),
+            available: BTreeMap::new(),
+            outputs: VecDeque::new(),
         }
     }
 
@@ -110,63 +110,12 @@ impl MockDa {
         header.lane() == lane && self.header_auth.authenticate(header)
     }
 
-    /// An announcement arrived over the simulated network: the proposal is
-    /// now available here. First root wins; a conflicting root would be
-    /// equivocation, which the mock only logs.
-    pub fn receive_announcement(&self, announcement: DaAnnouncement) {
-        if !self.authentic(announcement.lane, &announcement.header) {
-            tracing::warn!(
-                slot = ?announcement.slot(),
-                lane = usize::from(announcement.lane),
-                "announcement from a node that does not hold the lane; dropped"
-            );
-            return;
-        }
-        self.record(announcement);
-    }
-
-    fn record(&self, announcement: DaAnnouncement) {
-        let mut state = self.state.lock().expect("mock DA state poisoned");
-        let key = (announcement.slot(), announcement.lane);
-        match state.available.get(&key) {
-            None => {
-                state.available.insert(key, announcement.header.clone());
-                state.fresh.push(announcement);
-            }
-            Some(existing) if existing.header.root != announcement.root() => {
-                tracing::warn!(
-                    slot = ?announcement.slot(),
-                    lane = usize::from(announcement.lane),
-                    "conflicting proposal roots; equivocation is out of scope for the mock"
-                );
-            }
-            Some(_) => {} // duplicate delivery (e.g. loopback), idempotent
-        }
-    }
-
-    /// The announcements queued by [`DataAvailability::submit_proposal`]
-    /// since the last drain, for broadcast by the node wiring.
-    pub fn drain_announcements(&self) -> Vec<DaAnnouncement> {
-        let mut state = self.state.lock().expect("mock DA state poisoned");
-        std::mem::take(&mut state.outbox)
-    }
-
-    /// The proposals that became available since the last drain, for the
-    /// node wiring to report to consensus as DA events.
-    pub fn drain_available(&self) -> Vec<DaAnnouncement> {
-        let mut state = self.state.lock().expect("mock DA state poisoned");
-        std::mem::take(&mut state.fresh)
-    }
-
-    /// The locally available proposal at `(slot, lane)`, if any.
-    pub fn available(&self, slot: Slot, lane: Lane) -> Option<SignedProposalHeader> {
-        let state = self.state.lock().expect("mock DA state poisoned");
-        state.available.get(&(slot, lane)).cloned()
-    }
-}
-
-impl DataAvailability for MockDa {
-    fn submit_proposal(&self, slot: Slot, lane: Lane, payload: Bytes) {
+    pub fn handle_proposal(&mut self, proposal: Proposal<Bytes>) {
+        let Proposal {
+            slot,
+            lane,
+            payload,
+        } = proposal;
         let header = mock_header(self.me, slot, lane, &payload);
         let announcement = DaAnnouncement { lane, header };
 
@@ -179,10 +128,82 @@ impl DataAvailability for MockDa {
             "proposal submitted twice"
         );
 
-        self.record(announcement.clone());
-        let mut state = self.state.lock().expect("mock DA state poisoned");
-        state.outbox.push(announcement);
+        self.outputs
+            .push_back(MockDaOutput::Announce(announcement.clone()));
+        self.record(announcement);
     }
+
+    /// An announcement arrived over the simulated network: the proposal is
+    /// now available here. First root wins; a conflicting root would be
+    /// equivocation, which the mock only logs.
+    pub fn handle_announcement(&mut self, announcement: DaAnnouncement) {
+        if !self.authentic(announcement.lane, &announcement.header) {
+            tracing::warn!(
+                slot = ?announcement.slot(),
+                lane = usize::from(announcement.lane),
+                "announcement from a node that does not hold the lane; dropped"
+            );
+            return;
+        }
+        self.record(announcement);
+    }
+
+    pub fn poll(&mut self) -> Option<MockDaOutput> {
+        self.outputs.pop_front()
+    }
+
+    fn record(&mut self, announcement: DaAnnouncement) {
+        let slot = announcement.slot();
+        let lane = announcement.lane;
+        match self.available.get(&(slot, lane)) {
+            None => {
+                let pid = announcement.pid();
+                let header = announcement.header;
+                self.available.insert((slot, lane), header.clone());
+                // The mock makes a proposal available as a whole: the signed
+                // header and its decoding at once.
+                for event in [
+                    ProposalDAEvent::HeaderSeen(header),
+                    ProposalDAEvent::Decoded(pid),
+                ] {
+                    let event = ChorusDAEvent { j: lane, event };
+                    self.outputs.push_back(MockDaOutput::Event(slot, event));
+                }
+            }
+            Some(existing) if existing.header.root != announcement.root() => {
+                tracing::warn!(
+                    ?slot,
+                    lane = usize::from(lane),
+                    "conflicting proposal roots; equivocation is out of scope for the mock"
+                );
+            }
+            Some(_) => {} // duplicate delivery (e.g. loopback), idempotent
+        }
+    }
+
+    /// The locally available proposal at `(slot, lane)`, if any.
+    pub fn available(&self, slot: Slot, lane: Lane) -> Option<&SignedProposalHeader> {
+        self.available.get(&(slot, lane))
+    }
+}
+
+/// The [`HeaderAuth`] backed by a proposer schedule: a header authenticates
+/// when its signer holds the header's lane at the header's slot.
+///
+/// This is the whole policy for an environment whose proposal signature
+/// names its signer outright. The production data-availability layer owns
+/// two further checks the header carries for it -- the encoding scheme is
+/// the canonical one for the validator set, and the author is *recovered*
+/// from the signature rather than taken at its word -- and then checks
+/// the lane against this very same schedule, so consensus and DA cannot
+/// disagree about who proposes where (see `monad-mcp-da`'s `header_auth`).
+pub fn header_auth<S>(schedule: Arc<S>) -> HeaderAuth
+where
+    S: ProposerSchedule + Send + Sync + 'static,
+{
+    HeaderAuth::new(move |header: &SignedProposalHeader| {
+        is_proposer(&header.sig.signer, header.scope(), &*schedule)
+    })
 }
 
 /// The canonical mock payload of `proposer` for `(slot, lane)`. Tests
@@ -241,7 +262,7 @@ pub fn mock_root(payload: &Bytes) -> MerkleRoot {
 
 #[cfg(test)]
 mod tests {
-    use cadence::{proposers::header_auth, types::FixedProposerSchedule};
+    use monad_mcp_epoch::stub::election::FixedProposerSchedule;
 
     use super::*;
 
@@ -263,41 +284,61 @@ mod tests {
         }
     }
 
+    fn header_seen(output: Option<MockDaOutput>) -> Option<MerkleRoot> {
+        let MockDaOutput::Event(_, event) = output? else {
+            return None;
+        };
+        let ProposalDAEvent::HeaderSeen(header) = event.event else {
+            return None;
+        };
+        Some(header.header.root)
+    }
+
+    fn decoded(output: Option<MockDaOutput>) -> bool {
+        let Some(MockDaOutput::Event(_, event)) = output else {
+            return false;
+        };
+        matches!(event.event, ProposalDAEvent::Decoded(_))
+    }
+
     #[test]
     fn submitted_proposal_is_available_and_announced() {
-        let da = da(NodeId::dummy(1));
-        let payload = mock_payload(NodeId::dummy(1), Slot(3), Lane::new_unchecked(1));
+        let mut da = da(NodeId::dummy(1));
+        let slot = Slot(3);
+        let lane = Lane::new_unchecked(1);
+        let payload = mock_payload(NodeId::dummy(1), slot, lane);
+        let root = mock_root(&payload);
 
-        da.submit_proposal(Slot(3), Lane::new_unchecked(1), payload.clone());
+        da.handle_proposal(Proposal {
+            slot,
+            lane,
+            payload,
+        });
 
-        let header = da
-            .available(Slot(3), Lane::new_unchecked(1))
-            .expect("submission is available");
-        assert_eq!(header.header.root, mock_root(&payload));
-        assert!(da.available(Slot(3), Lane::new_unchecked(0)).is_none());
+        let header = da.available(slot, lane).expect("submission is available");
+        assert_eq!(header.header.root, root);
+        assert!(da.available(slot, Lane::new_unchecked(0)).is_none());
 
         // the submission is both announced and reported to consensus
-        let announcements = da.drain_announcements();
-        assert_eq!(announcements.len(), 1);
-        assert_eq!(announcements[0].root(), header.header.root);
-        assert!(da.drain_announcements().is_empty());
-
-        let fresh = da.drain_available();
-        assert_eq!(fresh.len(), 1);
-        assert_eq!(fresh[0].root(), header.header.root);
-        assert!(da.drain_available().is_empty());
+        let Some(MockDaOutput::Announce(announcement)) = da.poll() else {
+            panic!("an announcement comes first");
+        };
+        assert_eq!(announcement.root(), root);
+        assert_eq!(header_seen(da.poll()), Some(root));
+        assert!(decoded(da.poll()));
+        assert!(da.poll().is_none());
     }
 
     #[test]
     fn received_announcement_becomes_available() {
-        let da = da(NodeId::dummy(0));
+        let mut da = da(NodeId::dummy(0));
         let announcement = announcement(NodeId::dummy(1), 0, Lane::new_unchecked(1));
 
         assert!(da.available(Slot(0), Lane::new_unchecked(1)).is_none());
 
-        da.receive_announcement(announcement.clone());
+        da.handle_announcement(announcement.clone());
         // duplicate delivery (broadcast loopback) is idempotent
-        da.receive_announcement(announcement.clone());
+        da.handle_announcement(announcement.clone());
 
         assert_eq!(
             da.available(Slot(0), Lane::new_unchecked(1))
@@ -307,34 +348,35 @@ mod tests {
             announcement.root()
         );
         // reported once, and nothing to re-announce: only submissions do
-        assert_eq!(da.drain_available().len(), 1);
-        assert!(da.drain_announcements().is_empty());
+        assert_eq!(header_seen(da.poll()), Some(announcement.root()));
+        assert!(decoded(da.poll()));
+        assert!(da.poll().is_none());
     }
 
     #[test]
     fn an_announcement_for_an_index_the_signer_does_not_hold_is_dropped() {
-        let da = da(NodeId::dummy(0));
+        let mut da = da(NodeId::dummy(0));
         // validator 1 holds index 1, not index 0
         let mut forged = announcement(NodeId::dummy(1), 0, Lane::new_unchecked(1));
         forged.lane = Lane::new_unchecked(0);
 
-        da.receive_announcement(forged);
+        da.handle_announcement(forged);
 
         assert!(da.available(Slot(0), Lane::new_unchecked(0)).is_none());
-        assert!(da.drain_available().is_empty());
+        assert!(da.poll().is_none());
     }
 
     #[test]
     fn conflicting_root_does_not_replace_the_first() {
-        let da = da(NodeId::dummy(0));
+        let mut da = da(NodeId::dummy(0));
         let first = announcement(NodeId::dummy(1), 0, Lane::new_unchecked(1));
 
         // same proposer and lane, a different payload behind the root
         let mut second = first.clone();
         second.header.header.root = mock_root(&Bytes::from_static(b"rival"));
 
-        da.receive_announcement(first.clone());
-        da.receive_announcement(second);
+        da.handle_announcement(first.clone());
+        da.handle_announcement(second);
 
         assert_eq!(
             da.available(Slot(0), Lane::new_unchecked(1))

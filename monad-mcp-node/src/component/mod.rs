@@ -16,7 +16,6 @@
 mod cadence;
 mod da;
 mod finalization;
-pub mod mempool;
 mod proposing;
 
 use std::future::pending;
@@ -33,7 +32,6 @@ pub use self::{
     cadence::{Cadence, CadenceInput, CadenceOutput, CadenceWireMsg},
     da::{DA, DAInput},
     finalization::FinalizationInput,
-    mempool::Mempool,
     proposing::{MempoolProposing, Proposing, ProposingInput, ProposingOutput, RandomProposing},
 };
 use crate::clock::Clock;

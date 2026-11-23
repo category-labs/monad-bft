@@ -16,9 +16,13 @@
 mod da;
 mod mvba;
 mod node;
+mod proposing;
 mod swarm;
 
-pub use da::{DaAnnouncement, MockDa, mock_header, mock_payload, mock_root};
+pub use da::{
+    DaAnnouncement, MockDa, MockDaOutput, header_auth, mock_header, mock_payload, mock_root,
+};
 pub use mvba::{Decision, Message, MonadMvba, MvbaSwarm, MvbaSwarmBuilder, at_millis};
 pub use node::{SimMessage, SimNode};
+pub use proposing::MockSource;
 pub use swarm::{CadenceSwarm, CadenceSwarmBuilder, FinalizationLog};

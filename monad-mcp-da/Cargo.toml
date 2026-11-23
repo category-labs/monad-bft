@@ -8,7 +8,7 @@ edition = "2024"
 ignored = ["monad-mcp-da"]
 
 [features]
-enable_stub = ["monad-mcp-cadence/enable_stub"]
+enable_stub = ["monad-mcp-cadence/enable_stub", "monad-mcp-epoch/enable_stub"]
 enable_hollow = ["enable_stub", "monad-mcp-cadence/enable_hollow"]
 
 [dependencies]
@@ -23,6 +23,7 @@ tracing = { workspace = true }
 monad-crypto = { workspace = true }
 monad-mcp-cadence = { workspace = true }
 monad-mcp-common = { workspace = true }
+monad-mcp-epoch = { workspace = true }
 monad-merkle = { workspace = true }
 
 [dev-dependencies]

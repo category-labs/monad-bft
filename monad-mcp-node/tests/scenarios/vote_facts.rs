@@ -23,13 +23,14 @@ use std::{
     time::Duration,
 };
 
-use monad_mcp_cadence::spec::validator::ValidatorData as _;
-use monad_mcp_common::{Lane, Slot, Timestamp, ValidatorIndex};
+use monad_mcp_common::{
+    FinalizationPath, Lane, Slot, Timestamp, ValidatorIndex, spec::ValidatorData as _,
+};
 use monad_mcp_node::{
     Component, Node,
-    cadence::{slot::chorus::FinalizationPath, types::ProposerSchedule as _},
     common::NodeId,
     component::{Proposing, ProposingInput, ProposingOutput},
+    election::ProposerSchedule as _,
 };
 use monad_sim_swarm::Network;
 

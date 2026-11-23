@@ -15,7 +15,7 @@
 
 use std::{cell::OnceCell, collections::BTreeMap, sync::Arc};
 
-use monad_mcp_common::spec::Stake as _;
+use monad_mcp_common::spec::{Stake as _, ValidatorData as _};
 
 use super::{
     super::{
@@ -28,7 +28,6 @@ use super::{
         TimeoutVote,
     },
 };
-use crate::spec::validator::ValidatorData as _;
 
 /// A vote pool whose strong quorum, once formed, is final: no later vote can
 /// change what a supermajority over the scope certified, so the aggregation

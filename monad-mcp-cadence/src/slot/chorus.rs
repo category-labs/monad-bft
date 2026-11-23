@@ -30,7 +30,7 @@ use super::{
         FastCommitVoteMsg, FastPath,
     },
     types::{
-        HeaderAuth, KeyPair, Lane, Lanes, NodeId, ProposalId, ProposerSchedule, ProposerSet,
+        FinalizationPath, HeaderAuth, KeyPair, Lane, LaneOccupancy, Lanes, NodeId, ProposalId,
         RepeatUntil, SignatureCollection, SignedProposalHeader, Slot, SlotScoped, TimestampDelta,
         ValidatorData, ValidatorIndex, ValidatorSet,
     },
@@ -86,13 +86,13 @@ impl SlotScoped for ChorusMessage {
 }
 
 impl ChorusMessage {
-    fn check_lanes(&self, proposers: &ProposerSet) -> bool {
+    fn check_lanes(&self, occupied: &Lanes<bool>) -> bool {
         match self {
-            Self::BatchVote(vote) => vote.check_lanes(proposers),
-            Self::FastCommitVote(vote) => vote.vote.check_lanes(proposers),
-            Self::FastBlock(block) => block.check_lanes(proposers),
-            Self::FallbackVote(vote) => vote.check_lanes(proposers),
-            Self::FastCommitQc(qc) => qc.verdict.check_lanes(proposers),
+            Self::BatchVote(vote) => vote.check_lanes(occupied),
+            Self::FastCommitVote(vote) => vote.vote.check_lanes(occupied),
+            Self::FastBlock(block) => block.check_lanes(occupied),
+            Self::FallbackVote(vote) => vote.check_lanes(occupied),
+            Self::FastCommitQc(qc) => qc.verdict.check_lanes(occupied),
             Self::EnterFallbackCert(_) => true,
             // the MVBA validates its values against its own context
             Self::Fallback(_) => true,
@@ -124,8 +124,8 @@ pub struct ChorusContext {
     pub validator_data: Arc<ValidatorData>,
     pub header_auth: Arc<HeaderAuth>,
     /// Single source of truth for the number of proposals per slot (`K`) and
-    /// for who may propose at which lane.
-    pub proposers: Arc<dyn ProposerSchedule + Send + Sync>,
+    /// for which lanes have a proposer.
+    pub occupancy: Arc<dyn LaneOccupancy + Send + Sync>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -137,12 +137,6 @@ pub enum SlotFinalization {
         qc: FallbackCommitQc<<Metablock as super::fallback::Votable>::Entries>,
         block: Metablock,
     },
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum FinalizationPath {
-    Fast,
-    Fallback,
 }
 
 impl SlotFinalization {
@@ -257,8 +251,8 @@ pub struct Chorus {
     slot: Slot,
     key: Arc<KeyPair>,
     validator_data: Arc<ValidatorData>,
-    // who occupies each lane in this slot
-    proposers: ProposerSet,
+    // which lanes have a proposer in this slot
+    occupied: Lanes<bool>,
 
     fast: FastPath,
     /// memory is unbounded until this validator proposes into it: the MVBA
@@ -296,7 +290,7 @@ impl SlotConsensus for Chorus {
             key,
             validator_data,
             header_auth,
-            proposers,
+            occupancy,
         } = context;
 
         // The schedule validated its configuration and its anchor epoch's
@@ -307,13 +301,13 @@ impl SlotConsensus for Chorus {
         // it does).
         // TODO(dynamic stakes / mid-chain start): construct a decided-dead
         // instance emitting a fault instead of panicking.
-        let proposers = proposers
-            .proposers_at(slot)
+        let occupied = occupancy
+            .occupied_lanes(slot)
             .expect("proposer schedule unavailable for open slot");
 
         // K comes from the schedule, so the fallback path agrees with the
         // fast path on the number of lanes.
-        let num_lanes = proposers.num_lanes();
+        let num_lanes = occupied.size();
 
         let fast = FastPath::new(
             slot,
@@ -338,7 +332,7 @@ impl SlotConsensus for Chorus {
             delta: *delta,
             key: key.clone(),
             validator_data: validator_data.clone(),
-            proposers,
+            occupied,
             fast,
             fallback,
             outputs: Default::default(),
@@ -356,7 +350,7 @@ impl SlotConsensus for Chorus {
         if self.decided {
             return;
         }
-        if self.proposers.proposer(event.j).is_none() {
+        if self.occupied.get(event.j) != Some(&true) {
             tracing::warn!(slot = ?self.slot, lane = ?event.j, "unexpected da event for a vacant lane");
         }
 
@@ -368,7 +362,7 @@ impl SlotConsensus for Chorus {
     }
 
     fn handle_message(&mut self, author: NodeId, message: Self::Message) {
-        use crate::spec::validator::ValidatorData as _;
+        use monad_mcp_common::spec::ValidatorData as _;
 
         debug_assert_eq!(message.slot(), self.slot);
 
@@ -377,7 +371,7 @@ impl SlotConsensus for Chorus {
         let Some(author) = self.validator_data.index_of(&author) else {
             return;
         };
-        if self.decided || !message.check_lanes(&self.proposers) {
+        if self.decided || !message.check_lanes(&self.occupied) {
             return;
         }
 
@@ -755,9 +749,7 @@ mod tests {
     use super::{
         super::{
             super::test_utils::dummy_index,
-            types::{
-                FixedProposerSchedule, HeaderAuth, NodeId, Slot, TimestampDelta, ValidatorData,
-            },
+            types::{HeaderAuth, NodeId, Slot, TimestampDelta, ValidatorData},
         },
         *,
     };
@@ -772,10 +764,7 @@ mod tests {
             key: Arc::new(NodeId::dummy(0).keypair()),
             validator_data: Arc::new(ValidatorData::dummy(4)),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            proposers: Arc::new(FixedProposerSchedule::new(vec![
-                NodeId::dummy(0),
-                NodeId::dummy(1),
-            ])),
+            occupancy: Arc::new(Lanes::new(2, |_| true)),
         };
         let mut chorus = Chorus::new(Slot(1), &config, &context);
 
@@ -802,7 +791,7 @@ mod tests {
             key: Arc::new(NodeId::dummy(0).keypair()),
             validator_data: Arc::new(ValidatorData::dummy(4)),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            proposers: Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)])),
+            occupancy: Arc::new(Lanes::new(1, |_| true)),
         };
         let mut voter = Chorus::new(Slot(1), &config, &context);
         voter.handle_deadline();
@@ -834,7 +823,7 @@ mod tests {
             key: Arc::new(NodeId::dummy(id).keypair()),
             validator_data: Arc::new(ValidatorData::dummy(4)),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            proposers: Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)])),
+            occupancy: Arc::new(Lanes::new(1, |_| true)),
         };
         Chorus::new(Slot(1), &config, &context)
     }
@@ -903,7 +892,7 @@ mod tests {
             key: Arc::new(NodeId::dummy(1).keypair()),
             validator_data: Arc::new(ValidatorData::dummy(4)),
             header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            proposers: Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)])),
+            occupancy: Arc::new(Lanes::new(1, |_| true)),
         };
         let mut chorus = Chorus::new(Slot(1), &config, &context);
 
@@ -968,20 +957,18 @@ mod tests {
     // settles D+delta arms D+2delta, once
     #[test]
     fn a_delayed_transition_arms_the_decision_timer_once() {
-        use super::super::types::ProposerSchedule as _;
-
         let config = ChorusConfig {
             delta: TimestampDelta::from_millis(100),
         };
         let validator_data = Arc::new(ValidatorData::dummy(4));
         let header_auth = Arc::new(HeaderAuth::new(|_| false));
-        let proposers = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)]));
+        let occupied = Lanes::new(1, |_| true);
         let context = ChorusContext {
             self_index: dummy_index(NodeId::dummy(0)),
             key: Arc::new(NodeId::dummy(0).keypair()),
             validator_data: validator_data.clone(),
             header_auth: header_auth.clone(),
-            proposers: proposers.clone(),
+            occupancy: Arc::new(occupied.clone()),
         };
         let mut chorus = Chorus::new(Slot(1), &config, &context);
 
@@ -1001,14 +988,11 @@ mod tests {
 
         // three all-negative votes form a fast block, so the next fire
         // finds the commit vote already cast
-        let proposer_set = proposers
-            .proposers_at(Slot(1))
-            .expect("fixed schedule covers every slot");
         for id in 1..4 {
             let voter = NodeId::dummy(id);
             let mut fast = FastPath::new(
                 Slot(1),
-                proposer_set.num_lanes(),
+                occupied.size(),
                 Arc::new(voter.keypair()),
                 validator_data.clone(),
                 header_auth.clone(),

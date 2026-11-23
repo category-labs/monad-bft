@@ -24,12 +24,13 @@ use monad_mcp_common::Timestamp;
 use crate::{
     RunError,
     cadence::{SlotManager, conductor::CadenceConductor},
-    component::{Cadence, Component, DA, Mempool, MempoolProposing, Proposing, RandomProposing},
+    component::{Cadence, Component, DA, MempoolProposing, Proposing, RandomProposing},
     config::{NodeConfig, SourceKind},
     da::DARuntime,
     epoch::{EpochHandle, Epochs},
     finalization::{FinalizationCollector, FinalizedSlot},
     network::{Network, NodeAppMessage, Wire, WireInbound, WireOutbound},
+    proposing::Mempool,
     router::{Effect, NodeRouter, Routed, Router, Sink},
 };
 
@@ -84,7 +85,7 @@ impl<W> Node<NodeRouter, W> {
                 Box::new(proposing)
             }
             SourceKind::Mempool => {
-                let mempool = Mempool::new(config.mempool);
+                let mempool = Mempool::new(config.mempool.into());
                 let proposing = MempoolProposing::new(&epoch_handle, &config.proposal, mempool);
                 Box::new(proposing)
             }

@@ -13,11 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use validator::{NodeId, Stake};
+pub use validator::{NodeId, Stake, ValidatorData};
 pub use vote::{KeyPair, PubKey, Signature};
 
 pub mod validator {
     use std::{iter::Sum, ops::Add};
+
+    use crate::{ValidatorIndex, ValidatorSet};
 
     // A simple, pure identifier to a node. The NodeId type
     // is not involved in any sort of crypto operation *in this module*.
@@ -41,6 +43,45 @@ pub mod validator {
         // the raw integer stake amount, as consumed by stake-weighted
         // proposer scheduling
         fn amount(&self) -> u64;
+    }
+
+    // One epoch's validators. Each has a ValidatorIndex, dense from 0 in a
+    // stable order across all nodes, which addresses the validator in
+    // ValidatorSet and ValidatorMap. A NodeId is resolved to its index once,
+    // where a sender is checked against the set.
+    #[expect(clippy::len_without_is_empty)]
+    pub trait ValidatorData {
+        type NodeId: NodeId;
+        type PubKey: super::vote::PubKey;
+        type Stake: Stake;
+
+        fn len(&self) -> usize;
+
+        // in index order
+        fn indices(&self) -> impl Iterator<Item = ValidatorIndex> {
+            (0..self.len()).map(ValidatorIndex::new_unchecked)
+        }
+
+        // None if the node is not a validator
+        fn index_of(&self, node_id: &Self::NodeId) -> Option<ValidatorIndex>;
+
+        // the caller must guarantee that the index came from this
+        // validator data.
+        fn node_id(&self, index: ValidatorIndex) -> &Self::NodeId;
+
+        // the caller must guarantee that the index came from this
+        // validator data.
+        fn vote_key(&self, index: ValidatorIndex) -> &Self::PubKey;
+
+        // the caller must guarantee that the index came from this
+        // validator data.
+        fn stake(&self, index: ValidatorIndex) -> &Self::Stake;
+
+        // the caller must guarantee that the validators came from this
+        // validator data.
+        fn sum_stake(&self, validators: &ValidatorSet) -> Self::Stake;
+
+        fn total_stake(&self) -> Self::Stake;
     }
 }
 

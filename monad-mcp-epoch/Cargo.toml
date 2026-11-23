@@ -1,0 +1,15 @@
+[package]
+name = "monad-mcp-epoch"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# exposes the stub instantiation (crate::stub).
+enable_stub = []
+
+[dependencies]
+monad-mcp-common = { workspace = true }
+
+[lints.clippy]
+# outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
+iter_over_hash_type = "deny"

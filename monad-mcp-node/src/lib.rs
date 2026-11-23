@@ -33,6 +33,8 @@ use std::error::Error;
 pub use monad_mcp_cadence::stub as cadence;
 pub use monad_mcp_common::stub as common;
 pub use monad_mcp_da::stub as da;
+pub use monad_mcp_epoch::stub::election;
+pub use monad_mcp_proposing::stub as proposing;
 use tokio::task::JoinSet;
 use tracing::Instrument as _;
 

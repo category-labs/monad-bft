@@ -211,7 +211,7 @@ mod tests {
     // the largest tx the node accepts fits one datagram from the rpc
     #[test]
     fn the_largest_tx_fits_the_mtu() {
-        let tx = crate::component::mempool::largest_tx();
+        let tx = crate::proposing::source::mempool::largest_tx();
         let message = WireAppMessage::Tx(tx.to_rlp());
         let frame = encode_frame(NodeId::dummy(u64::MAX), &message);
         assert!(frame.len() <= MAX_FRAME_LEN);
@@ -219,7 +219,7 @@ mod tests {
         let WireAppMessage::Tx(bytes) = decoded else {
             panic!("a tx message");
         };
-        assert_eq!(monad_mcp_cadence::ledger::Tx::decode_exact(&bytes), Ok(tx));
+        assert_eq!(monad_mcp_ledger::Tx::decode_exact(&bytes), Ok(tx));
     }
 
     // the rpc signs frames with its colocated validator's id: only the sender id

@@ -20,20 +20,22 @@ use std::{
 };
 
 use cadence::{
-    CadenceOutput, CadenceRuntime, CadenceWireMsg, Conductor, Runtime, SlotConsensus,
-    SlotLifecycle, SlotManager,
-    proposing::ProposalPlanner,
-    slot::chorus::{ChorusDAEvent, ProposalDAEvent},
-    types::ValidatorData,
+    CadenceOutput, CadenceRuntime, CadenceWireMsg, Conductor, Runtime, SlotConsensus, SlotManager,
+    slot::chorus::ChorusDAEvent,
 };
 use monad_mcp_cadence::stub as cadence;
-use monad_mcp_common::{Slot, Timestamp, stub::NodeId};
+use monad_mcp_common::{
+    Slot, Timestamp,
+    stub::{NodeId, ValidatorData},
+};
+use monad_mcp_proposing::stub::{FixedLeadPlanner, ProposingRuntime};
 use monad_sim::{RunOutcome, StepLabel};
 use monad_sim_swarm::{Network, Swarm};
 
 use crate::{
-    da::{DaAnnouncement, MockDa},
+    da::MockDa,
     node::{ProposerHarness, SimMessage, SimNode, time_of, to_timestamp},
+    proposing::MockSource,
 };
 
 type CadenceNode<S, C> = SimNode<CadenceRuntime<S, C>>;
@@ -118,8 +120,8 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
 
     /// Like [`Self::add_node`], for a node that also runs the proposal
     /// machinery: `planner` decides when to seal, `da` is the node's mock DA
-    /// layer (the same instance the node reports availability from, so
-    /// consensus sees what the planner submits and the network delivers).
+    /// layer (the node reports availability from it, so consensus sees what
+    /// the planner submits and the network delivers).
     /// `observer` receives each finalization alongside the built-in wiring —
     /// tests use it to record finalization data.
     // one parameter per wired component; a config struct would just move
@@ -131,8 +133,8 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         conductor: C,
         slot_config: S::Config,
         slot_context: S::Context,
-        planner: ProposalPlanner,
-        da: Arc<MockDa>,
+        planner: FixedLeadPlanner,
+        da: MockDa,
         mut observer: impl FnMut(Timestamp, Slot, &S::FinalizationData) + Send + 'static,
     ) where
         S: SlotConsensus<LocalIn = ChorusDAEvent> + 'static,
@@ -141,15 +143,14 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         CadenceRuntime<S, C>: Send,
         CadenceWireMsg<S, C>: Send,
     {
-        let planner = Arc::new(Mutex::new(planner));
-        let facts = planner.clone();
+        let proposing = ProposingRuntime::new(planner, MockSource::new(id));
 
         let slot_manager = SlotManager::new(slot_config, slot_context);
         let runtime = CadenceRuntime::new(slot_manager, conductor, self.validators());
 
         let mut record = self.track_logs.then(|| self.log.allocate(id));
         let on_output = move |now: Timestamp, output: CadenceOutput<S>| match output {
-            CadenceOutput::Lifecycle(event) => tell_planner(&facts, now, event),
+            CadenceOutput::Lifecycle(_) => {}
             CadenceOutput::Local(..) | CadenceOutput::CommitOptimistic(_) => {}
             CadenceOutput::Finalized(slot, data) => {
                 if let Some(record) = &mut record {
@@ -159,33 +160,14 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
             }
         };
 
-        // The mock layer makes a proposal available as a whole, so one
-        // announcement reports both the signed header and its decoding.
-        let da_events = Box::new(|announcement: &DaAnnouncement| {
-            let DaAnnouncement { lane, header } = announcement;
-            let slot = announcement.slot();
-            vec![
-                (
-                    slot,
-                    ChorusDAEvent {
-                        j: *lane,
-                        event: ProposalDAEvent::HeaderSeen(header.clone()),
-                    },
-                ),
-                (
-                    slot,
-                    ChorusDAEvent {
-                        j: *lane,
-                        event: ProposalDAEvent::Decoded(announcement.pid()),
-                    },
-                ),
-            ]
-        });
-
         let harness = ProposerHarness {
-            planner,
+            proposing,
             da,
-            da_events,
+            lifecycle: |output| match output {
+                CadenceOutput::Lifecycle(event) => Some(*event),
+                _ => None,
+            },
+            da_input: |slot, event| (slot, event),
             seal_alarm: None,
         };
         let node = SimNode::with_proposer(id, runtime, on_output, harness);
@@ -209,17 +191,6 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
             swarm: build_sim_swarm(self.seed, self.network, self.nodes),
             log: self.log,
         }
-    }
-}
-
-// Forwards the slot lifecycle the proposal planner consumes; the owning
-// SimNode polls the planner's seals and arms its alarm (see node.rs).
-fn tell_planner(planner: &Mutex<ProposalPlanner>, now: Timestamp, event: SlotLifecycle) {
-    let mut planner = planner.lock().expect("planner poisoned");
-    match event {
-        SlotLifecycle::Opened { slot, deadline } => planner.handle_slot_open(now, slot, deadline),
-        SlotLifecycle::CapAdvance { cap } => planner.handle_cap_advance(now, cap),
-        SlotLifecycle::Completed { .. } => {}
     }
 }
 

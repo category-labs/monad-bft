@@ -22,16 +22,12 @@ use std::{
     thread,
 };
 
-use monad_mcp_cadence::ledger::{
-    CommittedLane, FinalizationPath as LedgerPath, LanePid, LedgerError, LedgerWriter, NewBlock,
-    NewLane,
+use monad_mcp_ledger::{
+    CommittedLane, FinalizationPath, LanePid, LedgerError, LedgerWriter, NewBlock, NewLane,
 };
 
 use crate::{
-    cadence::{
-        slot::chorus::FinalizationPath,
-        types::{ProposerSchedule, ProposerSet},
-    },
+    election::{ProposerSchedule, ProposerSet},
     finalization::FinalizedSlot,
     logging,
 };
@@ -56,10 +52,7 @@ pub fn new_block(finalized: &FinalizedSlot, proposers: Option<&ProposerSet>) -> 
         slot: finalized.slot.0,
         deadline_ns: finalized.deadline.map(|deadline| deadline.as_nanos()),
         finalized_at_ns: finalized.at.as_nanos(),
-        path: match finalized.finalization.path() {
-            FinalizationPath::Fast => LedgerPath::Fast,
-            FinalizationPath::Fallback => LedgerPath::Fallback,
-        },
+        path: finalized.finalization.path(),
         // demo(tx-timeline)
         fast_block_at_ns: fast_block_at_ns(finalized.finalization.path(), finalized.fast_block_at),
         // demo(tx-timeline)
@@ -222,7 +215,7 @@ impl Recorder {
 mod tests {
     use std::{sync::Mutex, time::Duration};
 
-    use monad_mcp_cadence::ledger::LedgerReader;
+    use monad_mcp_ledger::LedgerReader;
 
     use super::*;
 
@@ -231,7 +224,7 @@ mod tests {
             slot,
             deadline_ns: None,
             finalized_at_ns: 0,
-            path: LedgerPath::Fast,
+            path: FinalizationPath::Fast,
             fast_block_at_ns: None,     // demo(tx-timeline)
             lane_decoded_at_ns: vec![], // demo(tx-timeline)
             lanes: vec![NewLane {

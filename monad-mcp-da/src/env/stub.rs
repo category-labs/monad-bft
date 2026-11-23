@@ -17,6 +17,7 @@ use bytes::BufMut;
 use monad_crypto::hasher::HasherType;
 pub(crate) use monad_mcp_cadence::stub as cadence;
 pub(crate) use monad_mcp_common::stub as common;
+pub(crate) use monad_mcp_epoch::stub as epoch;
 
 use self::cadence::env::{
     EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature, SignedProposalHeader,

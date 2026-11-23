@@ -19,7 +19,7 @@ use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
 use arrayvec::ArrayVec;
-use monad_mcp_common::spec::Stake as _;
+use monad_mcp_common::spec::{Stake as _, ValidatorData as _};
 
 use super::{
     availability::ProposalAvailability,
@@ -27,13 +27,12 @@ use super::{
     fallback::Metablock,
     types::{
         EquivCert, Gate, HeaderAuth, IsVote, KeyPair, Lane, Lanes, ProposalId, ProposalScope,
-        ProposerSet, Signature, SignedProposalHeader, Slot, StrongQc, ValidatorData,
-        ValidatorIndex, ValidatorSet, VoteMsg, VotePool, WeakQc,
+        Signature, SignedProposalHeader, Slot, StrongQc, ValidatorData, ValidatorIndex,
+        ValidatorSet, VoteMsg, VotePool, WeakQc,
     },
 };
 use crate::spec::{
     proposal::{HeaderAuth as _, ProposalHeader as _},
-    validator::ValidatorData as _,
     vote::{SignatureCollection as _, SigningDomain, assert_signing_prefix},
 };
 
@@ -625,13 +624,13 @@ impl Gate<Entry> for HeaderSeen<'_> {
 pub type FastQc = StrongQc<Entry>;
 
 // one entry per lane, and a positive entry only on a lane with a proposer
-fn check_entry_lanes(entries: Lanes<&Entry>, proposers: &ProposerSet) -> bool {
-    if entries.size() != proposers.num_lanes() {
+fn check_entry_lanes(entries: Lanes<&Entry>, occupied: &Lanes<bool>) -> bool {
+    if entries.size() != occupied.size() {
         return false;
     }
     let mut entries = entries.into_indexed_iter();
     entries.all(|(j, entry)| match entry {
-        Entry::Positive(_) => proposers.proposer(j).is_some(),
+        Entry::Positive(_) => occupied[j],
         Entry::Negative => true,
     })
 }
@@ -649,9 +648,9 @@ impl BatchVoteMsg {
         self.slot
     }
 
-    pub(crate) fn check_lanes(&self, proposers: &ProposerSet) -> bool {
+    pub(crate) fn check_lanes(&self, occupied: &Lanes<bool>) -> bool {
         let entries = self.votes.as_ref().map(|signed| &signed.entry);
-        check_entry_lanes(entries, proposers)
+        check_entry_lanes(entries, occupied)
     }
 
     /// The voter's entry for each lane. Read off the message as sent, its
@@ -698,8 +697,8 @@ pub struct FastCommitVote {
 }
 
 impl FastCommitVote {
-    pub(crate) fn check_lanes(&self, proposers: &ProposerSet) -> bool {
-        check_entry_lanes(self.entries.as_ref(), proposers)
+    pub(crate) fn check_lanes(&self, occupied: &Lanes<bool>) -> bool {
+        check_entry_lanes(self.entries.as_ref(), occupied)
     }
 }
 
@@ -724,9 +723,9 @@ impl FastBlock {
         self.0[Lane::new_unchecked(0)].scope.slot
     }
 
-    pub(crate) fn check_lanes(&self, proposers: &ProposerSet) -> bool {
+    pub(crate) fn check_lanes(&self, occupied: &Lanes<bool>) -> bool {
         let entries = self.0.as_ref().map(|qc| &qc.verdict);
-        check_entry_lanes(entries, proposers)
+        check_entry_lanes(entries, occupied)
     }
 
     // every qc names the block's slot and its own lane
@@ -1058,9 +1057,9 @@ impl FallbackVoteMsg {
         self.enter_fallback_vote.scope
     }
 
-    pub(crate) fn check_lanes(&self, proposers: &ProposerSet) -> bool {
+    pub(crate) fn check_lanes(&self, occupied: &Lanes<bool>) -> bool {
         let entries = self.evidences.as_ref().map(|evidence| evidence.entry());
-        check_entry_lanes(entries, proposers)
+        check_entry_lanes(entries, occupied)
     }
 
     fn is_consistent(&self) -> bool {
@@ -1235,14 +1234,13 @@ impl Decodable for FastCommitVote {
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_common::MAX_PROPOSER_SET_SIZE;
+
     use super::{
         super::{
-            super::{proposers, test_utils::dummy_index},
+            super::test_utils::dummy_index,
             chorus::ProposalDAEvent,
-            types::{
-                FixedProposerSchedule, MAX_PROPOSER_SET_SIZE, NodeId, ProposerSchedule as _,
-                ValidatorData,
-            },
+            types::{NodeId, ValidatorData},
         },
         *,
     };
@@ -1281,23 +1279,24 @@ mod tests {
 
     // the local node is validator 1 among 4, one lane per proposer
     fn fast_path_of(proposers: Vec<NodeId>) -> FastPath {
-        // consensus and header authentication read the one schedule, so
-        // they cannot disagree
-        let schedule = Arc::new(FixedProposerSchedule::new(proposers));
+        let num_lanes = proposers.len();
+        // a header authenticates when its signer is the proposer of its lane
+        let header_auth = HeaderAuth::new(move |header: &SignedProposalHeader| {
+            let lane = usize::from(header.lane());
+            proposers.get(lane) == Some(&header.sig.signer)
+        });
         FastPath::new(
             SLOT,
-            schedule.num_lanes(),
+            num_lanes,
             Arc::new(NodeId::dummy(1).keypair()),
             Arc::new(ValidatorData::dummy(4)),
-            Arc::new(proposers::header_auth(schedule)),
+            Arc::new(header_auth),
         )
     }
 
     // validator 0 proposes at the only lane
-    fn proposer_set() -> ProposerSet {
-        FixedProposerSchedule::new(vec![NodeId::dummy(0)])
-            .proposers_at(SLOT)
-            .expect("fixed schedule is always available")
+    fn occupied() -> Lanes<bool> {
+        Lanes::new(1, |_| true)
     }
 
     // the pins among the drained commands, for proposal 0
@@ -1347,8 +1346,8 @@ mod tests {
             fast_qc(ProposalScope::new(SLOT, j), 1)
         }));
 
-        assert!(fast_block(1).check_lanes(&proposer_set()));
-        assert!(!padded.check_lanes(&proposer_set()));
+        assert!(fast_block(1).check_lanes(&occupied()));
+        assert!(!padded.check_lanes(&occupied()));
     }
 
     #[test]
@@ -1376,8 +1375,8 @@ mod tests {
         let exact = fast_commit_qc(Lanes::new(1, |_| Entry::Negative));
         let padded = fast_commit_qc(Lanes::new(2, |_| Entry::Negative));
 
-        assert!(exact.verdict.check_lanes(&proposer_set()));
-        assert!(!padded.verdict.check_lanes(&proposer_set()));
+        assert!(exact.verdict.check_lanes(&occupied()));
+        assert!(!padded.verdict.check_lanes(&occupied()));
     }
 
     #[test]

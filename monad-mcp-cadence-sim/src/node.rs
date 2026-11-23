@@ -13,20 +13,26 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use cadence::{
-    Inbound, Outbound, Recipients, Runtime,
-    proposing::ProposalPlanner,
-    types::{ValidatorData, ValidatorIndex},
+    Inbound, Outbound, Recipients, Runtime, slot::chorus::ChorusDAEvent, types::ValidatorIndex,
 };
 // choose stub cadence for implementation
-use monad_mcp_cadence::{spec::validator::ValidatorData as _, stub as cadence};
-use monad_mcp_common::{Timestamp, stub::NodeId};
+use monad_mcp_cadence::stub as cadence;
+use monad_mcp_common::{
+    Slot, SlotLifecycle, Timestamp,
+    spec::ValidatorData as _,
+    stub::{NodeId, ValidatorData},
+};
+use monad_mcp_proposing::stub::ProposingInput;
 use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, SimClient};
 
-use crate::da::{DaAnnouncement, MockDa, mock_payload};
+use crate::{
+    da::{DaAnnouncement, MockDa, MockDaOutput},
+    proposing::MockProposing,
+};
 
 // The wire format of the simulated network: consensus messages plus the
 // mock DA layer's dissemination, sharing one transport (and latency model).
@@ -54,20 +60,18 @@ pub(crate) fn to_timestamp(time: Time) -> Timestamp {
 // wiring, which knows the concrete runtime (see swarm.rs and mvba.rs).
 pub(crate) type OutputFn<R> = dyn FnMut(Timestamp, <R as Runtime>::LocalOut) + Send;
 
-// How an available proposal is reported to the slot consensus: the local
-// inputs, in order, that make it votable. Supplied by the wiring, which
-// knows the concrete consensus (see swarm.rs).
-pub(crate) type DaEventsFn<E> = dyn Fn(&DaAnnouncement) -> Vec<E> + Send;
-
-// The node-level proposal machinery: the planner decides when to seal, the
-// mock DA layer stores and announces the sealed proposals and reports what
-// became available. The planner is shared with the output handler of the
-// node, which feeds it the slot lifecycle (see swarm.rs).
-pub(crate) struct ProposerHarness<E> {
-    pub(crate) planner: Arc<Mutex<ProposalPlanner>>,
-    pub(crate) da: Arc<MockDa>,
-    pub(crate) da_events: Box<DaEventsFn<E>>,
-    /// The one live seal alarm, at the planner's last polled `next_due`.
+// The node-level proposal machinery: the proposing runtime decides when to
+// seal and what, the mock DA layer stores and announces the sealed proposals
+// and reports what became available. The two functions come from the wiring,
+// which knows the concrete runtime (see swarm.rs).
+pub(crate) struct ProposerHarness<R: Runtime> {
+    pub(crate) proposing: MockProposing,
+    pub(crate) da: MockDa,
+    // the slot lifecycle event in a local output of the runtime, if it is one
+    pub(crate) lifecycle: fn(&R::LocalOut) -> Option<SlotLifecycle>,
+    // a DA event as a local input of the runtime
+    pub(crate) da_input: fn(Slot, ChorusDAEvent) -> R::LocalIn,
+    /// The one live seal alarm, at the proposing runtime's last `next_due`.
     pub(crate) seal_alarm: Option<(Time, CancelToken)>,
 }
 
@@ -79,7 +83,7 @@ pub struct SimNode<R: Runtime> {
     // None until the swarm builder sets it
     validators: Option<Arc<ValidatorData>>,
     on_output: Box<OutputFn<R>>,
-    proposer: Option<ProposerHarness<R::LocalIn>>,
+    proposer: Option<ProposerHarness<R>>,
     /// The one live timer step, at the runtime's last polled `next_due`.
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
@@ -112,7 +116,7 @@ where
         id: NodeId,
         runtime: R,
         on_output: impl FnMut(Timestamp, R::LocalOut) + Send + 'static,
-        harness: ProposerHarness<R::LocalIn>,
+        harness: ProposerHarness<R>,
     ) -> Self {
         Self {
             proposer: Some(harness),
@@ -160,15 +164,16 @@ where
             while let Some(event) = self.runtime.poll_msg() {
                 self.interpret(event, ctx);
             }
-            // local outputs may feed facts to the planner (through the
-            // output handler); seal what is due and re-arm its alarm.
+            // local outputs may feed the slot lifecycle to the proposing
+            // runtime; seal what is due and re-arm its alarm.
             while let Some(output) = self.runtime.poll_output() {
+                self.tell_proposing(&output, now);
                 (self.on_output)(now, output);
             }
-            self.drain_planner(ctx);
+            self.drain_proposing(ctx);
             // a sealed proposal is available to its own proposer at once;
             // reporting it can produce further runtime events.
-            if !self.report_availability(ctx) {
+            if !self.drain_da(ctx) {
                 break;
             }
         }
@@ -197,20 +202,32 @@ where
         }
     }
 
-    // Report the proposals that became available locally to the slot
-    // consensus, the way the real DA layer does. Returns whether anything
-    // was reported.
-    fn report_availability(&mut self, ctx: &mut Ctx) -> bool {
-        let inputs: Vec<_> = match &self.proposer {
-            None => return false,
-            Some(harness) => harness
-                .da
-                .drain_available()
-                .iter()
-                .flat_map(|announcement| (harness.da_events)(announcement))
-                .collect(),
+    // Broadcast the announcements of the mock DA layer, and report the
+    // proposals that became available locally to the slot consensus, the way
+    // the real DA layer does. Returns whether anything was reported.
+    fn drain_da(&mut self, ctx: &mut Ctx) -> bool {
+        let Some(harness) = &mut self.proposer else {
+            return false;
         };
+        let net = self.net.expect("node not wired");
 
+        let mut inputs = Vec::new();
+        while let Some(output) = harness.da.poll() {
+            match output {
+                MockDaOutput::Announce(announcement) => {
+                    let message = SimMessage::Da(announcement);
+                    ctx.schedule(
+                        net,
+                        ctx.now(),
+                        StepLabel::source("da-broadcast"),
+                        move |net, ctx| net.broadcast(ctx, message),
+                    );
+                }
+                MockDaOutput::Event(slot, event) => {
+                    inputs.push((harness.da_input)(slot, event));
+                }
+            }
+        }
         if inputs.is_empty() {
             return false;
         }
@@ -222,32 +239,26 @@ where
         true
     }
 
-    fn drain_planner(&mut self, ctx: &mut Ctx) {
-        use cadence::da::DataAvailability as _;
+    fn tell_proposing(&mut self, output: &R::LocalOut, now: Timestamp) {
+        let Some(harness) = &mut self.proposer else {
+            return;
+        };
+        let Some(event) = (harness.lifecycle)(output) else {
+            return;
+        };
+        let input = ProposingInput::Lifecycle(event);
+        harness.proposing.handle_input(input, now);
+    }
 
-        let Some(harness) = &self.proposer else {
+    fn drain_proposing(&mut self, ctx: &mut Ctx) {
+        let Some(harness) = &mut self.proposer else {
             return;
         };
         let now = to_timestamp(ctx.now());
 
-        loop {
-            let sealed = harness.planner.lock().expect("planner poisoned").poll(now);
-            let Some((slot, lane)) = sealed else {
-                break;
-            };
-            harness
-                .da
-                .submit_proposal(slot, lane, mock_payload(self.id, slot, lane));
-            let net = self.net.expect("node not wired");
-            for announcement in harness.da.drain_announcements() {
-                let message = SimMessage::Da(announcement);
-                ctx.schedule(
-                    net,
-                    ctx.now(),
-                    StepLabel::source("da-broadcast"),
-                    move |net, ctx| net.broadcast(ctx, message),
-                );
-            }
+        harness.proposing.handle_due(now);
+        while let Some(proposal) = harness.proposing.poll() {
+            harness.da.handle_proposal(proposal);
         }
         self.arm_seal_alarm(ctx);
     }
@@ -259,7 +270,7 @@ where
         let Some(harness) = &mut self.proposer else {
             return;
         };
-        let due = harness.planner.lock().expect("planner poisoned").next_due();
+        let due = harness.proposing.next_due();
         let at = due.map(|due| time_of(due).max(ctx.now()));
         if harness.seal_alarm.as_ref().map(|(at, _)| *at) == at {
             return;
@@ -336,8 +347,8 @@ where
                 // vote negative on the affected proposals). The mock layer
                 // checks the announced lane against the proposer schedule;
                 // see the module docs of crate::da.
-                if let Some(harness) = &self.proposer {
-                    harness.da.receive_announcement(announcement);
+                if let Some(harness) = &mut self.proposer {
+                    harness.da.handle_announcement(announcement);
                 }
                 self.process(ctx);
             }

@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use monad_mcp_cadence::spec::validator::ValidatorData as _;
+use monad_mcp_common::spec::ValidatorData as _;
 
 #[cfg(feature = "enable_hollow")]
 use super::super::encoding_scheme::Hollow;

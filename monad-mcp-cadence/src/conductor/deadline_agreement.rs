@@ -16,9 +16,9 @@
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use super::{
-    ConductorConfig, ConductorError,
     acs::{Acs, AcsOutput},
-    types::{Slot, Timestamp, ValidatorIndex, WindowId},
+    cadence::{ConductorConfig, ConductorError, WindowId},
+    types::{Slot, Timestamp, ValidatorIndex},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]

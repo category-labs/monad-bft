@@ -15,16 +15,17 @@
 
 use std::sync::Arc;
 
-use monad_mcp_common::{Slot, SlotDeadline, Timestamp};
+use monad_mcp_common::{Slot, SlotDeadline, Timestamp, stub::ValidatorData};
 
 use super::Component;
-use crate::cadence::{
-    CadenceOutput as LocalOut, CadenceRuntime, Inbound, Outbound, Runtime as _, SlotLifecycle,
-    SlotManager,
-    conductor::{CadenceConductor, acs::nop::NopAcs},
+use crate::{
+    cadence::{
+        CadenceOutput as LocalOut, CadenceRuntime, Inbound, Outbound, Runtime as _, SlotLifecycle,
+        SlotManager,
+        conductor::{CadenceConductor, acs::nop::NopAcs},
+        slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, ChorusLocalOut, SlotFinalization},
+    },
     proposing::VoteReceived,
-    slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, ChorusLocalOut, SlotFinalization},
-    types::ValidatorData,
 };
 
 pub type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;

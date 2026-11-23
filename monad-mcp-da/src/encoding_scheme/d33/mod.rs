@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::Bytes;
-use monad_mcp_cadence::spec::validator::ValidatorData as _;
+use monad_mcp_common::spec::ValidatorData as _;
 use rand_chacha::ChaCha20Rng;
 
 use super::{

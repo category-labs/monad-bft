@@ -23,10 +23,12 @@ use std::{
 };
 
 use monad_mcp_cadence::spec::ProposalHeader as _;
-use monad_mcp_common::{Lane, Lanes, Slot, Timestamp, TimestampDelta, WirePriority};
+use monad_mcp_common::{
+    FinalizationPath, Lane, Lanes, Slot, Timestamp, TimestampDelta, WirePriority,
+};
 use monad_mcp_node::{
     Component, Epochs, Node, NodeOutput, Router,
-    cadence::{slot::chorus::FinalizationPath, types::ProposalId},
+    cadence::types::ProposalId,
     common::NodeId,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,

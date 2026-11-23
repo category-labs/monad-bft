@@ -21,10 +21,10 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use alloy_rlp::Encodable as _;
 use bytes::Bytes;
-use monad_mcp_cadence::ledger::{BatchBuilder, Hash, MAX_TX_PAYLOAD, Tx, TxError};
-use monad_mcp_common::{Lane, Slot};
+use monad_mcp_common::{Lane, Lanes, ProposalScope, Slot, SlotLifecycle, Timestamp};
+use monad_mcp_ledger::{BatchBuilder, Hash, MAX_TX_PAYLOAD, Tx, TxError};
 
-use crate::config::MempoolConfig;
+use super::{super::env::common::NodeId, ProposalSource};
 
 // the tx with the longest encoding the node accepts
 pub fn largest_tx() -> Tx {
@@ -36,6 +36,15 @@ pub fn largest_tx() -> Tx {
         rpc_received_at_ns: u64::MAX,     // demo(tx-timeline)
         mempool_admitted_at_ns: u64::MAX, // demo(tx-timeline)
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MempoolConfig {
+    pub max_txs: usize,
+    // total rlp bytes of the queued txs
+    pub max_bytes: usize,
+    // committed tx hashes remembered to reject re-sends as duplicates
+    pub recent_txs: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -218,9 +227,76 @@ impl Mempool {
     }
 }
 
+pub enum MempoolInput {
+    // demo(tx-timeline): `at` stamps mempool admission
+    Tx { tx: Tx, from: NodeId, at: Timestamp },
+    // the lanes that the finalization of the slot commits
+    Settled { slot: Slot, committed: Lanes<bool> },
+}
+
+// proposes the mempool's head
+pub struct MempoolSource {
+    mempool: Mempool,
+    proposal_size_limit: usize,
+}
+
+impl MempoolSource {
+    pub fn new(mempool: Mempool, proposal_size_limit: usize) -> Self {
+        Self {
+            mempool,
+            proposal_size_limit,
+        }
+    }
+
+    // demo(tx-timeline): `at` is the node clock, stamped as `mempool_admitted_at_ns`
+    fn admit(&mut self, tx: Tx, from: NodeId, at: Timestamp) {
+        let admitted_at_ns = at.as_nanos() as u64;
+        match self.mempool.admit(tx, admitted_at_ns) {
+            Ok(()) => tracing::debug!(?from, "tx admitted"),
+            Err(reject) => tracing::debug!(?from, %reject, "tx dropped"),
+        }
+    }
+}
+
+impl ProposalSource for MempoolSource {
+    type LocalIn = MempoolInput;
+
+    fn handle_lifecycle(&mut self, event: SlotLifecycle) {
+        let SlotLifecycle::CapAdvance { cap } = event else {
+            return;
+        };
+        self.mempool.expire_below(cap);
+    }
+
+    fn handle_input(&mut self, input: MempoolInput, _now: Timestamp) {
+        match input {
+            MempoolInput::Tx { tx, from, at } => self.admit(tx, from, at),
+            MempoolInput::Settled { slot, committed } => {
+                let is_committed = |lane: Lane| committed.get(lane) == Some(&true);
+                self.mempool.settle(slot, is_committed);
+            }
+        }
+    }
+
+    fn seal(&mut self, scope: ProposalScope, now: Timestamp) -> Bytes {
+        let ProposalScope { slot, lane } = scope;
+        let sealed_at_ns = u64::try_from(now.as_nanos()).unwrap_or(0); // demo(tx-timeline)
+        let payload = self
+            .mempool
+            .drain(slot, lane, self.proposal_size_limit, sealed_at_ns);
+        tracing::debug!(
+            slot = slot.0,
+            lane = usize::from(lane),
+            len = payload.len(),
+            "drained mempool"
+        );
+        payload
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use monad_mcp_cadence::ledger::{decode_batch, encode_batch}; // demo(tx-timeline)
+    use monad_mcp_ledger::{decode_batch, encode_batch}; // demo(tx-timeline)
 
     use super::*;
 
@@ -442,5 +518,80 @@ mod tests {
         // a late settle below the floor is ignored
         pool.settle(Slot(3), |_| false);
         assert_eq!(pool.len(), 1);
+    }
+
+    fn source(max_txs: usize) -> MempoolSource {
+        MempoolSource::new(mempool(max_txs, 1 << 20, 16), 1 << 20)
+    }
+
+    fn arrive(source: &mut MempoolSource, tx: Tx, at: Timestamp) {
+        let from = NodeId::dummy(0);
+        source.handle_input(MempoolInput::Tx { tx, from, at }, at);
+    }
+
+    fn lane() -> Lane {
+        Lane::new_unchecked(0)
+    }
+
+    #[test]
+    fn a_tx_is_admitted_once_and_stamped_with_its_arrival() {
+        let mut source = source(100);
+        let at = Timestamp::from_millis(1_000); // demo(tx-timeline)
+        arrive(&mut source, tx(1, 5), at);
+        arrive(&mut source, tx(1, 5), at);
+        arrive(&mut source, tx(2, 5), at);
+        assert_eq!(source.mempool.len(), 2);
+
+        let batch = source.mempool.drain(Slot(0), lane(), 1 << 20, 0);
+        let admitted = decode_batch(&batch).unwrap();
+        // demo(tx-timeline): admission stamps the arrival time
+        let at_ns = at.as_nanos() as u64;
+        assert!(admitted.iter().all(|tx| tx.mempool_admitted_at_ns == at_ns));
+    }
+
+    #[test]
+    fn an_oversized_tx_is_dropped() {
+        let mut source = source(100);
+        let oversized = tx(1, MAX_TX_PAYLOAD + 1);
+        arrive(&mut source, oversized, Timestamp::from_millis(1_000));
+        assert!(source.mempool.is_empty());
+    }
+
+    #[test]
+    fn a_full_mempool_drops_the_overflow() {
+        let mut source = source(1);
+        for nonce in 1..=3 {
+            arrive(&mut source, tx(nonce, 5), Timestamp::from_millis(1_000));
+        }
+        assert_eq!(source.mempool.len(), 1);
+    }
+
+    #[test]
+    fn a_finalized_slot_settles_its_lanes() {
+        let mut source = source(100);
+        let now = Timestamp::from_millis(1_000);
+        arrive(&mut source, tx(1, 5), now);
+        source.mempool.drain(Slot(3), lane(), 1 << 20, 0);
+        arrive(&mut source, tx(2, 5), now);
+        let left_out = Lane::new_unchecked(1);
+        source.mempool.drain(Slot(3), left_out, 1 << 20, 0);
+        assert_eq!(source.mempool.in_flight(), 2);
+
+        let committed = Lanes::new(2, |j| j != left_out);
+        let slot = Slot(3);
+        source.handle_input(MempoolInput::Settled { slot, committed }, now);
+        assert_eq!(source.mempool.in_flight(), 0);
+        assert_eq!(source.mempool.len(), 1);
+    }
+
+    #[test]
+    fn a_cap_advance_releases_unsettled_drains() {
+        let mut source = source(100);
+        arrive(&mut source, tx(1, 5), Timestamp::from_millis(1_000));
+        source.mempool.drain(Slot(3), lane(), 1 << 20, 0);
+        assert_eq!(source.mempool.in_flight(), 1);
+
+        source.handle_lifecycle(SlotLifecycle::CapAdvance { cap: Slot(4) });
+        assert_eq!(source.mempool.in_flight(), 0);
     }
 }

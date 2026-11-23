@@ -29,8 +29,8 @@ use actix_web::{
     web,
 };
 use bytes::Bytes;
-use monad_mcp_cadence::ledger::{Address, Hash, MAX_TX_PAYLOAD, Tx};
 use monad_mcp_common::{Lane, MAX_PROPOSER_SET_SIZE};
+use monad_mcp_ledger::{Address, Hash, MAX_TX_PAYLOAD, Tx};
 use serde::{Deserialize, Serialize};
 
 use crate::{

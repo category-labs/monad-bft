@@ -19,7 +19,7 @@ pub(crate) use monad_mcp_common::{
     TimestampDelta, WirePriority,
 };
 
-pub(crate) use super::common::{NodeId, Stake};
+pub(crate) use super::common::{NodeId, Stake, ValidatorData};
 // re-export cadence types
 pub use super::{
     cadence::{
@@ -27,11 +27,11 @@ pub use super::{
         env::{D33, EncodingScheme, MerkleHash, ProposalSignature},
         slot::chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders, ProposalDAEvent},
         types::{
-            EquivCert, HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, ProposerSchedule,
-            SignedProposalHeader, ValidatorData,
+            EquivCert, HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader,
         },
     },
     env::ProposalKeyPair,
+    epoch::election::ProposerSchedule,
 };
 
 // a proposal's payload is opaque bytes to DA

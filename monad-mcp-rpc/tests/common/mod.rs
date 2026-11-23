@@ -27,15 +27,15 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_mcp_cadence::ledger::{
+use monad_mcp_common::{Lane, Slot, Timestamp};
+use monad_mcp_ledger::{
     CommittedLane, FinalizationPath, LedgerWriter, NewBlock, NewLane, Tx, encode_batch,
 };
-use monad_mcp_common::{Lane, Slot, Timestamp};
 use monad_mcp_node::{
     NodeProposerSchedule,
-    cadence::types::ProposerSchedule,
     common::{KeyPair, NodeId},
     config::{NodeConfig, ValidatorConfig},
+    election::ProposerSchedule,
     network::WireAppMessage,
     transport::udp::decode_frame,
 };

@@ -89,17 +89,10 @@ impl NodeRouter {
                 sink.send(Routed::DA(DAInput::Lifecycle(event)));
                 // the network ends its repeats on these
                 sink.send(Routed::Network(NetworkInput::Lifecycle(event)));
-                match event {
-                    SlotLifecycle::Opened { slot, deadline } => {
-                        let input = ProposingInput::SlotOpen(slot, deadline);
-                        sink.send(Routed::Proposing(input));
-                    }
-                    SlotLifecycle::Completed { .. } => {}
-                    SlotLifecycle::CapAdvance { cap } => {
-                        tracing::debug!(cap = cap.0, "chain advanced");
-                        sink.send(Routed::Proposing(ProposingInput::CapAdvance(cap)));
-                    }
+                if let SlotLifecycle::CapAdvance { cap } = event {
+                    tracing::debug!(cap = cap.0, "chain advanced");
                 }
+                sink.send(Routed::Proposing(ProposingInput::Lifecycle(event)));
                 let input = FinalizationInput::Lifecycle(event);
                 sink.send(Routed::Finalization(input));
             }
@@ -249,7 +242,7 @@ fn route_da<W>(now: Timestamp, output: DAOutput, sink: &mut impl Sink<Routed<W>>
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use monad_mcp_cadence::ledger::Tx;
+    use monad_mcp_ledger::Tx;
 
     use super::*;
     use crate::{

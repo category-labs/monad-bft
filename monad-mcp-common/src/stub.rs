@@ -36,12 +36,17 @@ fn the_noncrypto_digest_is_pinned() {
 const PINNED_EMPTY_DIGEST: u64 = 232177599295442350;
 
 mod validator {
+    use std::collections::HashMap;
+
     use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
     // Into implemented for testing purpose only.
     use derive_more::Into;
 
-    use super::vote::KeyPair;
-    use crate::spec;
+    use super::vote::{KeyPair, PubKey};
+    use crate::{
+        MAX_VALIDATORS, OrderKey, ValidatorIndex, ValidatorSet, ValidatorVec,
+        spec::{self, Stake as _},
+    };
 
     #[derive(
         Clone,
@@ -110,12 +115,133 @@ mod validator {
         }
     }
 
+    // invariant: indices, nodes, stakes and vote_keys cover the same
+    // validators, in index order. The valset is non-empty and at most
+    // MAX_VALIDATORS large, all stakes are nonzero, and total_stake is their
+    // sum.
+    pub struct ValidatorData {
+        indices: HashMap<NodeId, ValidatorIndex>,
+        nodes: ValidatorVec<NodeId>,
+        stakes: ValidatorVec<Stake>,
+        vote_keys: ValidatorVec<PubKey>,
+        total_stake: Stake,
+    }
+
+    impl ValidatorData {
+        // dummy validators 0..n of stake 1, where validator i has index i
+        pub fn dummy(n: u64) -> Self {
+            use crate::spec::KeyPair as _;
+
+            let nodes = (0..n).map(NodeId::dummy);
+            let valset = nodes.clone().map(|node| (node, Stake::from(1))).collect();
+            let mapping = nodes.map(|node| (node, node.keypair().pubkey())).collect();
+            Self::new(valset, mapping)
+        }
+
+        // the index of dummy validator `id` in a table of dummy validators
+        pub fn dummy_index(id: u64) -> ValidatorIndex {
+            ValidatorIndex::new_unchecked(id as usize)
+        }
+
+        // indexed in NodeId order, so that a test knows the index of a node
+        pub fn new(valset: HashMap<NodeId, Stake>, mapping: HashMap<NodeId, PubKey>) -> Self {
+            Self::in_order(sorted_nodes(&valset), valset, mapping)
+        }
+
+        // indexed in the order of one epoch: NodeId order, shuffled by the
+        // seed of the epoch, so that no validator is first in every epoch
+        pub fn with_seed(
+            valset: HashMap<NodeId, Stake>,
+            mapping: HashMap<NodeId, PubKey>,
+            seed: u64,
+        ) -> Self {
+            let mut order = sorted_nodes(&valset);
+            OrderKey::new(b"monad-mcp-cadence validator order")
+                .with(&seed)
+                .shuffle(&mut order);
+            Self::in_order(order, valset, mapping)
+        }
+
+        fn in_order(
+            order: Vec<NodeId>,
+            valset: HashMap<NodeId, Stake>,
+            mapping: HashMap<NodeId, PubKey>,
+        ) -> Self {
+            assert_eq!(valset.len(), mapping.len());
+            assert!(!valset.is_empty());
+            assert!(valset.len() <= MAX_VALIDATORS);
+            assert!(valset.keys().all(|node_id| mapping.contains_key(node_id)));
+            assert!(valset.values().all(|stake| *stake > Stake::ZERO));
+
+            let nodes = ValidatorVec::from_vec(order).expect("at most MAX_VALIDATORS validators");
+            let indices = nodes
+                .indexed_iter()
+                .map(|(index, node_id)| (*node_id, index))
+                .collect();
+            let stakes = nodes.as_ref().map(|node_id| valset[node_id]);
+            let vote_keys = nodes.as_ref().map(|node_id| mapping[node_id]);
+            let total_stake = stakes.iter().copied().sum();
+
+            Self {
+                indices,
+                nodes,
+                stakes,
+                vote_keys,
+                total_stake,
+            }
+        }
+
+        // a wire index as one of this validator set's, if it is one
+        pub fn checked_index(&self, index: usize) -> Option<ValidatorIndex> {
+            ValidatorIndex::new(index, self.nodes.size())
+        }
+    }
+
+    impl spec::validator::ValidatorData for ValidatorData {
+        type NodeId = NodeId;
+        type PubKey = PubKey;
+        type Stake = Stake;
+
+        fn len(&self) -> usize {
+            self.nodes.size()
+        }
+
+        fn index_of(&self, node_id: &NodeId) -> Option<ValidatorIndex> {
+            self.indices.get(node_id).copied()
+        }
+
+        fn node_id(&self, index: ValidatorIndex) -> &NodeId {
+            &self.nodes[index]
+        }
+
+        fn vote_key(&self, index: ValidatorIndex) -> &PubKey {
+            &self.vote_keys[index]
+        }
+
+        fn stake(&self, index: ValidatorIndex) -> &Stake {
+            &self.stakes[index]
+        }
+
+        fn sum_stake(&self, validators: &ValidatorSet) -> Stake {
+            validators.iter().map(|index| self.stakes[index]).sum()
+        }
+
+        fn total_stake(&self) -> Stake {
+            self.total_stake
+        }
+    }
+
+    fn sorted_nodes(valset: &HashMap<NodeId, Stake>) -> Vec<NodeId> {
+        let mut nodes: Vec<NodeId> = valset.keys().copied().collect();
+        nodes.sort();
+        nodes
+    }
+
     #[cfg(test)]
     mod tests {
         use proptest::prelude::*;
 
         use super::*;
-        use crate::spec::Stake as _;
 
         proptest! {
             #[test]
