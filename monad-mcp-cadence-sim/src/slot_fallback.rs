@@ -95,7 +95,7 @@ struct NodeLog {
 type SharedLog = Arc<Mutex<NodeLog>>;
 
 /// A node's [`MvbaRuntime`], observed. With a resend interval it delivers
-/// every message the node sent again at that interval until the node decides,
+/// every distinct message the node sent again at that interval until the node decides,
 /// and from then on only the certificate it decided by -- the `Repeater`'s
 /// contract, kept out of protocol code. Silent after deciding, it hands nothing
 /// more to the state machine, as Chorus does once it finalizes
@@ -151,7 +151,10 @@ impl SlotFallbackRuntime {
             if let (Some(interval), None) = (self.resend, self.next_resend) {
                 self.next_resend = Some(now + interval);
             }
-            self.history.push(outbound.clone());
+            // as `Repeater::record`: a re-sent Timeout or TC is already in the history
+            if !self.history.contains(&outbound) {
+                self.history.push(outbound.clone());
+            }
             self.emit(now, outbound, false);
         }
         while let Some(block) = self.inner.poll_output() {

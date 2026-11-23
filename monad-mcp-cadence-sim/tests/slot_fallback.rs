@@ -1468,3 +1468,41 @@ fn every_node_decides_through_twenty_percent_loss_after_view_1_s_proposal_is_los
         }
     }
 }
+
+/// Not in the plan's list. Everything is lost, so view 1's timer fires again
+/// and again and each node re-broadcasts the same Timeout; the resend loop
+/// still repeats each distinct message once per tick, as the `Repeater` does
+#[test]
+fn a_stalled_view_s_repeated_timeout_is_resent_once_per_tick() {
+    let nodes = fixtures::nodes();
+    let network = Network::reliable(LATENCY).loss(1.0);
+    let mut swarm = build(0, network, &mixed_inputs(&[]), all_at_zero, |builder| {
+        builder.set_resend(RESEND);
+    });
+    swarm.run_until_or(views(4), |_| false);
+
+    for node in &nodes {
+        let sent = swarm.sent(node);
+        let timeouts = sent
+            .iter()
+            .filter(|s| !s.resent && timeout_view(&s.message) == Some(1))
+            .count();
+        assert!(
+            timeouts >= 2,
+            "{node:?} re-broadcast its view-1 Timeout {timeouts} times"
+        );
+
+        let resent: Vec<_> = sent.iter().filter(|s| s.resent).collect();
+        assert!(!resent.is_empty(), "{node:?} never resent");
+        for (i, a) in resent.iter().enumerate() {
+            let twice = resent[i + 1..]
+                .iter()
+                .any(|b| b.at == a.at && b.to == a.to && b.message == a.message);
+            assert!(
+                !twice,
+                "{node:?} resent {:?} twice at {:?}",
+                a.message, a.at
+            );
+        }
+    }
+}
