@@ -84,11 +84,10 @@ const METHODS: &[(&str, Policy)] = &[
     ("eth_getTransactionByHash", Policy::OwnData),
     ("eth_getTransactionCount", Policy::OwnData),
     ("eth_getTransactionReceipt", Policy::OwnData),
-    // TODO: serve these to every account for its own calls.
-    ("eth_call", Policy::OperatorOnly),
-    ("eth_createAccessList", Policy::OperatorOnly),
-    ("eth_estimateGas", Policy::OperatorOnly),
-    ("eth_fillTransaction", Policy::OperatorOnly),
+    // Calls, with the caller as their sender and without state overrides.
+    ("eth_call", Policy::OwnCall),
+    ("eth_createAccessList", Policy::OwnCall),
+    ("eth_estimateGas", Policy::OwnCall),
 ];
 
 /// Answers a [`Policy::OwnData`] method with data of `caller` only.
@@ -201,6 +200,11 @@ impl RpcDispatcher for CallerRpc<'_> {
                 let resources = &self.rpc.resources;
                 let data_provider = resources.data_provider.as_ref().method_not_found()?;
                 return own_data(&self.caller, resources, data_provider, method, params).await;
+            }
+            Policy::OwnCall => {
+                let params = self.caller.own_call(params)?;
+                let params = RequestParams::new(&params);
+                return rpc_select(&self.rpc.resources, method, params, request_id).await;
             }
         }
         rpc_select(&self.rpc.resources, method, params, request_id).await
@@ -579,6 +583,37 @@ mod tests {
                 "eth_getTransactionReceipt",
             ]
         );
+        assert_eq!(
+            with(Policy::OwnCall),
+            ["eth_call", "eth_createAccessList", "eth_estimateGas"]
+        );
+    }
+
+    #[tokio::test]
+    async fn serves_a_call_without_state_overrides() {
+        let overrides = json!({ (OTHER.to_string()): {"balance": "0x1"} });
+        for (method, _) in METHODS
+            .iter()
+            .filter(|(_, policy)| *policy == Policy::OwnCall)
+        {
+            // A served call reaches its handler, which has no executor in these resources.
+            for (overrides, code) in [
+                (json!({}), ErrorCode::MethodNotFound as i32),
+                (overrides.clone(), FORBIDDEN_ERROR_CODE),
+            ] {
+                let params = to_raw_value(&json!([{"to": OTHER}, "latest", overrides])).unwrap();
+                let err = rpc()
+                    .on_behalf_of(user().address())
+                    .dispatch(
+                        method,
+                        RequestParams::new(&params),
+                        TimingRequestId::random(),
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(err.code, code, "{method}");
+            }
+        }
     }
 
     #[tokio::test]

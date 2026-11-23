@@ -347,6 +347,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         &mut header.header,
         &state_override_set,
         U256::from(provider_gas_limit),
+        eth_call_handler_config.charges_gas(),
     )
     .await?;
 
@@ -1119,6 +1120,7 @@ mod tests {
             provider_max_calls_eth_simulate: 0,
             provider_max_blocks_eth_simulate: 0,
             execution_chain_id: 0,
+            private_domain_chain_id: None,
         }
     }
 

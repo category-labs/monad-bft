@@ -15,6 +15,7 @@
 
 use std::{
     future::Future,
+    num::NonZeroU64,
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -48,6 +49,16 @@ pub struct EthCallHandlerConfig {
 
     /// Chain id of the chain whose rules calls execute with.
     pub execution_chain_id: u64,
+
+    /// The private domain the triedb belongs to, whose rules its calls execute with.
+    pub private_domain_chain_id: Option<NonZeroU64>,
+}
+
+impl EthCallHandlerConfig {
+    /// Whether the sender of a call is charged for its gas. A private domain charges nothing.
+    pub fn charges_gas(&self) -> bool {
+        self.private_domain_chain_id.is_none()
+    }
 }
 
 #[derive(Clone)]
@@ -61,14 +72,25 @@ pub struct EthCallHandler {
 
 impl EthCallHandler {
     pub fn new(config: EthCallHandlerConfig, triedb_path: &Path) -> Self {
-        let executor = Arc::new(MonadExecutor::new(
-            config.pool_low,
-            config.pool_high,
-            config.pool_block,
-            config.tx_exec_num_fibers,
-            config.node_cache_max_mem,
-            triedb_path,
-        ));
+        let executor = Arc::new(match config.private_domain_chain_id {
+            Some(domain_chain_id) => MonadExecutor::new_private_domain(
+                config.pool_low,
+                config.pool_high,
+                config.pool_block,
+                config.tx_exec_num_fibers,
+                config.node_cache_max_mem,
+                triedb_path,
+                domain_chain_id,
+            ),
+            None => MonadExecutor::new(
+                config.pool_low,
+                config.pool_high,
+                config.pool_block,
+                config.tx_exec_num_fibers,
+                config.node_cache_max_mem,
+                triedb_path,
+            ),
+        });
 
         let rate_limiter = Arc::new(Semaphore::new(config.max_concurrent_permits));
 

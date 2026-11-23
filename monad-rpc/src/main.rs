@@ -15,7 +15,7 @@
 
 #![recursion_limit = "256"]
 
-use std::{sync::Arc, time::Duration};
+use std::{num::NonZeroU64, sync::Arc, time::Duration};
 
 use actix_web::{web, App, HttpServer};
 use agent::AgentBuilder;
@@ -328,9 +328,10 @@ async fn main() -> std::io::Result<()> {
                 provider_gas_limit_eth_simulate: args.eth_simulate_gas_limit,
                 provider_max_calls_eth_simulate: args.eth_simulate_max_calls,
                 provider_max_blocks_eth_simulate: args.eth_simulate_max_blocks,
-                // TODO: the calls of a private domain run under the L1's rules; the executor
-                // has no private domain support yet.
+                // The executor of a private domain runs calls as the domain of the L1 named
+                // here.
                 execution_chain_id: node_config.chain_id,
+                private_domain_chain_id: args.domain_chain_id.and_then(NonZeroU64::new),
             },
             triedb_path,
         )
