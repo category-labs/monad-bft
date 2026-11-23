@@ -25,7 +25,7 @@ use alloy_rlp::{
 
 use super::{
     super::types::{IsVote, KeyPair, Lanes, Slot, StrongQc, ValidatorIndex, VoteMsg},
-    Entry, Metablock, ValidateCert, ValidateInput,
+    Entry, FastBlock, Metablock, ValidateCert, ValidateInput,
     monad_mvba::{
         MakesValidationContext, MvbaContext, ValidationContext, collectors::SealingVotePool,
     },
@@ -80,14 +80,14 @@ impl ValidateCert for NfCert {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum DummyViewMessage {
-    /// The sender's registered input, a fast metablock
-    FastInput(Metablock),
+    /// The sender's registered input, a fast block
+    FastInput(FastBlock),
     NotFull(VoteMsg<NotFull>),
     DummyVote(VoteMsg<DummyVote>),
     /// So a validator that missed the votes or the block can still decide
     DummyDecision {
         qc: DummyQc,
-        block: Metablock,
+        block: FastBlock,
     },
 }
 
@@ -126,12 +126,12 @@ impl Decodable for DummyViewMessage {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match u8::decode(&mut payload)? {
-            1 => Self::FastInput(Metablock::decode(&mut payload)?),
+            1 => Self::FastInput(FastBlock::decode(&mut payload)?),
             2 => Self::NotFull(VoteMsg::decode(&mut payload)?),
             3 => Self::DummyVote(VoteMsg::decode(&mut payload)?),
             4 => Self::DummyDecision {
                 qc: DummyQc::decode(&mut payload)?,
-                block: Metablock::decode(&mut payload)?,
+                block: FastBlock::decode(&mut payload)?,
             },
             _ => return Err(alloy_rlp::Error::Custom("unknown DummyViewMessage tag")),
         };
@@ -146,12 +146,12 @@ impl Decodable for DummyViewMessage {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum DummyViewEffect {
     Broadcast(DummyViewMessage),
-    /// The first valid fast metablock seen, which any leader may propose
-    FastBlock(Metablock),
+    /// The first valid fast block seen, which any leader may propose
+    FastBlock(FastBlock),
     NfCert(NfCert),
     Decided {
         qc: DummyQc,
-        block: Metablock,
+        block: FastBlock,
     },
 }
 
@@ -162,8 +162,8 @@ pub(crate) struct DummyView {
 
     abandoned: bool,
 
-    /// The first valid fast metablock received
-    fast_block: Option<Metablock>,
+    /// The first valid fast block received
+    fast_block: Option<FastBlock>,
     not_full: SealingVotePool<NotFull>,
     dummy_votes: SealingVotePool<DummyVote>,
 
@@ -185,21 +185,25 @@ impl DummyView {
         }
     }
 
-    /// Registers this validator's input and sends its evidence. Called once:
-    /// the owner guards on its own registered input
-    pub(crate) fn enter(&mut self, input: Metablock) {
+    /// Registers this validator's input and sends its evidence: `Some` for a
+    /// fast input, `None` for any other. Called once: the owner guards on its
+    /// own registered input
+    pub(crate) fn enter(&mut self, fast_input: Option<FastBlock>) {
         if self.abandoned {
             return;
         }
 
         // persist-before-send: the registered input, which fixes DummyVote or NotFull
-        if input.is_fast() {
-            let vote = VoteMsg::new_signed(self.slot, DummyVote(input.entries()), &self.key);
-            self.broadcast(DummyViewMessage::FastInput(input));
-            self.broadcast(DummyViewMessage::DummyVote(vote));
-        } else {
-            let declaration = VoteMsg::new_signed(self.slot, NotFull, &self.key);
-            self.broadcast(DummyViewMessage::NotFull(declaration));
+        match fast_input {
+            Some(block) => {
+                let vote = VoteMsg::new_signed(self.slot, DummyVote(block.entries()), &self.key);
+                self.broadcast(DummyViewMessage::FastInput(block));
+                self.broadcast(DummyViewMessage::DummyVote(vote));
+            }
+            None => {
+                let declaration = VoteMsg::new_signed(self.slot, NotFull, &self.key);
+                self.broadcast(DummyViewMessage::NotFull(declaration));
+            }
         }
     }
 
@@ -229,13 +233,13 @@ impl DummyView {
         }
     }
 
-    /// The valid fast metablock held, received or certified
-    pub(crate) fn fast_block(&self) -> Option<&Metablock> {
+    /// The valid fast block held, received or certified
+    pub(crate) fn fast_block(&self) -> Option<&FastBlock> {
         self.fast_block.as_ref()
     }
 
     /// The DummyQC and the fast block it certifies, once both are held
-    fn decision(&self) -> Option<(&DummyQc, &Metablock)> {
+    fn decision(&self) -> Option<(&DummyQc, &FastBlock)> {
         let qc = self.dummy_votes.sealed()?;
         let block = self.fast_block.as_ref()?;
         (qc.verdict.0 == block.entries()).then_some((qc, block))
@@ -254,11 +258,11 @@ impl DummyView {
         self.effects.push_back(DummyViewEffect::Broadcast(msg));
     }
 
-    fn is_fast_block(&self, block: &Metablock) -> bool {
-        block.is_fast() && block.validate(&self.validation_context)
+    fn is_fast_block(&self, block: &FastBlock) -> bool {
+        block.validate(&self.validation_context)
     }
 
-    fn handle_fast_input(&mut self, block: Metablock) {
+    fn handle_fast_input(&mut self, block: FastBlock) {
         if self.fast_block.is_some() || !self.is_fast_block(&block) {
             return;
         }
@@ -266,7 +270,7 @@ impl DummyView {
         self.effects.push_back(DummyViewEffect::FastBlock(block));
     }
 
-    fn handle_dummy_decision(&mut self, qc: DummyQc, block: Metablock) {
+    fn handle_dummy_decision(&mut self, qc: DummyQc, block: FastBlock) {
         if qc.verdict.0 != block.entries()
             || !self.is_fast_block(&block)
             || !qc.verify(&self.validation_context.validator_data)
@@ -297,7 +301,7 @@ mod tests {
                     StrongQc, TimestampDelta, ValidatorData, VoteMsg, VotePool,
                 },
             },
-            FallbackCommitQc, FallbackView, Metablock, MvbaScope, ValidateCert,
+            FallbackCommitQc, FallbackView, FastBlock, Metablock, MvbaScope, ValidateCert,
             monad_mvba::{MakesValidationContext, MvbaContext},
         },
         DummyQc, DummyView, DummyViewEffect, DummyViewMessage, DummyVote, NotFull,
@@ -380,11 +384,16 @@ mod tests {
         }))
     }
 
-    fn fast_metablock(seed: u64) -> Metablock {
-        fast_metablock_in(SLOT, NUM_LANES, seed)
+    fn fast_block_in(slot: Slot, num_lanes: usize, seed: u64) -> FastBlock {
+        FastBlock::try_from(fast_metablock_in(slot, num_lanes, seed))
+            .expect("every entry is a FastQc")
     }
 
-    /// Valid, with the entries of [`fast_metablock`] on the same seed, but its
+    fn fast_block(seed: u64) -> FastBlock {
+        fast_block_in(SLOT, NUM_LANES, seed)
+    }
+
+    /// Valid, with the entries of [`fast_block`] on the same seed, but its
     /// first entry rests on a fallback quorum
     fn non_fast_metablock(seed: u64) -> Metablock {
         Metablock::new(Lanes::new(NUM_LANES, |j| {
@@ -463,7 +472,7 @@ mod tests {
             .collect()
     }
 
-    fn fast_blocks(effects: &[DummyViewEffect]) -> Vec<&Metablock> {
+    fn fast_blocks(effects: &[DummyViewEffect]) -> Vec<&FastBlock> {
         effects
             .iter()
             .filter_map(|effect| match effect {
@@ -483,7 +492,7 @@ mod tests {
             .collect()
     }
 
-    fn decisions(effects: &[DummyViewEffect]) -> Vec<(&DummyQc, &Metablock)> {
+    fn decisions(effects: &[DummyViewEffect]) -> Vec<(&DummyQc, &FastBlock)> {
         effects
             .iter()
             .filter_map(|effect| match effect {
@@ -496,10 +505,10 @@ mod tests {
     #[test]
     fn a_fast_input_sends_its_block_and_one_dummy_vote_at_entry() {
         let me = nodes()[0];
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let mut view = dummy_view(me);
 
-        view.enter(block.clone());
+        view.enter(Some(block.clone()));
         let effects = drain(&mut view);
 
         let vote = VoteMsg::new_signed(SLOT, DummyVote(block.entries()), &me.keypair());
@@ -512,10 +521,10 @@ mod tests {
     #[test]
     fn a_non_fast_input_declares_not_full_and_never_votes() {
         let me = nodes()[0];
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let mut view = dummy_view(me);
 
-        view.enter(non_fast_metablock(1));
+        view.enter(None);
         let effects = drain(&mut view);
         let declaration = VoteMsg::new_signed(SLOT, NotFull, &me.keypair());
         assert_eq!(
@@ -544,10 +553,10 @@ mod tests {
     #[test]
     fn every_message_is_sent_exactly_once() {
         let me = nodes()[0];
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let mut view = dummy_view(me);
 
-        view.enter(block.clone());
+        view.enter(Some(block.clone()));
         let mut effects = drain(&mut view);
 
         // the dummy view's own broadcasts come back, then everyone else's, twice
@@ -571,7 +580,7 @@ mod tests {
     #[test]
     fn nothing_is_sent_before_entry_or_after_abandon() {
         let me = nodes()[0];
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let mut view = dummy_view(me);
 
         deliver(
@@ -586,11 +595,11 @@ mod tests {
         assert!(broadcasts(&drain(&mut view)).is_empty());
 
         // abandoning drops what entry queued, and later calls queue nothing
-        view.enter(block.clone());
+        view.enter(Some(block.clone()));
         view.abandon();
         assert!(view.poll().is_none());
 
-        view.enter(non_fast_metablock(1));
+        view.enter(None);
         deliver(
             &mut view,
             nodes()[2],
@@ -610,7 +619,7 @@ mod tests {
     #[test]
     fn a_quorum_of_declarations_forms_the_certificate_once() {
         let mut view = dummy_view(nodes()[0]);
-        view.enter(non_fast_metablock(1));
+        view.enter(None);
         drain(&mut view);
 
         for node in &quorum()[..2] {
@@ -652,7 +661,7 @@ mod tests {
 
     #[test]
     fn a_quorum_of_dummy_votes_and_a_fast_block_decide() {
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let mut view = dummy_view(nodes()[0]);
 
         deliver(
@@ -691,18 +700,12 @@ mod tests {
 
     #[test]
     fn a_quorum_of_dummy_votes_waits_for_the_fast_block() {
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let mut view = dummy_view(nodes()[0]);
 
         for node in quorum() {
             deliver(&mut view, node, dummy_vote(node, &block.entries()));
         }
-        // same entries, but not a fast metablock
-        deliver(
-            &mut view,
-            nodes()[3],
-            DummyViewMessage::FastInput(non_fast_metablock(1)),
-        );
         assert!(decisions(&drain(&mut view)).is_empty());
 
         deliver(
@@ -719,8 +722,8 @@ mod tests {
 
     #[test]
     fn a_dummy_qc_over_other_entries_than_the_held_fast_block_decides_nothing() {
-        let held = fast_metablock(1);
-        let certified = fast_metablock(2);
+        let held = fast_block(1);
+        let certified = fast_block(2);
         let mut view = dummy_view(nodes()[0]);
 
         deliver(
@@ -753,14 +756,14 @@ mod tests {
     #[test]
     fn votes_and_declarations_received_before_entry_are_retained() {
         let me = nodes()[0];
-        let block = fast_metablock(1);
+        let block = fast_block(1);
 
         let mut declaring = dummy_view(me);
         for node in &nodes()[1..3] {
             deliver(&mut declaring, *node, not_full(*node));
         }
         assert!(nf_certs(&drain(&mut declaring)).is_empty());
-        declaring.enter(non_fast_metablock(1));
+        declaring.enter(None);
         let own = broadcasts(&drain(&mut declaring))[0].clone();
         deliver(&mut declaring, me, own);
         assert_eq!(nf_certs(&drain(&mut declaring)).len(), 1);
@@ -778,7 +781,7 @@ mod tests {
         assert_eq!(fast_blocks(&effects), vec![&block]);
         assert!(decisions(&effects).is_empty());
 
-        voting.enter(block.clone());
+        voting.enter(Some(block.clone()));
         let own: Vec<_> = broadcasts(&drain(&mut voting))
             .into_iter()
             .cloned()
@@ -794,14 +797,16 @@ mod tests {
     }
 
     #[test]
-    fn a_non_fast_or_invalid_metablock_is_not_fast_evidence() {
-        let block = fast_metablock(1);
+    fn an_invalid_fast_block_is_not_fast_evidence() {
+        let block = fast_block(1);
         let mut view = dummy_view(nodes()[0]);
 
+        for node in quorum() {
+            deliver(&mut view, node, dummy_vote(node, &block.entries()));
+        }
         let not_evidence = [
-            non_fast_metablock(1),
-            fast_metablock_in(Slot(1), NUM_LANES, 1),
-            fast_metablock_in(SLOT, NUM_LANES + 1, 1),
+            fast_block_in(Slot(1), NUM_LANES, 1),
+            fast_block_in(SLOT, NUM_LANES + 1, 1),
         ];
         for candidate in &not_evidence {
             deliver(
@@ -830,7 +835,7 @@ mod tests {
 
     #[test]
     fn a_signer_of_both_messages_is_counted_in_both_pools() {
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let mut view = dummy_view(nodes()[0]);
         deliver(
             &mut view,
@@ -855,7 +860,7 @@ mod tests {
 
     #[test]
     fn dummy_not_full_and_commit_signatures_do_not_cross_domains() {
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let entries = block.entries();
         let mut view = dummy_view(nodes()[0]);
         deliver(&mut view, nodes()[1], DummyViewMessage::FastInput(block));
@@ -894,10 +899,10 @@ mod tests {
 
     #[test]
     fn a_dummy_decision_from_a_peer_decides() {
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let qc = dummy_qc(&block.entries());
         let mut view = dummy_view(nodes()[0]);
-        view.enter(non_fast_metablock(1));
+        view.enter(None);
         drain(&mut view);
 
         let decision = DummyViewMessage::DummyDecision {
@@ -916,7 +921,7 @@ mod tests {
 
     #[test]
     fn declarations_and_votes_signed_for_another_slot_are_not_counted() {
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let mut view = dummy_view(nodes()[0]);
         deliver(
             &mut view,
@@ -939,7 +944,7 @@ mod tests {
 
     #[test]
     fn a_second_dummy_decision_after_deciding_has_no_effect() {
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let mut view = dummy_view(nodes()[0]);
         deliver(
             &mut view,
@@ -963,7 +968,7 @@ mod tests {
 
     #[test]
     fn a_decided_view_handles_no_further_message() {
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let mut view = dummy_view(nodes()[0]);
         deliver(
             &mut view,
@@ -983,21 +988,21 @@ mod tests {
         deliver(
             &mut view,
             nodes()[2],
-            DummyViewMessage::FastInput(fast_metablock(2)),
+            DummyViewMessage::FastInput(fast_block(2)),
         );
         assert!(drain(&mut view).is_empty());
     }
 
     #[test]
     fn a_dummy_decision_with_a_bad_certificate_or_a_mismatched_block_is_dropped() {
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let entries = block.entries();
         let qc = dummy_qc(&entries);
         let mut view = dummy_view(nodes()[0]);
 
         let mut forged = qc.clone();
-        forged.verdict = DummyVote(fast_metablock(2).entries());
-        let wide = fast_metablock_in(SLOT, NUM_LANES + 1, 1);
+        forged.verdict = DummyVote(fast_block(2).entries());
+        let wide = fast_block_in(SLOT, NUM_LANES + 1, 1);
         let bad = [
             // another slot's certificate
             (
@@ -1005,7 +1010,7 @@ mod tests {
                 block.clone(),
             ),
             // signatures that do not cover the verdict
-            (forged, fast_metablock(2)),
+            (forged, fast_block(2)),
             // too few signers for a certificate
             (
                 {
@@ -1024,11 +1029,9 @@ mod tests {
                 },
                 block.clone(),
             ),
-            // the certified entries, but not a fast metablock
-            (qc.clone(), non_fast_metablock(1)),
-            // a fast metablock with other entries
-            (qc.clone(), fast_metablock(2)),
-            // a fast metablock that is not valid for this slot's lanes
+            // a fast block with other entries
+            (qc.clone(), fast_block(2)),
+            // a fast block that is not valid for this slot's lanes
             (dummy_qc(&wide.entries()), wide),
         ];
         for (qc, block) in bad {
@@ -1080,7 +1083,7 @@ mod tests {
 
     #[test]
     fn ill_formed_encodings_are_rejected_without_a_panic() {
-        let block = fast_metablock(1);
+        let block = fast_block(1);
         let entries = block.entries();
         let me = nodes()[0];
         let not_full_vote = VoteMsg::new_signed(SLOT, NotFull, &me.keypair());
@@ -1108,14 +1111,25 @@ mod tests {
             assert!(!decodes(&rlp_list(&fields)), "trailing element: {msg:?}");
         }
 
-        // a metablock is the bare list of its entries, so with no lanes it is `[]`
-        let lanes = block.certified_entries().into_iter();
-        let lanes: Vec<&dyn Encodable> = lanes.map(|e| e as &dyn Encodable).collect();
+        // a fast block is the bare list of its FastQcs, so with no lanes it is `[]`
+        let metablock = Metablock::from(block.clone());
+        let lanes = metablock.certified_entries().into_iter();
+        let lanes: Vec<&dyn Encodable> = lanes
+            .map(|e| match e {
+                CertifiedEntry::FastQc(qc) => qc as &dyn Encodable,
+                _ => unreachable!("a fast block's entries are FastQcs"),
+            })
+            .collect();
         assert_eq!(rlp_list(&lanes), alloy_rlp::encode(&block));
         let no_lanes = Raw(rlp_list(&[]));
 
         let qc = dummy_qc(&entries);
+        let non_fast = non_fast_metablock(1);
         let ill_formed = [
+            // a metablock, fast or not, in place of a fast block
+            rlp_list(&[&1u8, &metablock]),
+            rlp_list(&[&1u8, &non_fast]),
+            rlp_list(&[&4u8, &qc, &non_fast]),
             // a decision truncated after its certificate
             rlp_list(&[&4u8, &qc]),
             // a block with no lanes

@@ -426,7 +426,7 @@ impl SlotFallbackSwarmBuilder {
         input: FallbackInput,
         start: Time,
     ) -> &mut Self {
-        self.inputs.insert(id, input.block().clone());
+        self.inputs.insert(id, input.to_metablock());
         self.starts.push((id, start, input));
         self.nodes.push((id, mvba));
         self

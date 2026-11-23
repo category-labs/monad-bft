@@ -28,7 +28,7 @@ pub use monad_mvba::FallbackCommitQc;
 /// MetaBlock components are exported
 pub use super::fast::CertifiedEntry;
 pub use super::fast::{
-    EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, FallbackQc, FastQc,
+    EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, FallbackQc, FastBlock, FastQc,
 };
 use super::{
     super::{message::Outbound, runtime::Runtime, timers::Timers},

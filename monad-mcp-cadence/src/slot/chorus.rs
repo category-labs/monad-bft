@@ -144,7 +144,7 @@ pub enum SlotFinalization {
     /// The fallback path decided by the dummy vote rather than an MVBA view
     FallbackDummy {
         qc: DummyQc,
-        block: Metablock,
+        block: FastBlock,
     },
 }
 
@@ -558,9 +558,8 @@ impl Chorus {
             self.push(SlotOutput::Local(ChorusDACommand::PinFinal { j, pid }));
         }
 
-        let (SlotFinalization::Fallback { block, .. }
-        | SlotFinalization::FallbackDummy { block, .. }) = finalization
-        else {
+        // a fast block's FastQcs name no decoded holders
+        let SlotFinalization::Fallback { block, .. } = finalization else {
             return;
         };
         for (j, cert) in block.certified_entries().into_indexed_iter() {
@@ -632,7 +631,10 @@ impl Chorus {
             let block = block.clone();
             let finalization = match proof.clone() {
                 SlotCommitProof::Mvba(qc) => SlotFinalization::Fallback { qc, block },
-                SlotCommitProof::Dummy(qc) => SlotFinalization::FallbackDummy { qc, block },
+                SlotCommitProof::Dummy(qc) => SlotFinalization::FallbackDummy {
+                    qc,
+                    block: FastBlock::try_from(block).expect("a DummyQC decides a fast block"),
+                },
             };
             self.finalize(finalization);
         }

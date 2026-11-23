@@ -351,7 +351,7 @@ fn s1_four_fast_inputs_decide_by_dummy_qc_within_delta_beside_the_leader_s_propo
     assert_eq!(*at, Time(0), "the view-1 leader did not propose at entry");
     assert_eq!(p.view, 1);
     assert_eq!(
-        entries(p.value.block()),
+        entries(&p.value.to_metablock()),
         fast_entries(),
         "the view-1 leader did not propose the fast block"
     );
@@ -382,7 +382,10 @@ fn s2_identical_non_fast_inputs_decide_in_view_1_on_the_leader_s_nf_cert_without
     );
     swarm.run_until_or(views(2), |_| false);
 
-    assert_eq!(expect_agreement(&swarm, &nodes), entries(input.block()));
+    assert_eq!(
+        expect_agreement(&swarm, &nodes),
+        entries(&input.to_metablock())
+    );
     for (node, decision) in swarm.decisions() {
         assert!(decision.at <= deltas(4), "{node:?} decided late");
         assert_eq!(mvba_view(&decision.proof), Some(1), "{node:?}");
@@ -411,8 +414,8 @@ fn s2_identical_non_fast_inputs_decide_in_view_1_on_the_leader_s_nf_cert_without
     );
     assert_eq!(p.view, 1);
     assert_eq!(
-        p.value.block(),
-        input.block(),
+        p.value.to_metablock(),
+        input.to_metablock(),
         "the leader did not propose its input"
     );
     assert!(
@@ -503,8 +506,8 @@ fn s4_two_fast_and_two_non_fast_inputs_decide_the_fast_block_by_commit_qc_in_vie
         let (_, p) = proposals.first().expect("the view-1 leader never proposed");
         assert_eq!(p.view, 1, "{case}");
         assert_eq!(
-            p.value.block(),
-            &fixtures::fast_metablock(1, &fixtures::validator_data()),
+            p.value.to_metablock(),
+            fixtures::fast_metablock(1, &fixtures::validator_data()),
             "{case}: the leader did not propose the fast block"
         );
         assert!(
@@ -549,7 +552,10 @@ fn s5_a_silent_view_1_leader_is_replaced_by_the_view_2_leader_with_its_nf_cert()
         swarm.decisions().keys()
     );
 
-    assert_eq!(expect_agreement(&swarm, &live), entries(input.block()));
+    assert_eq!(
+        expect_agreement(&swarm, &live),
+        entries(&input.to_metablock())
+    );
     for (node, decision) in swarm.decisions() {
         assert!(decision.at > views(1), "{node:?} decided before timing out");
         assert_eq!(mvba_view(&decision.proof), Some(2), "{node:?}");
@@ -575,8 +581,8 @@ fn s5_a_silent_view_1_leader_is_replaced_by_the_view_2_leader_with_its_nf_cert()
         .expect("the view-2 leader never proposed");
     assert!(p.justified, "a view-2 proposal without TC_1");
     assert_eq!(
-        p.value.block(),
-        input.block(),
+        p.value.to_metablock(),
+        input.to_metablock(),
         "the view-2 leader did not propose its input"
     );
     let cert = p
@@ -606,8 +612,8 @@ fn s6_a_value_locked_in_view_1_is_re_proposed_with_its_certificates() {
     );
 
     let first_leader = fixtures::leader_of(1);
-    let locked = inputs[&first_leader].block();
-    assert_eq!(expect_agreement(&swarm, &nodes), entries(locked));
+    let locked = inputs[&first_leader].to_metablock();
+    assert_eq!(expect_agreement(&swarm, &nodes), entries(&locked));
     for (node, decision) in swarm.decisions() {
         assert_eq!(mvba_view(&decision.proof), Some(2), "{node:?}");
     }
@@ -626,7 +632,7 @@ fn s6_a_value_locked_in_view_1_is_re_proposed_with_its_certificates() {
 
     let second_leader = fixtures::leader_of(2);
     assert_ne!(
-        inputs[&second_leader].block(),
+        inputs[&second_leader].to_metablock(),
         locked,
         "the test needs distinct inputs"
     );
@@ -636,7 +642,11 @@ fn s6_a_value_locked_in_view_1_is_re_proposed_with_its_certificates() {
         .find(|(_, p)| p.view == 2)
         .expect("the view-2 leader never proposed");
     assert!(p.justified, "a view-2 proposal without TC_1");
-    assert_eq!(p.value.block(), locked, "the view-2 leader broke the lock");
+    assert_eq!(
+        p.value.to_metablock(),
+        locked,
+        "the view-2 leader broke the lock"
+    );
     assert!(
         p.value.fbcert().is_some(),
         "the locked non-fast value lost its FBCert"
@@ -886,11 +896,14 @@ fn s16_a_validator_cut_off_but_for_a_commit_qc_decides_its_own_non_fast_input() 
         .decision_of(&cut)
         .unwrap_or_else(|| panic!("{cut:?} did not decide by {:?}", swarm.now()));
     expect_all_decided(&swarm, &nodes);
-    assert_eq!(expect_agreement(&swarm, &nodes), entries(input.block()));
+    assert_eq!(
+        expect_agreement(&swarm, &nodes),
+        entries(&input.to_metablock())
+    );
 
     assert_eq!(
-        &decision.block,
-        input.block(),
+        decision.block,
+        input.to_metablock(),
         "{cut:?} decided another block"
     );
     assert!(
@@ -1035,7 +1048,7 @@ fn s11_a_byzantine_signer_of_both_not_full_and_a_dummy_vote_unlocks_no_non_fast_
             .any(|s| is_not_full(&s.message)),
         "the Byzantine node never declared NotFull"
     );
-    let non_fast_entries = entries(inputs[&non_fast].block());
+    let non_fast_entries = entries(&inputs[&non_fast].to_metablock());
     for node in &honest {
         for sent in swarm.sent(node) {
             if let Some((view, prepared)) = prepare(&sent.message) {
@@ -1137,7 +1150,7 @@ fn s12_a_byzantine_view_2_leader_s_unadmitted_non_fast_proposal_gets_no_honest_p
 
         let forged_views: Vec<u64> = proposals_of(&swarm, &byzantine)
             .into_iter()
-            .filter(|(_, p)| *p.value.block() == non_fast)
+            .filter(|(_, p)| p.value.to_metablock() == non_fast)
             .map(|(_, p)| p.view)
             .collect();
         assert!(
@@ -1239,7 +1252,7 @@ fn s13_a_tc_1_formed_before_the_nf_cert_waits_for_declarations_then_a_later_lead
                 && p.justified
                 && p.value.nfcert().is_some()
                 && *node == fixtures::leader_of(p.view)
-                && p.value.block() == inputs[node].block()
+                && p.value.to_metablock() == inputs[node].to_metablock()
         });
     let (leader, p) = released.expect("no later unlocked leader proposed its input with an NfCert");
     let cert = p.value.nfcert().expect("just matched");
@@ -1247,7 +1260,7 @@ fn s13_a_tc_1_formed_before_the_nf_cert_waits_for_declarations_then_a_later_lead
         cert.verify(&fixtures::validator_data()),
         "{leader:?}'s NfCert does not verify"
     );
-    assert_eq!(agreed, entries(p.value.block()));
+    assert_eq!(agreed, entries(&p.value.to_metablock()));
     for (node, decision) in swarm.decisions() {
         assert!(
             mvba_view(&decision.proof).is_some_and(|v| v >= 2),
@@ -1323,7 +1336,7 @@ fn a_prepare_certificate_revealed_after_view_1_decides_from_the_blocks_its_signe
         .filter(|node| *node != byzantine)
         .collect();
     let inputs = mixed_inputs(&[]);
-    let locked = entries(inputs[&byzantine].block());
+    let locked = entries(&inputs[&byzantine].to_metablock());
 
     // before GST: view-1 Prepares reach only the Byzantine leader, and the
     // proposals of views 2 and 3 are lost
@@ -1377,7 +1390,7 @@ fn a_prepare_certificate_revealed_after_view_1_decides_from_the_blocks_its_signe
             .find(|(_, p)| p.view == view)
             .unwrap_or_else(|| panic!("the view-{view} leader never proposed"));
         assert_eq!(
-            entries(p.value.block()),
+            entries(&p.value.to_metablock()),
             locked,
             "view {view} broke the lock"
         );

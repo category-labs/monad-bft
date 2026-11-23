@@ -57,8 +57,8 @@ pub mod fixtures {
     use cadence::{
         env::{D33, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader as Header},
         slot::fallback::{
-            CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, Metablock,
-            Mvba, monad_mvba::MvbaContext, slot_fallback::FallbackInput,
+            CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, FastBlock,
+            Metablock, Mvba, monad_mvba::MvbaContext, slot_fallback::FallbackInput,
         },
         types::{
             HeaderAuth, IsVote, ProposalId, StrongQc, ValidatorData, VoteMsg, VotePool, WeakQc,
@@ -185,7 +185,9 @@ pub mod fixtures {
     /// A fast input as the slot fallback takes it: a fast metablock carries no
     /// fallback certificate
     pub fn fast_input(seed: u64, validator_data: &ValidatorData) -> FallbackInput {
-        FallbackInput::fast(fast_metablock(seed, validator_data)).expect("fast block")
+        FallbackInput::fast(
+            FastBlock::try_from(fast_metablock(seed, validator_data)).expect("fast block"),
+        )
     }
 
     /// A non-fast input as the slot fallback takes it: the metablock with the

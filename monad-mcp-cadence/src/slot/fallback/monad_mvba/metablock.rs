@@ -18,7 +18,7 @@ use alloy_rlp::Decodable;
 use super::{
     super::{
         super::{
-            fast::{CertifiedEntry, Entry},
+            fast::{CertifiedEntry, Entry, FastBlock},
             types::{HeaderAuth, Lane, Lanes, ProposalScope, Slot, ValidatorData},
         },
         Metablock, ValidateInput, Votable,
@@ -97,6 +97,15 @@ impl ValidateInput for Metablock {
             &context.header_auth,
             &context.validator_data,
         )
+    }
+}
+
+/// The same checks as a metablock of the same entries
+impl ValidateInput for FastBlock {
+    type Context = ValidationContext;
+
+    fn validate(&self, context: &Self::Context) -> bool {
+        self.is_valid(context.slot, context.num_lanes, &context.validator_data)
     }
 }
 

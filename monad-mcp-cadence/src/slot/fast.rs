@@ -347,10 +347,10 @@ impl FastPath {
     /// other block needs the enter-fallback certificate (case 2), which the
     /// caller has to disseminate.
     pub(crate) fn on_fallback_deadline(&self) -> Option<FallbackInput> {
-        let block = self.try_build_fallback_block()?;
-        if block.is_fast() {
-            return FallbackInput::fast(block);
-        }
+        let block = match FastBlock::try_from(self.try_build_fallback_block()?) {
+            Ok(fast) => return Some(FallbackInput::fast(fast)),
+            Err(block) => block,
+        };
 
         let fbcert = self
             .enter_fallback_votes
@@ -742,12 +742,57 @@ impl FastBlock {
         let vote = FastCommitVote::from(self);
         VoteMsg::new_signed(slot, vote, key)
     }
+
+    /// `entries(B)`, in increasing order of lane
+    pub(crate) fn entries(&self) -> Lanes<Entry> {
+        self.0.as_ref().map(|qc| &qc.verdict).into_owned()
+    }
+
+    /// `Metablock::is_valid` for a block whose entries are all `FastQc`s
+    pub(crate) fn is_valid(
+        &self,
+        slot: Slot,
+        num_lanes: usize,
+        validator_data: &ValidatorData,
+    ) -> bool {
+        if self.0.size() != num_lanes || self.slot() != slot || !self.has_well_formed_lanes() {
+            return false;
+        }
+
+        let mut qcs = self.0.as_ref().into_iter();
+        qcs.all(|qc| qc.verify(validator_data))
+    }
 }
 
 impl From<&FastBlock> for FastCommitVote {
     fn from(block: &FastBlock) -> Self {
-        let entries = block.0.as_ref().map(|qc| &qc.verdict).into_owned();
-        Self { entries }
+        Self {
+            entries: block.entries(),
+        }
+    }
+}
+
+impl From<FastBlock> for Metablock {
+    fn from(block: FastBlock) -> Self {
+        Metablock::new(block.0.map(CertifiedEntry::FastQc))
+    }
+}
+
+/// Succeeds exactly for the paper's fast metablock, every entry a `FastQc`;
+/// any other block comes back unchanged
+impl TryFrom<Metablock> for FastBlock {
+    type Error = Metablock;
+
+    fn try_from(block: Metablock) -> Result<Self, Metablock> {
+        let qcs = block
+            .certified_entries()
+            .map(|cert| match cert {
+                CertifiedEntry::FastQc(qc) => Some(qc),
+                CertifiedEntry::EquivCert(_) | CertifiedEntry::FallbackQc(_) => None,
+            })
+            .try_into_total()
+            .map(Lanes::into_owned);
+        qcs.map(Self).ok_or(block)
     }
 }
 
@@ -1342,6 +1387,26 @@ mod tests {
         FastBlock(Lanes::new(1, |_| qc.clone()))
     }
 
+    // a fallback qc on header(byte) at `scope`, signed by validators 0 and 2
+    fn fallback_qc(scope: ProposalScope, byte: u8) -> FallbackQc {
+        let entry = FallbackEntry(Entry::Positive(pid(byte)));
+        let mut pool = VotePool::new(scope);
+        for index in [0, 2] {
+            let voter = NodeId::dummy(index);
+            let msg = VoteMsg::new_signed(scope, entry.clone(), &voter.keypair());
+            pool.add_vote(dummy_index(voter), msg);
+        }
+        let mut weak_qcs = pool.tally(&validator_data(4)).weak_qcs().into_iter();
+        weak_qcs.next().expect("two of four votes form a weak qc")
+    }
+
+    // a metablock of two lanes, each entry a fast qc on header(1) unless `cert` gives it
+    fn two_lane_metablock(cert: impl Fn(Lane) -> Option<CertifiedEntry>) -> Metablock {
+        Metablock::new(Lanes::new(2, |j| {
+            cert(j).unwrap_or_else(|| fast_qc(ProposalScope::new(SLOT, j), 1).into())
+        }))
+    }
+
     // a fast commit qc on `entries`, signed by validators 0, 2 and 3
     fn fast_commit_qc(entries: Lanes<Entry>) -> FastCommitQc {
         let vote = FastCommitVote { entries };
@@ -1384,6 +1449,62 @@ mod tests {
         assert!(decodes(qc_at(SLOT, 0), qc_at(SLOT, 1)));
         assert!(!decodes(qc_at(SLOT, 1), qc_at(SLOT, 0)));
         assert!(!decodes(qc_at(SLOT, 0), qc_at(other_slot, 1)));
+    }
+
+    #[test]
+    fn a_metablock_of_fast_qcs_is_a_fast_block_and_converts_back_unchanged() {
+        let metablock = two_lane_metablock(|_| None);
+        assert!(metablock.is_fast());
+
+        let block = FastBlock::try_from(metablock.clone()).expect("every entry is a FastQc");
+        assert_eq!(block.entries(), metablock.entries());
+        assert_eq!(Metablock::from(block), metablock);
+    }
+
+    #[test]
+    fn a_metablock_with_any_other_entry_is_returned_unchanged() {
+        let lane = Lane::new_unchecked;
+        let fallback_at = |at: Lane| {
+            two_lane_metablock(move |j| {
+                (j == at).then(|| fallback_qc(ProposalScope::new(SLOT, j), 1).into())
+            })
+        };
+        let equivocated =
+            two_lane_metablock(|j| (j == lane(0)).then(|| EquivCert(header(1), header(2)).into()));
+
+        for metablock in [fallback_at(lane(0)), fallback_at(lane(1)), equivocated] {
+            assert!(!metablock.is_fast());
+            assert_eq!(FastBlock::try_from(metablock.clone()), Err(metablock));
+        }
+    }
+
+    #[test]
+    fn a_fast_block_is_valid_exactly_when_its_metablock_is() {
+        let metablock = two_lane_metablock(|_| None);
+        let block = FastBlock::try_from(metablock.clone()).expect("every entry is a FastQc");
+        let validators = validator_data(4);
+        // only an EquivCert reads headers, and a fast block has none
+        let header_auth = HeaderAuth::new(|_| false);
+        let other_slot = Slot(SLOT.get() + 1);
+
+        for (slot, num_lanes, valid) in [
+            (SLOT, 2, true),
+            (other_slot, 2, false),
+            (SLOT, 1, false),
+            (SLOT, 3, false),
+        ] {
+            let case = format!("slot {slot:?}, {num_lanes} lanes");
+            assert_eq!(
+                block.is_valid(slot, num_lanes, &validators),
+                valid,
+                "{case}"
+            );
+            assert_eq!(
+                metablock.is_valid(slot, num_lanes, &header_auth, &validators),
+                valid,
+                "{case}"
+            );
+        }
     }
 
     #[test]

@@ -23,8 +23,8 @@ use alloy_rlp::{Decodable, Encodable};
 
 use super::{
     super::types::{Lanes, Slot, ValidatorData, ValidatorIndex},
-    EnterFallbackCert, Entry, FallbackCommitQc, MVBAOutput, Metablock, Mvba, ValidateCert,
-    ValidateInput, Votable,
+    EnterFallbackCert, Entry, FallbackCommitQc, FastBlock, MVBAOutput, Metablock, Mvba,
+    ValidateCert, ValidateInput, Votable,
     dummy_view::{DummyQc, DummyView, DummyViewEffect, DummyViewMessage, NfCert},
     monad_mvba::{
         MakesValidationContext, MonadMvba, MvbaContext, MvbaMessage, TimerEvent, ValidationContext,
@@ -42,7 +42,8 @@ pub struct CertifiedMetablock(Certified);
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 enum Certified {
-    Fast(Metablock),
+    Fast(FastBlock),
+    /// Invariant: `!block.is_fast()`, kept by [`CertifiedMetablock::non_fast`]
     NonFast {
         block: Metablock,
         fbcert: EnterFallbackCert,
@@ -51,9 +52,8 @@ enum Certified {
 }
 
 impl CertifiedMetablock {
-    /// `None` unless `block` is fast
-    pub fn fast(block: Metablock) -> Option<Self> {
-        block.is_fast().then_some(Self(Certified::Fast(block)))
+    pub fn fast(block: FastBlock) -> Self {
+        Self(Certified::Fast(block))
     }
 
     /// `None` if `block` is fast
@@ -65,9 +65,11 @@ impl CertifiedMetablock {
         }))
     }
 
-    pub fn block(&self) -> &Metablock {
+    /// The block as a metablock; a fast block is converted, so this copies
+    pub fn to_metablock(&self) -> Metablock {
         match &self.0 {
-            Certified::Fast(block) | Certified::NonFast { block, .. } => block,
+            Certified::Fast(block) => block.clone().into(),
+            Certified::NonFast { block, .. } => block.clone(),
         }
     }
 
@@ -85,26 +87,26 @@ impl CertifiedMetablock {
         }
     }
 
-    // the wire form: the block, then both certificates if it is not fast
-    fn rlp_fields(&self) -> Vec<&dyn Encodable> {
+    // the wire form: the block as a metablock, then both certificates if it is not fast
+    fn with_rlp_fields<R>(&self, f: impl FnOnce(&[&dyn Encodable]) -> R) -> R {
         match &self.0 {
-            Certified::Fast(block) => vec![block],
+            Certified::Fast(block) => f(&[&Metablock::from(block.clone())]),
             Certified::NonFast {
                 block,
                 fbcert,
                 nfcert,
-            } => vec![block, fbcert, nfcert],
+            } => f(&[block, fbcert, nfcert]),
         }
     }
 }
 
 impl Encodable for CertifiedMetablock {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
-        alloy_rlp::encode_list::<_, dyn Encodable>(&self.rlp_fields(), out);
+        self.with_rlp_fields(|fields| alloy_rlp::encode_list::<_, dyn Encodable>(fields, out));
     }
 
     fn length(&self) -> usize {
-        alloy_rlp::list_length::<_, dyn Encodable>(&self.rlp_fields())
+        self.with_rlp_fields(|fields| alloy_rlp::list_length::<_, dyn Encodable>(fields))
     }
 }
 
@@ -113,7 +115,7 @@ impl Decodable for CertifiedMetablock {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let block = Metablock::decode(&mut payload)?;
         let value = match payload.is_empty() {
-            true => Self::fast(block),
+            true => FastBlock::try_from(block).ok().map(Self::fast),
             false => {
                 let fbcert = EnterFallbackCert::decode(&mut payload)?;
                 let nfcert = NfCert::decode(&mut payload)?;
@@ -149,7 +151,10 @@ impl Votable for CertifiedMetablock {
     type Entries = Lanes<Entry>;
 
     fn entries(&self) -> Self::Entries {
-        self.block().entries()
+        match &self.0 {
+            Certified::Fast(block) => block.entries(),
+            Certified::NonFast { block, .. } => block.entries(),
+        }
     }
 }
 
@@ -221,7 +226,8 @@ type Output = MVBAOutput<SlotFallbackMessage, TimerEvent<CertifiedMetablock>>;
 #[derive(Clone, Debug)]
 pub enum FallbackInput {
     #[non_exhaustive]
-    Fast(Metablock),
+    Fast(FastBlock),
+    /// Invariant: `!block.is_fast()`, kept by [`FallbackInput::with_fbcert`]
     #[non_exhaustive]
     NonFast {
         block: Metablock,
@@ -230,23 +236,24 @@ pub enum FallbackInput {
 }
 
 impl FallbackInput {
-    /// A fast block enters alone; `None` for a non-fast block, which needs its fbcert
-    pub fn fast(block: Metablock) -> Option<Self> {
-        block.is_fast().then_some(Self::Fast(block))
+    /// A fast block enters alone
+    pub fn fast(block: FastBlock) -> Self {
+        Self::Fast(block)
     }
 
     /// A block with an fbcert in hand; the cert is dropped if the block is fast
     pub fn with_fbcert(block: Metablock, fbcert: EnterFallbackCert) -> Self {
-        if block.is_fast() {
-            Self::Fast(block)
-        } else {
-            Self::NonFast { block, fbcert }
+        match FastBlock::try_from(block) {
+            Ok(block) => Self::Fast(block),
+            Err(block) => Self::NonFast { block, fbcert },
         }
     }
 
-    pub fn block(&self) -> &Metablock {
+    /// The input as a metablock; a fast block is converted, so this copies
+    pub fn to_metablock(&self) -> Metablock {
         match self {
-            Self::Fast(block) | Self::NonFast { block, .. } => block,
+            Self::Fast(block) => block.clone().into(),
+            Self::NonFast { block, .. } => block.clone(),
         }
     }
 }
@@ -309,7 +316,7 @@ impl SlotFallback {
         if let Some(value) = self.core.decision()
             && let Some(qc) = self.core.decision_proof()
         {
-            self.decision = Some((value.block().clone(), SlotCommitProof::Mvba(qc.clone())));
+            self.decision = Some((value.to_metablock(), SlotCommitProof::Mvba(qc.clone())));
         } else if let Some(FallbackInput::NonFast { block, .. }) = &self.input
             && let Some(qc) = self.core.commit_qc()
             && block.entries() == qc.verdict.0
@@ -339,10 +346,8 @@ impl SlotFallback {
             }
             DummyViewEffect::FastBlock(block) => {
                 // a fast input is already the core's input, with the same entries as any fast block
-                if let Some(FallbackInput::NonFast { .. }) = &self.input
-                    && let Some(value) = CertifiedMetablock::fast(block)
-                {
-                    self.core.set_input(value);
+                if let Some(FallbackInput::NonFast { .. }) = &self.input {
+                    self.core.set_input(CertifiedMetablock::fast(block));
                 }
             }
             DummyViewEffect::NfCert(nf_cert) => {
@@ -360,7 +365,7 @@ impl SlotFallback {
                     return;
                 }
                 // persist-before-send: the certificate that decides the slot
-                self.decision = Some((block.clone(), SlotCommitProof::Dummy(qc.clone())));
+                self.decision = Some((block.clone().into(), SlotCommitProof::Dummy(qc.clone())));
                 self.outputs
                     .push_back(MVBAOutput::Broadcast(SlotFallbackMessage::DummyView(
                         DummyViewMessage::DummyDecision { qc, block },
@@ -398,16 +403,17 @@ impl Mvba<Metablock> for SlotFallback {
         }
 
         // set before starting, so the core's first pass already holds it
-        if let FallbackInput::Fast(block) = &input
-            && let Some(value) = CertifiedMetablock::fast(block.clone())
-        {
-            self.core.set_input(value);
+        let fast_input = match &input {
+            FallbackInput::Fast(block) => Some(block.clone()),
+            FallbackInput::NonFast { .. } => None,
+        };
+        if let Some(block) = &fast_input {
+            self.core.set_input(CertifiedMetablock::fast(block.clone()));
         }
         self.core.start();
-        let block = input.block().clone();
         self.input = Some(input);
 
-        self.dummy_view.enter(block);
+        self.dummy_view.enter(fast_input);
         for effect in std::mem::take(&mut self.buffered_effects) {
             self.apply(effect);
         }
@@ -512,6 +518,10 @@ mod tests {
         h::metablock(seed, &h::validator_data())
     }
 
+    fn fast_block(seed: u64) -> FastBlock {
+        FastBlock::try_from(fast(seed)).expect("every entry is a FastQc")
+    }
+
     fn non_fast(seed: u64) -> Metablock {
         h::mixed_evidence_metablock(seed, &h::validator_data())
     }
@@ -555,7 +565,7 @@ mod tests {
         instance
     }
 
-    fn fast_input(block: &Metablock) -> SlotFallbackMessage {
+    fn fast_input(block: &FastBlock) -> SlotFallbackMessage {
         SlotFallbackMessage::DummyView(DummyViewMessage::FastInput(block.clone()))
     }
 
@@ -576,7 +586,7 @@ mod tests {
         SlotFallbackMessage::DummyView(not_full_of(node))
     }
 
-    fn dummy_decision(block: &Metablock) -> SlotFallbackMessage {
+    fn dummy_decision(block: &FastBlock) -> SlotFallbackMessage {
         let vote = DummyVote(block.entries());
         SlotFallbackMessage::DummyView(DummyViewMessage::DummyDecision {
             qc: h::strong_qc(h::SLOT, vote, &h::quorum(), &h::validator_data()),
@@ -734,7 +744,6 @@ mod tests {
             alloy_rlp::encode(&certified)
         );
 
-        assert!(CertifiedMetablock::fast(block.clone()).is_none());
         assert!(!decodes(&wire(&block, &[])));
         assert!(!decodes(&wire(&block, &[&fbcert()])));
         assert!(!decodes(&wire(&block, &[&nfcert()])));
@@ -764,7 +773,7 @@ mod tests {
         let context = validation_context();
         let block = fast(1);
 
-        let bare = CertifiedMetablock::fast(block.clone()).expect("a fast metablock");
+        let bare = CertifiedMetablock::fast(fast_block(1));
         assert!(bare.validate(&context));
         assert!(bare.fbcert().is_none() && bare.nfcert().is_none());
         assert_eq!(wire(&block, &[]), alloy_rlp::encode(&bare));
@@ -781,14 +790,14 @@ mod tests {
 
         assert_eq!(certified.entries(), block.entries());
         // nor do they tell a fast metablock from a non-fast one
-        let fast_value = CertifiedMetablock::fast(fast(1)).expect("a fast metablock");
+        let fast_value = CertifiedMetablock::fast(fast_block(1));
         assert_eq!(certified.entries(), fast_value.entries());
     }
 
     #[test]
     fn a_certified_metablock_round_trips() {
         let context = validation_context();
-        let fast_value = CertifiedMetablock::fast(fast(1)).expect("a fast metablock");
+        let fast_value = CertifiedMetablock::fast(fast_block(1));
         let certified = certified(1);
         for value in [&fast_value, &certified] {
             assert!(assert_roundtrip(value).validate(&context));
@@ -797,6 +806,24 @@ mod tests {
         // the pairing is checked at decode, validity at ingress
         assert!(!decodes(&wire(&non_fast(1), &[])));
         assert!(!decodes(&wire(&non_fast(1), &[&fbcert()])));
+    }
+
+    #[test]
+    fn a_fast_value_is_sent_as_its_metablock() {
+        let block = fast_block(1);
+        let value = CertifiedMetablock::fast(block.clone());
+        let metablock = Metablock::from(block);
+
+        let bytes = alloy_rlp::encode(&value);
+        assert_eq!(bytes, wire(&metablock, &[]));
+        assert_eq!(value.length(), bytes.len());
+        assert_eq!(value.to_metablock(), metablock);
+        let decoded = alloy_rlp::decode_exact::<CertifiedMetablock>(&bytes)
+            .expect("a fast metablock alone decodes");
+        assert_eq!(decoded, value);
+
+        // a non-fast metablock alone is no value
+        assert!(!decodes(&wire(&non_fast(1), &[])));
     }
 
     #[test]
@@ -824,7 +851,7 @@ mod tests {
         assert_eq!(timers(&outputs), vec![TimerEvent::ViewTimeout(h::view(1))]);
         let sent = dummy_view_messages(&outputs);
         assert_eq!(sent.len(), 2, "{sent:?}");
-        assert!(sent.contains(&&DummyViewMessage::FastInput(block.clone())));
+        assert!(sent.contains(&&DummyViewMessage::FastInput(fast_block(1))));
         assert!(sent.contains(&&dummy_vote_of(follower, &block)));
         assert_eq!(broadcasts(&outputs).len(), 2);
 
@@ -872,14 +899,14 @@ mod tests {
 
         let sent = dummy_view_messages(&outputs);
         assert_eq!(sent.len(), 2, "{sent:?}");
-        assert!(sent.contains(&&DummyViewMessage::FastInput(block.clone())));
+        assert!(sent.contains(&&DummyViewMessage::FastInput(fast_block(1))));
         assert!(sent.contains(&&dummy_vote_of(leader, &block)));
 
         let proposed = proposals(&outputs);
         assert_eq!(proposed.len(), 1);
         let proposal = proposed[0];
         assert_eq!(proposal.view, h::view(1));
-        let value = CertifiedMetablock::fast(block).expect("a fast metablock");
+        let value = CertifiedMetablock::fast(fast_block(1));
         assert_eq!(proposal.value, value);
         assert!(proposal.value.validate(&validation_context()));
         assert!(proposal.tc.is_none());
@@ -907,7 +934,7 @@ mod tests {
         assert_eq!(proposed.len(), 1);
         let proposal = proposed[0];
         assert_eq!(proposal.view, h::view(1));
-        assert_eq!(proposal.value.block(), &block);
+        assert_eq!(proposal.value.to_metablock(), block);
         assert_eq!(proposal.value.fbcert(), Some(&fbcert()));
         let nf_cert = proposal
             .value
@@ -920,7 +947,7 @@ mod tests {
     #[test]
     fn a_received_fast_block_releases_a_non_fast_leader_with_that_block() {
         let leader = h::leader_of(h::view(1));
-        let received = fast(2);
+        let received = fast_block(2);
         let mut instance = started(leader, &non_fast(1));
         drain(&mut instance);
 
@@ -928,7 +955,7 @@ mod tests {
         let outputs = drain(&mut instance);
         let proposed = proposals(&outputs);
         assert_eq!(proposed.len(), 1);
-        let value = CertifiedMetablock::fast(received).expect("a fast metablock");
+        let value = CertifiedMetablock::fast(received);
         assert_eq!(proposed[0].value, value);
         assert!(proposed[0].value.nfcert().is_none());
 
@@ -964,7 +991,7 @@ mod tests {
         let proposal = proposed[0];
         assert_eq!(proposal.view, h::view(2));
         assert!(proposal.tc.is_some(), "justified by TC_1");
-        assert_eq!(proposal.value.block(), &block);
+        assert_eq!(proposal.value.to_metablock(), block);
         assert_eq!(proposal.value.fbcert(), Some(&fbcert()));
         let nf_cert = proposal
             .value
@@ -984,7 +1011,7 @@ mod tests {
             "test assumes a view-2 leader"
         );
         let own = non_fast(1);
-        let received = fast(2);
+        let received = fast_block(2);
 
         let deliver_nf_cert = |instance: &mut SlotFallback| {
             for node in h::quorum() {
@@ -1020,7 +1047,7 @@ mod tests {
                 let proposed = proposals(&outputs);
                 assert_eq!(proposed.len(), 1, "{case}");
                 assert_eq!(proposed[0].view, h::view(2), "{case}");
-                let value = CertifiedMetablock::fast(received.clone()).expect("a fast metablock");
+                let value = CertifiedMetablock::fast(received.clone());
                 assert_eq!(proposed[0].value, value, "{case}");
                 assert!(
                     proposed[0].value.fbcert().is_none() && proposed[0].value.nfcert().is_none(),
@@ -1032,12 +1059,11 @@ mod tests {
 
     #[test]
     fn a_fast_input_is_not_displaced_by_a_received_fast_block() {
-        let received = fast(2);
+        let received = fast_block(2);
         for view in [1, 2] {
             let leader = h::leader_of(h::view(view));
             assert_ne!(h::nodes()[0], leader, "test assumes another sender");
-            let own = fast(1);
-            let mut instance = started(leader, &own);
+            let mut instance = started(leader, &fast(1));
             deliver(&mut instance, h::nodes()[0], fast_input(&received));
             deliver(&mut instance, h::nodes()[0], tc(1));
 
@@ -1045,7 +1071,7 @@ mod tests {
             let proposed = proposals(&outputs);
             assert_eq!(proposed.len(), 1, "view {view}");
             assert_eq!(proposed[0].view, h::view(view));
-            let value = CertifiedMetablock::fast(own).expect("a fast metablock");
+            let value = CertifiedMetablock::fast(fast_block(1));
             assert_eq!(proposed[0].value, value, "view {view}");
         }
     }
@@ -1066,12 +1092,13 @@ mod tests {
             );
 
             let sent = dummy_view_messages(&outputs);
-            if block.is_fast() {
-                assert_eq!(sent.len(), 2, "{sent:?}");
-                assert!(sent.contains(&&DummyViewMessage::FastInput(block.clone())));
-                assert!(sent.contains(&&dummy_vote_of(node, &block)));
-            } else {
-                assert_eq!(sent, vec![&not_full_of(node)]);
+            match FastBlock::try_from(block.clone()) {
+                Ok(fast_block) => {
+                    assert_eq!(sent.len(), 2, "{sent:?}");
+                    assert!(sent.contains(&&DummyViewMessage::FastInput(fast_block)));
+                    assert!(sent.contains(&&dummy_vote_of(node, &block)));
+                }
+                Err(_) => assert_eq!(sent, vec![&not_full_of(node)]),
             }
         }
     }
@@ -1084,7 +1111,7 @@ mod tests {
         let block = fast(1);
         let mut instance = started(node, &block);
 
-        deliver(&mut instance, leader, fast_input(&block));
+        deliver(&mut instance, leader, fast_input(&fast_block(1)));
         for voter in &h::quorum()[..2] {
             deliver(&mut instance, *voter, dummy_vote(*voter, &block));
         }
@@ -1106,7 +1133,7 @@ mod tests {
         assert!(qc.verify(&h::validator_data()));
         let decision = DummyViewMessage::DummyDecision {
             qc: qc.clone(),
-            block: block.clone(),
+            block: fast_block(1),
         };
         assert_eq!(
             broadcasts(&outputs),
@@ -1116,7 +1143,7 @@ mod tests {
 
         // the core is abandoned: no vote on the leader's proposal, no timeout,
         // and its own certificate changes nothing
-        let value = CertifiedMetablock::fast(block.clone()).expect("a fast metablock");
+        let value = CertifiedMetablock::fast(fast_block(1));
         let proposal = Proposal::new_signed(h::SLOT, h::view(1), value, None, &leader.keypair());
         deliver(
             &mut instance,
@@ -1144,7 +1171,7 @@ mod tests {
         assert!(timers(&outputs).contains(&TimerEvent::ViewTimeout(h::view(2))));
 
         // votes sent again complete the quorum while the core is in view 2
-        deliver(&mut instance, h::nodes()[1], fast_input(&block));
+        deliver(&mut instance, h::nodes()[1], fast_input(&fast_block(1)));
         for voter in h::quorum() {
             deliver(&mut instance, voter, dummy_vote(voter, &block));
         }
@@ -1191,7 +1218,7 @@ mod tests {
 
         // the first recorded decision wins: a dummy certificate on the same
         // entries, arriving later, replaces neither the block nor the proof
-        deliver(&mut instance, h::nodes()[1], dummy_decision(&fast(1)));
+        deliver(&mut instance, h::nodes()[1], dummy_decision(&fast_block(1)));
         assert!(drain(&mut instance).is_empty());
         assert_eq!(instance.decision(), Some(&block));
         assert_eq!(instance.decision_proof(), Some(&SlotCommitProof::Mvba(qc)));
@@ -1248,26 +1275,25 @@ mod tests {
         let outputs = drain(&mut instance);
         let proposed = proposals(&outputs);
         assert_eq!(proposed.len(), 1);
-        assert_eq!(proposed[0].value.block(), &own);
+        assert_eq!(proposed[0].value.to_metablock(), own);
         assert!(proposed[0].value.nfcert().is_some());
 
         // a fast block: a non-fast leader proposes it at entry instead
-        let received = fast(2);
         let mut instance = slot_fallback(leader);
-        deliver(&mut instance, h::nodes()[0], fast_input(&received));
+        deliver(&mut instance, h::nodes()[0], fast_input(&fast_block(2)));
         assert!(drain(&mut instance).is_empty());
         instance.propose(FallbackInput::with_fbcert(own, fbcert()));
         let outputs = drain(&mut instance);
         let proposed = proposals(&outputs);
         assert_eq!(proposed.len(), 1);
-        assert_eq!(proposed[0].value.block(), &received);
+        assert_eq!(proposed[0].value.to_metablock(), fast(2));
         assert!(proposed[0].value.nfcert().is_none());
 
         // a quorum of dummy votes and their block: the decision waits for the
         // input, then is made at entry
         let block = fast(1);
         let mut instance = slot_fallback(h::nodes()[0]);
-        deliver(&mut instance, leader, fast_input(&block));
+        deliver(&mut instance, leader, fast_input(&fast_block(1)));
         for voter in h::quorum() {
             deliver(&mut instance, voter, dummy_vote(voter, &block));
         }
@@ -1276,7 +1302,7 @@ mod tests {
             instance.decision().is_none(),
             "holding the certificate does not start the instance"
         );
-        instance.propose(FallbackInput::fast(block.clone()).expect("fast block"));
+        instance.propose(FallbackInput::fast(fast_block(1)));
         assert_eq!(instance.decision(), Some(&block));
         assert!(matches!(
             instance.decision_proof(),
@@ -1339,7 +1365,7 @@ mod tests {
             prepared(&drain(&mut instance))
         };
 
-        let bare_fast = CertifiedMetablock::fast(fast(2)).expect("a fast metablock");
+        let bare_fast = CertifiedMetablock::fast(fast_block(2));
         assert_eq!(
             prepared_in_view_1(bare_fast),
             Some(fast(2).entries()),
@@ -1383,7 +1409,7 @@ mod tests {
                 "nothing locked, so the value must stand on its own: {case}"
             );
         }
-        let bare_fast = CertifiedMetablock::fast(fast(2)).expect("a fast metablock");
+        let bare_fast = CertifiedMetablock::fast(fast_block(2));
         assert_eq!(
             prepared_in_view_2(bare_fast),
             Some(fast(2).entries()),
@@ -1503,13 +1529,13 @@ mod tests {
         messages.extend([request, response]);
 
         // a fast view-1 leader: its block, its vote, its proposal, the decision
-        let fast_block = fast(3);
-        let mut voter = started(silent, &fast_block);
+        let fast_metablock = fast(3);
+        let mut voter = started(silent, &fast_metablock);
         let entry = drain(&mut voter);
         messages.extend(broadcasts(&entry).into_iter().cloned());
-        deliver(&mut voter, silent, fast_input(&fast_block));
+        deliver(&mut voter, silent, fast_input(&fast_block(3)));
         for node in h::quorum() {
-            deliver(&mut voter, node, dummy_vote(node, &fast_block));
+            deliver(&mut voter, node, dummy_vote(node, &fast_metablock));
         }
         let decided = drain(&mut voter);
         messages.extend(broadcasts(&decided).into_iter().cloned());
