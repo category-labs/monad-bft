@@ -16,8 +16,9 @@
 //! Access rules of the domain RPC.
 //!
 //! [`super::auth`] establishes who is calling; this module decides what that account is
-//! served. A caller is either an operator of the domain, who is exempt from every rule, or
-//! any other account, which is served the [`Policy::Open`] methods and its own data:
+//! served. A caller is either an operator of the domain, who is exempt from every rule but
+//! that of a call, or any other account, which is served the [`Policy::Open`] methods and its
+//! own data:
 //!
 //! | Methods | Rule |
 //! |---|---|
@@ -25,20 +26,33 @@
 //! | `eth_getTransactionByHash` | the caller sent the transaction |
 //! | `eth_getTransactionReceipt` | the caller sent the transaction; its logs are removed |
 //! | `eth_getLogs` | the filter has the caller as the only value of a topic position |
+//! | `eth_call`, `eth_createAccessList`, `eth_estimateGas` | the caller is the sender of the call |
+//!
+//! A call has its caller as its sender and runs on the domain's own state, without state
+//! overrides, for an operator as for any other account. What it may reach from its sender is
+//! decided where it executes.
 //!
 //! A log filter may narrow its result by contract and by other topics. `eth_getLogs` reads a
 //! block only if the block's bloom filter matches the whole filter, so the time a response
 //! takes can tell a caller whether those other values occur in the logs of a block that names
 //! it.
 
+use std::collections::BTreeMap;
+
 use alloy_consensus::ReceiptEnvelope;
 use alloy_primitives::{Address, Bloom};
 use alloy_rpc_types::{Filter, TransactionReceipt};
+use serde::de::IgnoredAny;
+use serde_json::value::{to_raw_value, RawValue};
 
-use crate::types::jsonrpc::JsonRpcError;
+use crate::types::jsonrpc::{JsonRpcError, JsonRpcResultExt, RequestParams};
 
 /// JSON-RPC error code of a request the authenticated account is not allowed to make.
 pub const FORBIDDEN_ERROR_CODE: i32 = -32007;
+
+fn raw_json<T: serde::Serialize>(value: &T) -> Result<Box<RawValue>, JsonRpcError> {
+    to_raw_value(value).map_err(|err| JsonRpcError::internal_error(err.to_string()))
+}
 
 fn forbidden(message: String) -> JsonRpcError {
     JsonRpcError {
@@ -57,6 +71,9 @@ pub struct Caller {
     pub operator: bool,
 }
 
+/// Number of parameters of a call ahead of its state overrides: the transaction and the block.
+const CALL_PARAMS_BEFORE_OVERRIDES: usize = 2;
+
 /// Who a method is served to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Policy {
@@ -64,6 +81,8 @@ pub enum Policy {
     Open,
     /// Every authenticated account, for its own data only.
     OwnData,
+    /// Every authenticated account, for a call it is the sender of.
+    OwnCall,
     /// Operators of the domain.
     OperatorOnly,
 }
@@ -129,6 +148,31 @@ impl Caller {
         }
     }
 
+    /// The parameters of a call, `[transaction, block, state overrides]`, as the caller may
+    /// make it: without state overrides, and with the caller as its sender. An operator is no
+    /// exception.
+    pub fn own_call(&self, params: RequestParams<'_>) -> Result<Box<RawValue>, JsonRpcError> {
+        // Parameters are kept as raw JSON, so that nothing but the sender is rewritten.
+        let mut params: Vec<Box<RawValue>> = serde_json::from_str(params.get()).invalid_params()?;
+        for overrides in params.iter().skip(CALL_PARAMS_BEFORE_OVERRIDES) {
+            let overrides: Option<BTreeMap<String, IgnoredAny>> =
+                serde_json::from_str(overrides.get()).invalid_params()?;
+            if overrides.is_some_and(|overrides| !overrides.is_empty()) {
+                return Err(forbidden(
+                    "state overrides are not served on a private domain".into(),
+                ));
+            }
+        }
+        let transaction = params
+            .first_mut()
+            .ok_or_else(JsonRpcError::invalid_params)?;
+        let mut fields: BTreeMap<String, Box<RawValue>> =
+            serde_json::from_str(transaction.get()).invalid_params()?;
+        fields.insert("from".into(), raw_json(&self.signer)?);
+        *transaction = raw_json(&fields)?;
+        raw_json(&params)
+    }
+
     /// Removes the logs of `receipt`.
     pub fn remove_logs(&self, receipt: &mut TransactionReceipt) {
         if self.operator {
@@ -148,9 +192,10 @@ impl Caller {
 mod tests {
     use alloy_primitives::Address;
     use alloy_rpc_types::Filter;
+    use serde_json::{json, value::to_raw_value, Value};
 
     use super::{Caller, FORBIDDEN_ERROR_CODE};
-    use crate::types::jsonrpc::JsonRpcError;
+    use crate::types::jsonrpc::{ErrorCode, JsonRpcError, RequestParams};
 
     const SIGNER: Address = Address::repeat_byte(0x11);
     const OTHER: Address = Address::repeat_byte(0x22);
@@ -193,6 +238,42 @@ mod tests {
             OPERATOR.require_sender(Some(OTHER), sender),
             Ok(Some(OTHER))
         );
+    }
+
+    /// The parameters `caller` may make the call `params` with.
+    fn own_call(caller: Caller, params: Value) -> Result<Value, JsonRpcError> {
+        let params = to_raw_value(&params).unwrap();
+        caller
+            .own_call(RequestParams::new(&params))
+            .map(|params| serde_json::from_str(params.get()).unwrap())
+    }
+
+    #[test]
+    fn caller_is_the_sender_of_its_calls() {
+        let call = |from: Option<Address>| json!([{"from": from, "to": OTHER}, "latest"]);
+        for caller in [USER, OPERATOR] {
+            for from in [None, Some(OTHER)] {
+                assert_eq!(own_call(caller, call(from)).unwrap(), call(Some(SIGNER)));
+            }
+        }
+    }
+
+    #[test]
+    fn calls_take_no_state_overrides() {
+        let call = |overrides: Value| json!([{"to": OTHER}, "latest", overrides]);
+        let overrides = json!({ (OTHER.to_string()): {"balance": "0x1"} });
+        for caller in [USER, OPERATOR] {
+            assert!(own_call(caller, call(json!({}))).is_ok());
+            assert_forbidden(own_call(caller, call(overrides.clone())));
+        }
+    }
+
+    #[test]
+    fn call_parameters_are_positional() {
+        for params in [json!({"transaction": {"to": OTHER}}), json!([])] {
+            let err = own_call(USER, params).unwrap_err();
+            assert_eq!(err.code, ErrorCode::InvalidParams as i32);
+        }
     }
 
     #[test]
