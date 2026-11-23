@@ -5701,6 +5701,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-math"
+version = "0.1.0"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "monad-mcp-cadence"
 version = "0.1.0"
 dependencies = [
