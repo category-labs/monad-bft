@@ -24,6 +24,10 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.auth.authenticated_udp_bytes_read",
         help: "Bytes read via authenticated UDP",
     }
+    pub COUNTER_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BUFFER_FAILURES {
+        name: "monad.raptorcast.auth.authenticated_udp_buffer_failures",
+        help: "Failed attempts to buffer authenticated UDP message pieces",
+    }
     pub GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_WRITTEN {
         name: "monad.raptorcast.auth.direct_udp_bytes_written",
         help: "Bytes written via direct UDP",
@@ -31,6 +35,10 @@ monad_executor::metric_consts! {
     pub GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_READ {
         name: "monad.raptorcast.auth.direct_udp_bytes_read",
         help: "Bytes read via direct UDP",
+    }
+    pub COUNTER_RAPTORCAST_AUTH_DIRECT_UDP_BUFFER_FAILURES {
+        name: "monad.raptorcast.auth.direct_udp_buffer_failures",
+        help: "Failed attempts to buffer direct UDP message pieces",
     }
 }
 
@@ -41,6 +49,7 @@ pub(crate) fn init_socket_executor_metrics() -> ExecutorMetrics {
     ExecutorMetrics::with_metric_defs(&[
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
+        COUNTER_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BUFFER_FAILURES,
     ])
 }
 
@@ -48,5 +57,6 @@ pub(crate) fn init_direct_udp_executor_metrics() -> ExecutorMetrics {
     ExecutorMetrics::with_metric_defs(&[
         GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_READ,
+        COUNTER_RAPTORCAST_AUTH_DIRECT_UDP_BUFFER_FAILURES,
     ])
 }
