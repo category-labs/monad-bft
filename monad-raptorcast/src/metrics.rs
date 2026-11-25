@@ -32,6 +32,10 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.total_deserialize_errors",
         help: "Total raptorcast message deserialization errors",
     }
+    pub COUNTER_RAPTORCAST_MESSAGES_RATE_LIMITED {
+        name: "monad.raptorcast.messages_rate_limited",
+        help: "Messages dropped before body decoding by per-identity protocol limits",
+    }
     pub GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED {
         name: "monad.raptorcast.decoding_cache.signature_verifications_rate_limited",
         help: "Signature verifications rate limited",
@@ -81,6 +85,7 @@ pub(crate) fn init_router_executor_metrics() -> ExecutorMetrics {
         GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED,
         GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
         GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS,
+        COUNTER_RAPTORCAST_MESSAGES_RATE_LIMITED,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE,

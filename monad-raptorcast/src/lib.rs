@@ -46,6 +46,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     ControlPanelEvent, GetFullNodes, GetPeers, Message, MonadEvent, PeerEntry, RouterCommand,
 };
+use monad_message_rate_limit::RateLimiter;
 use monad_node_config::{FullNodeConfig, FullNodeRaptorCastConfig};
 use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
@@ -77,8 +78,8 @@ use crate::{
     metrics::{
         init_router_executor_metrics, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT,
-        GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS, GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED,
-        GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
+        COUNTER_RAPTORCAST_MESSAGES_RATE_LIMITED, GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS,
+        GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
     },
     packet::RetrofitResult as _,
     raptorcast_secondary::{
@@ -138,6 +139,7 @@ where
     current_epoch: Epoch,
 
     udp_state: udp::UdpState<ST>,
+    message_rate_limiter: RateLimiter<NodeId<CertificateSignaturePubKey<ST>>>,
     message_builder: OwnedMessageBuilder<ST>,
     secondary_message_builder: Option<OwnedMessageBuilder<ST>>,
 
@@ -302,6 +304,7 @@ where
             current_epoch,
 
             udp_state,
+            message_rate_limiter: RateLimiter::registered(),
 
             published_primary_rounds: PublishedRounds::new(),
             published_secondary_rounds: PublishedRounds::new(),
@@ -1330,8 +1333,15 @@ where
                     .collect_vec()
             );
 
+            // TODO(dshulyak): when unauthenticated UDP is removed, source rate-limit
+            // identities only from WireAuth so its per-IP identity limits apply.
+            // Churning this LRU to reset message budgets will then require multiple IPs.
             for (from, decoded) in decoded_app_messages {
-                match InboundRouterMessage::<M, ST>::try_deserialize(&decoded) {
+                match InboundRouterMessage::<M, ST>::try_deserialize_rate_limited(
+                    &decoded,
+                    &from,
+                    &mut this.message_rate_limiter,
+                ) {
                     Ok(inbound) => match inbound {
                         InboundRouterMessage::AppMessage(app_message) => {
                             trace!("RaptorCastPrimary rx deserialized AppMessage");
@@ -1396,6 +1406,11 @@ where
                             }
                         }
                     },
+                    Err(message::DeserializeError::RateLimited(_)) => {
+                        this.metrics
+                            .gauge(COUNTER_RAPTORCAST_MESSAGES_RATE_LIMITED)
+                            .inc();
+                    }
                     Err(err) => {
                         this.metrics
                             .gauge(GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS)
@@ -1419,7 +1434,11 @@ where
                         let from = msg
                             .sender
                             .expect("framed direct udp transport requires authenticated messages");
-                        match InboundRouterMessage::<M, ST>::try_deserialize(&msg.payload) {
+                        match InboundRouterMessage::<M, ST>::try_deserialize_rate_limited(
+                            &msg.payload,
+                            &from,
+                            &mut this.message_rate_limiter,
+                        ) {
                             Ok(InboundRouterMessage::AppMessage(app_message)) => {
                                 this.pending_events
                                     .push_back(RaptorCastEvent::Message(app_message.event(from)));
@@ -1435,6 +1454,11 @@ where
                                     ?from,
                                     "dropping full-nodes group message received over direct udp"
                                 );
+                            }
+                            Err(message::DeserializeError::RateLimited(_)) => {
+                                this.metrics
+                                    .gauge(COUNTER_RAPTORCAST_MESSAGES_RATE_LIMITED)
+                                    .inc();
                             }
                             Err(err) => {
                                 trace!(
@@ -1483,6 +1507,7 @@ where
                 }
             };
             let app_message_bytes = payload.slice(SIGNATURE_SIZE..);
+            // TODO(dshulyak): enforce per-identity message rate limits once WireAuth TCP lands.
             let deserialized_message =
                 match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
                     Ok(message) => message,
