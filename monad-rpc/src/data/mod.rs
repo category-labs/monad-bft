@@ -21,7 +21,7 @@ use std::{
 use alloy_consensus::{
     transaction::Recovered, Header as RlpHeader, ReceiptWithBloom, Transaction as _,
 };
-use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, U256};
+use alloy_primitives::{Bloom, FixedBytes, TxHash, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{
     BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Receipt,
@@ -37,7 +37,7 @@ use monad_eth_types::{
 };
 use monad_transaction::{
     rpc::{Block, Transaction, TransactionReceipt},
-    ReceiptEnvelope,
+    ReceiptEnvelope, TxEnvelope,
 };
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{BlockId, Hash, SeqNum};
@@ -238,7 +238,7 @@ where
                 header_subset,
             }) = archive_reader.get_tx_indexed_data(tx_hash).await?
             {
-                return Ok(parse_tx_receipt(
+                return parse_tx_receipt(
                     header_subset.block_hash,
                     header_subset.block_number,
                     header_subset.block_timestamp,
@@ -247,7 +247,8 @@ where
                     tx,
                     receipt,
                     header_subset.gas_used,
-                ));
+                )
+                .map_err(|message| ChainStateError::Archive(message.into()));
             }
         }
 
@@ -291,6 +292,7 @@ where
                                 block.header.base_fee_per_gas,
                                 tx.clone(),
                                 index,
+                                archive_calls_executed(archive_reader, &tx.tx).await?,
                             ));
                         }
                     }
@@ -328,6 +330,7 @@ where
                                 block.header.base_fee_per_gas,
                                 tx.clone(),
                                 index,
+                                archive_calls_executed(archive_reader, &tx.tx).await?,
                             ));
                         }
                     }
@@ -374,8 +377,9 @@ where
                     header_subset.block_number,
                     header_subset.block_timestamp,
                     header_subset.base_fee_per_gas,
-                    tx,
+                    tx.clone(),
                     header_subset.tx_index,
+                    archive_calls_executed(archive_reader, &tx.tx).await?,
                 ));
             }
         }
@@ -1048,6 +1052,7 @@ async fn fetch_bloom_filtered_header_transactions_receipts_from_archive(
         header_hash_precomputed,
 
         transactions,
+        ..
     }) = data_source
         .get_block(block_pointer)
         .await
@@ -1273,6 +1278,7 @@ fn parse_block_content(block_data: HistoricalBlockData, return_full_txns: bool) 
         header_hash_precomputed,
 
         transactions,
+        calls_executed,
     } = block_data;
 
     let block_hash = header_hash_precomputed.unwrap_or_else(|| header.hash_slow());
@@ -1291,6 +1297,7 @@ fn parse_block_content(block_data: HistoricalBlockData, return_full_txns: bool) 
                     header.base_fee_per_gas,
                     tx,
                     idx as u64,
+                    calls_executed.get(idx).copied().flatten(),
                 )
             })
             .collect();
@@ -1326,6 +1333,7 @@ pub fn parse_tx_content(
     base_fee: Option<u64>,
     tx: TxEnvelopeWithSender,
     tx_index: u64,
+    calls_executed: Option<u32>,
 ) -> Transaction {
     let TxEnvelopeWithSender { tx, sender } = tx;
 
@@ -1333,6 +1341,9 @@ pub fn parse_tx_content(
     let effective_gas_price = tx.effective_gas_price(base_fee);
 
     Transaction {
+        native_execution: calls_executed.map_or(Default::default(), |calls_executed| {
+            monad_transaction::rpc::NativeExecution::Mined { calls_executed }
+        }),
         inner: Recovered::new_unchecked(tx, sender),
         block_hash: Some(block_hash),
         block_number: Some(block_number),
@@ -1353,6 +1364,7 @@ pub fn parse_receipt_envelope(
     let ReceiptWithLogIndex {
         receipt,
         starting_log_index,
+        ..
     } = receipt;
 
     let logs: Vec<Log> = receipt
@@ -1399,10 +1411,26 @@ pub fn parse_tx_receipt(
     tx: TxEnvelopeWithSender,
     receipt: ReceiptWithLogIndex,
     gas_used: u64,
-) -> TransactionReceipt {
+) -> Result<TransactionReceipt, &'static str> {
     let TxEnvelopeWithSender { tx, sender } = tx;
 
     let tx_hash = *tx.hash();
+
+    let projected_to = if let Some(native) = tx.as_monad() {
+        let signed_count = native.tx().calls.as_ref().map_or(1, Vec::len);
+        let attempted = match receipt.calls_executed {
+            Some(count) if count > 0 && count as usize <= signed_count => count,
+            None if !native.tx().is_batch() => 1,
+            _ => return Err("missing or invalid native receipt execution metadata"),
+        };
+        if attempted == 1 {
+            native.tx().first_call().to.to().copied()
+        } else {
+            None
+        }
+    } else {
+        tx.to()
+    };
 
     let inner = parse_receipt_envelope(
         block_hash,
@@ -1413,19 +1441,16 @@ pub fn parse_tx_receipt(
         receipt,
     );
 
-    let contract_address = match tx.kind() {
-        TxKind::Create => Some(sender.create(tx.nonce())),
-        _ => None,
-    };
+    let contract_address = tx.is_create().then(|| sender.create(tx.nonce()));
 
-    TransactionReceipt {
+    Ok(TransactionReceipt {
         inner,
         transaction_hash: tx_hash,
         transaction_index: Some(tx_index),
         block_hash: Some(block_hash),
         block_number: Some(block_number),
         from: sender,
-        to: tx.to(),
+        to: projected_to,
         contract_address,
         gas_used,
         // effective gas price is calculated according to eth json rpc specification
@@ -1433,7 +1458,7 @@ pub fn parse_tx_receipt(
         // TODO: EIP4844 fields
         blob_gas_used: None,
         blob_gas_price: None,
-    }
+    })
 }
 
 pub fn map_block_receipts<R>(
@@ -1453,7 +1478,7 @@ pub fn map_block_receipts<R>(
 
     let mut cumulative_gas_used = 0u64;
 
-    Ok(transactions
+    transactions
         .into_iter()
         .zip(receipts)
         .enumerate()
@@ -1472,11 +1497,12 @@ pub fn map_block_receipts<R>(
                 tx,
                 receipt,
                 tx_gas_used,
-            );
+            )
+            .map_err(|message| JsonRpcError::internal_error(message.into()))?;
 
-            f(parsed_receipt)
+            Ok(f(parsed_receipt))
         })
-        .collect())
+        .collect()
 }
 
 fn header_transactions_receipts_to_block_number_logs<'a>(
@@ -1511,6 +1537,21 @@ fn header_transactions_receipts_to_block_number_logs<'a>(
     ))
 }
 
+async fn archive_calls_executed(
+    archive: &ArchiveReader,
+    tx: &TxEnvelope,
+) -> Result<Option<u32>, ChainStateError> {
+    if tx.native_calls().is_none() {
+        return Ok(None);
+    }
+    archive
+        .get_receipt(tx.hash())
+        .await?
+        .and_then(|(receipt, _)| receipt.calls_executed)
+        .map(Some)
+        .ok_or(ChainStateError::ResourceNotFound)
+}
+
 #[tracing::instrument(level = "debug")]
 async fn get_transaction_from_triedb<T: Triedb>(
     triedb_env: &T,
@@ -1531,14 +1572,28 @@ async fn get_transaction_from_triedb<T: Triedb>(
         .await
         .map_err(ChainStateError::Triedb)?
     {
-        Some(tx) => Ok(Some(parse_tx_content(
-            header.hash,
-            header.header.number,
-            header.header.timestamp,
-            header.header.base_fee_per_gas,
-            tx,
-            tx_index,
-        ))),
+        Some(tx) => {
+            let calls_executed = if tx.tx.native_calls().is_some() {
+                triedb_env
+                    .get_receipt(block_key, tx_index)
+                    .await
+                    .map_err(ChainStateError::Triedb)?
+                    .and_then(|receipt| receipt.calls_executed)
+                    .ok_or(ChainStateError::ResourceNotFound)
+                    .map(Some)?
+            } else {
+                None
+            };
+            Ok(Some(parse_tx_content(
+                header.hash,
+                header.header.number,
+                header.header.timestamp,
+                header.header.base_fee_per_gas,
+                tx,
+                tx_index,
+                calls_executed,
+            )))
+        }
         None => Ok(None),
     }
 }
@@ -1599,7 +1654,8 @@ async fn get_receipt_from_triedb<T: Triedb>(
                 tx,
                 receipt,
                 gas_used,
-            );
+            )
+            .map_err(|message| ChainStateError::Triedb(message.into()))?;
 
             Ok(Some(receipt))
         }

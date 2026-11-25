@@ -19,6 +19,7 @@ use std::{
     time::Duration,
 };
 
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, TxHash};
 use dashmap::{DashMap, Entry};
 use monad_eth_txpool_types::{EthTxPoolEvent, EthTxPoolEventType, EthTxPoolSnapshot};
@@ -37,9 +38,15 @@ pub(super) type TxStatusReceiverSender =
 pub struct EthTxPoolBridgeStateView {
     status: Arc<DashMap<TxHash, tokio::sync::watch::Sender<TxStatus>>>,
     address_hashes: Arc<DashMap<Address, HashSet<TxHash>>>,
+    native_pending: Arc<DashMap<TxHash, Recovered<TxEnvelope>>>,
 }
 
 impl EthTxPoolBridgeStateView {
+    pub fn get_pending_native_transaction(&self, hash: &TxHash) -> Option<Recovered<TxEnvelope>> {
+        let tx = self.native_pending.get(hash)?.value().clone();
+        matches!(self.get_status_by_hash(hash), Some(TxStatus::Tracked)).then_some(tx)
+    }
+
     pub fn get_status_by_hash(&self, hash: &TxHash) -> Option<TxStatus> {
         Some(self.status.get(hash)?.value().borrow().to_owned())
     }
@@ -65,6 +72,7 @@ impl EthTxPoolBridgeStateView {
         Self {
             status: Default::default(),
             address_hashes: Default::default(),
+            native_pending: Default::default(),
         }
     }
 }
@@ -73,6 +81,7 @@ pub struct EthTxPoolBridgeState {
     status: Arc<DashMap<TxHash, tokio::sync::watch::Sender<TxStatus>>>,
     hash_address: Arc<DashMap<TxHash, Address>>,
     address_hashes: Arc<DashMap<Address, HashSet<TxHash>>>,
+    native_pending: Arc<DashMap<TxHash, Recovered<TxEnvelope>>>,
 }
 
 impl EthTxPoolBridgeState {
@@ -84,6 +93,7 @@ impl EthTxPoolBridgeState {
             status: Default::default(),
             hash_address: Default::default(),
             address_hashes: Default::default(),
+            native_pending: Default::default(),
         };
 
         this.apply_snapshot(eviction_queue, snapshot);
@@ -95,6 +105,7 @@ impl EthTxPoolBridgeState {
         EthTxPoolBridgeStateView {
             status: Arc::clone(&self.status),
             address_hashes: Arc::clone(&self.address_hashes),
+            native_pending: Arc::clone(&self.native_pending),
         }
     }
 
@@ -145,6 +156,9 @@ impl EthTxPoolBridgeState {
         snapshot: EthTxPoolSnapshot,
     ) {
         let EthTxPoolSnapshot { mut txs } = snapshot;
+        // Reconnect snapshots contain hashes only. Keep known payloads only while
+        // they remain in the pool; never invent payloads for unseen hashes.
+        self.native_pending.retain(|hash, _| txs.contains(hash));
 
         let now = Instant::now();
 
@@ -204,8 +218,12 @@ impl EthTxPoolBridgeState {
                 EthTxPoolEventType::Insert {
                     address,
                     owned: _,
-                    tx: _,
+                    tx,
                 } => {
+                    if tx.is_monad() {
+                        self.native_pending
+                            .insert(tx_hash, Recovered::new_unchecked(tx, address));
+                    }
                     insert(tx_hash, TxStatus::Tracked);
 
                     self.hash_address.entry(tx_hash).insert(address);
@@ -215,12 +233,15 @@ impl EthTxPoolBridgeState {
                         .insert(tx_hash);
                 }
                 EthTxPoolEventType::Commit => {
+                    self.native_pending.remove(&tx_hash);
                     insert(tx_hash, TxStatus::Committed);
                 }
                 EthTxPoolEventType::Drop { reason } => {
+                    self.native_pending.remove(&tx_hash);
                     insert(tx_hash, TxStatus::Dropped { reason });
                 }
                 EthTxPoolEventType::Evict { reason } => {
+                    self.native_pending.remove(&tx_hash);
                     insert(tx_hash, TxStatus::Evicted { reason });
                 }
             }
@@ -236,6 +257,7 @@ impl EthTxPoolBridgeState {
             .unwrap_or_default()
         {
             let (_, hash) = eviction_queue.pop_front().unwrap();
+            self.native_pending.remove(&hash);
 
             if self.status.remove(&hash).is_none() {
                 continue;
@@ -290,6 +312,106 @@ mod test {
         let tx = make_legacy_tx(S1, BASE_FEE_PER_GAS.into(), 100_000, 0, 0);
 
         (state, state_view, eviction_queue, tx)
+    }
+
+    #[test]
+    fn native_pending_payloads_follow_pool_lifecycle_and_snapshot_membership() {
+        use alloy_consensus::SignableTransaction;
+        use alloy_primitives::{Address, Signature, TxKind, U256};
+        use monad_transaction::{MonadCall, TxMonad};
+
+        let sender = Address::repeat_byte(1);
+        let tx: TxEnvelope = TxMonad {
+            chain_id: 143,
+            gas_limit: 42_000,
+            calls: Some(vec![
+                MonadCall {
+                    to: TxKind::Call(sender),
+                    ..Default::default()
+                };
+                2
+            ]),
+            ..Default::default()
+        }
+        .into_signed(Signature::new(U256::ONE, U256::ONE, false))
+        .into();
+        let hash = *tx.tx_hash();
+        for removal in 0..5 {
+            let (state, view, mut queue, ethereum) = setup();
+            state.handle_events(
+                &mut queue,
+                vec![EthTxPoolEvent {
+                    tx_hash: *ethereum.tx_hash(),
+                    action: EthTxPoolEventType::Insert {
+                        address: sender,
+                        owned: true,
+                        tx: ethereum.clone(),
+                    },
+                }],
+            );
+            assert!(view
+                .get_pending_native_transaction(ethereum.tx_hash())
+                .is_none());
+            state.handle_events(
+                &mut queue,
+                vec![EthTxPoolEvent {
+                    tx_hash: hash,
+                    action: EthTxPoolEventType::Insert {
+                        address: sender,
+                        owned: true,
+                        tx: tx.clone(),
+                    },
+                }],
+            );
+            let pending = view.get_pending_native_transaction(&hash).unwrap();
+            assert_eq!(pending.inner(), &tx);
+            let rpc = monad_transaction::rpc::Transaction {
+                inner: pending,
+                ..Default::default()
+            };
+            let json = serde_json::to_value(rpc).unwrap();
+            assert_eq!(json["calls"], serde_json::json!([]));
+            assert_eq!(json["to"], serde_json::Value::Null);
+            assert_eq!(json["value"], "0x0");
+            assert_eq!(json["input"], "0x");
+            assert_eq!(json["blockHash"], serde_json::Value::Null);
+            state.apply_snapshot(
+                &mut queue,
+                EthTxPoolSnapshot {
+                    txs: HashSet::from([hash]),
+                },
+            );
+            assert!(view.get_pending_native_transaction(&hash).is_some());
+            match removal {
+                0..=2 => state.handle_events(
+                    &mut queue,
+                    vec![EthTxPoolEvent {
+                        tx_hash: hash,
+                        action: match removal {
+                            0 => EthTxPoolEventType::Commit,
+                            1 => EthTxPoolEventType::Drop {
+                                reason: EthTxPoolDropReason::PoolFull,
+                            },
+                            _ => EthTxPoolEventType::Evict {
+                                reason: EthTxPoolEvictReason::Expired,
+                            },
+                        },
+                    }],
+                ),
+                3 => state.apply_snapshot(
+                    &mut queue,
+                    EthTxPoolSnapshot {
+                        txs: HashSet::new(),
+                    },
+                ),
+                _ => state.cleanup(
+                    &mut queue,
+                    Instant::now() + Duration::from_secs(TX_EVICT_DURATION_SECONDS + 1),
+                ),
+            }
+            assert!(view.get_pending_native_transaction(&hash).is_none());
+            assert!(state.native_pending.is_empty());
+        }
     }
 
     #[tokio::test]

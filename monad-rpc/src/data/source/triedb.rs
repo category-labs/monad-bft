@@ -136,7 +136,27 @@ where
             return Ok(None);
         };
 
+        let calls_executed = if transactions.iter().any(|tx| tx.tx.native_calls().is_some()) {
+            let receipts = self
+                .triedb
+                .get_receipts(block_key)
+                .await
+                .map_err(DataSourceError::Internal)?;
+            if receipts.len() != transactions.len() {
+                return Err(DataSourceError::Internal(
+                    "transaction/receipt count mismatch".into(),
+                ));
+            }
+            receipts
+                .iter()
+                .map(|receipt| receipt.calls_executed)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         Ok(Some(HistoricalBlockData {
+            calls_executed,
             header: header.header,
             header_hash_precomputed: Some(header.hash),
 

@@ -21,6 +21,7 @@ use super::*;
 
 fn receipt(ty: TxType, logs: Vec<PrimitiveLog>, index: u64) -> ReceiptWithLogIndex {
     ReceiptWithLogIndex {
+        calls_executed: None,
         receipt: ReceiptEnvelope::from_typed(
             ty,
             alloy_consensus::Receipt {
@@ -169,5 +170,53 @@ fn mixed_block_log_scan_preserves_canonical_hashes_order_and_metadata() {
         assert_eq!(entry.block_timestamp, Some(1234));
         assert!(!entry.removed);
         assert_eq!(entry.inner, log(1, 2));
+    }
+}
+
+#[test]
+fn native_batch_receipts_require_valid_execution_metadata() {
+    use alloy_consensus::SignableTransaction;
+    use alloy_primitives::{Signature, TxKind, U256};
+    use monad_transaction::{MonadCall, TxMonad};
+    let target = alloy_primitives::Address::repeat_byte(1);
+    let tx = TxEnvelopeWithSender {
+        tx: TxMonad {
+            chain_id: 143,
+            calls: Some(vec![
+                MonadCall {
+                    to: TxKind::Call(target),
+                    ..Default::default()
+                };
+                2
+            ]),
+            ..Default::default()
+        }
+        .into_signed(Signature::new(U256::ONE, U256::ONE, false))
+        .into(),
+        sender: alloy_primitives::Address::ZERO,
+    };
+    for count in [None, Some(0), Some(1), Some(2), Some(3)] {
+        let receipt = ReceiptWithLogIndex {
+            receipt: monad_transaction::ReceiptEnvelope::Monad(
+                alloy_consensus::Receipt::default().with_bloom(),
+            ),
+            starting_log_index: 0,
+            calls_executed: count,
+        };
+        let parsed = super::parse_tx_receipt(
+            alloy_primitives::B256::ZERO,
+            1,
+            1,
+            Some(1),
+            0,
+            tx.clone(),
+            receipt,
+            42000,
+        );
+        match count {
+            Some(1) => assert_eq!(parsed.unwrap().to, Some(target)),
+            Some(2) => assert_eq!(parsed.unwrap().to, None),
+            _ => assert!(parsed.is_err()),
+        }
     }
 }

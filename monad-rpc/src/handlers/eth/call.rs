@@ -52,9 +52,29 @@ use crate::{
     },
 };
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default)]
 pub struct CallRequest {
+    pub calls: Option<Vec<monad_transaction::MonadCall>>,
+    pub from: Option<Address>,
+    pub to: Option<Address>,
+    pub gas: Option<U256>,
+    pub gas_price_details: GasPriceDetails,
+    pub value: Option<U256>,
+    pub input: CallInput,
+    pub nonce: Option<U64>,
+    pub chain_id: Option<U64>,
+    pub access_list: Option<AccessList>,
+    pub authorization_list: Option<Vec<SignedAuthorization>>,
+    pub max_fee_per_blob_gas: Option<U256>,
+    pub blob_versioned_hashes: Option<Vec<U256>>,
+    pub transaction_type: Option<U8>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(remote = "CallRequest", rename_all = "camelCase")]
+struct CallRequestFields {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calls: Option<Vec<monad_transaction::MonadCall>>,
     pub from: Option<Address>,
     pub to: Option<Address>,
     pub gas: Option<U256>,
@@ -75,6 +95,41 @@ pub struct CallRequest {
     pub transaction_type: Option<U8>,
 }
 
+impl Serialize for CallRequest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut value = CallRequestFields::serialize(self, serde_json::value::Serializer)
+            .map_err(serde::ser::Error::custom)?;
+        if self.calls.is_some() {
+            let fields = value.as_object_mut().expect("call request is an object");
+            for field in ["to", "value", "input", "data"] {
+                fields.remove(field);
+            }
+        }
+        value.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for CallRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("calls").is_some()
+            && (value["calls"].is_null()
+                || ["to", "value", "input", "data"]
+                    .iter()
+                    .any(|key| value.get(key).is_some()))
+        {
+            return Err(serde::de::Error::custom(
+                "calls cannot be combined with to, value, input or data",
+            ));
+        }
+        let request = CallRequestFields::deserialize(value).map_err(serde::de::Error::custom)?;
+        request
+            .validate_native_fee_bounds()
+            .map_err(|_| serde::de::Error::custom("invalid native call request"))?;
+        Ok(request)
+    }
+}
+
 impl schemars::JsonSchema for CallRequest {
     fn schema_name() -> String {
         "CallRequest".to_string()
@@ -85,7 +140,8 @@ impl schemars::JsonSchema for CallRequest {
     }
 
     fn json_schema(_gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        let schema = schemars::schema_for_value!(CallRequest {
+        let mut schema = schemars::schema_for_value!(CallRequest {
+            calls: None,
             from: None,
             to: None,
             gas: None,
@@ -103,14 +159,36 @@ impl schemars::JsonSchema for CallRequest {
             blob_versioned_hashes: None,
             transaction_type: None,
         });
+        schema.schema.object().properties.insert(
+            "calls".into(),
+            crate::types::eth_json::schema_for_native_calls(1),
+        );
         schema.schema.into()
     }
 }
 
 impl CallRequest {
+    pub fn is_native(&self) -> bool {
+        self.calls.is_some()
+            || self.transaction_type == Some(U8::from(monad_transaction::MONAD_TX_TYPE))
+    }
+
     /// Check the caller's native caps before gas filling can reduce them to an effective price.
     fn validate_native_fee_bounds(&self) -> Result<(), JsonRpcError> {
-        if self.transaction_type == Some(U8::from(monad_transaction::MONAD_TX_TYPE)) {
+        if let Some(calls) = &self.calls {
+            if self.to.is_some()
+                || self.value.is_some()
+                || self.input.input.is_some()
+                || self.input.data.is_some()
+                || self
+                    .transaction_type
+                    .is_some_and(|ty| ty != U8::from(monad_transaction::MONAD_TX_TYPE))
+            {
+                return Err(JsonRpcError::invalid_params());
+            }
+            monad_transaction::validate_batch(calls).map_err(|_| JsonRpcError::invalid_params())?;
+        }
+        if self.is_native() {
             let GasPriceDetails::Eip1559 {
                 max_fee_per_gas,
                 max_priority_fee_per_gas,
@@ -230,7 +308,9 @@ impl TryFrom<CallRequest> for TxEnvelope {
     type Error = JsonRpcError;
     fn try_from(call_request: CallRequest) -> Result<Self, JsonRpcError> {
         call_request.validate_native_fee_bounds()?;
+        let is_native = call_request.is_native();
         let CallRequest {
+            calls,
             from: _,
             to,
             gas,
@@ -243,7 +323,7 @@ impl TryFrom<CallRequest> for TxEnvelope {
             authorization_list,
             max_fee_per_blob_gas,
             blob_versioned_hashes,
-            transaction_type,
+            transaction_type: _,
         } = call_request;
 
         let nonce = nonce
@@ -262,7 +342,7 @@ impl TryFrom<CallRequest> for TxEnvelope {
         // default signature as eth_call doesn't require it
         let signature = Signature::new(U256::ZERO, U256::ZERO, false);
 
-        if transaction_type == Some(U8::from(monad_transaction::MONAD_TX_TYPE)) {
+        if is_native {
             if authorization_list.is_some()
                 || max_fee_per_blob_gas.is_some()
                 || blob_versioned_hashes.is_some()
@@ -277,7 +357,7 @@ impl TryFrom<CallRequest> for TxEnvelope {
                 return Err(JsonRpcError::invalid_params());
             };
             let chain_id = chain_id.unwrap_or_default().to::<u64>();
-            if chain_id != monad_transaction::MONAD_DEVNET_CHAIN_ID || nonce == u64::MAX {
+            if nonce == u64::MAX {
                 return Err(JsonRpcError::invalid_params());
             }
             let max_fee_per_gas = u128::try_from(max_fee_per_gas.unwrap_or_default())
@@ -288,10 +368,15 @@ impl TryFrom<CallRequest> for TxEnvelope {
             if max_priority_fee_per_gas > max_fee_per_gas {
                 return Err(JsonRpcError::invalid_params());
             }
-            if to.is_none() {
+            if let Some(calls) = &calls {
+                if let Some(first) = calls.first().filter(|call| call.to.is_create()) {
+                    check_contract_creation_size(Some(&first.input))?;
+                }
+            } else if to.is_none() {
                 check_contract_creation_size(Some(&input))?;
             }
             return Ok(monad_transaction::TxMonad {
+                calls,
                 chain_id,
                 nonce,
                 gas_limit,
@@ -1897,7 +1982,7 @@ mod native_request_tests {
     }
 
     #[test]
-    fn native_request_rejects_other_fee_auth_blob_and_chain_semantics() {
+    fn native_request_rejects_unsupported_fee_auth_blob_and_numeric_semantics() {
         let mut request = native_request();
         request.authorization_list = Some(vec![]);
         assert!(TxEnvelope::try_from(request).is_err());
@@ -1908,9 +1993,6 @@ mod native_request_tests {
         request.gas_price_details = GasPriceDetails::Legacy {
             gas_price: U256::ONE,
         };
-        assert!(TxEnvelope::try_from(request).is_err());
-        let mut request = native_request();
-        request.chain_id = Some(U64::from(143));
         assert!(TxEnvelope::try_from(request).is_err());
         let mut request = native_request();
         request.nonce = Some(U64::MAX);
@@ -1931,6 +2013,18 @@ mod native_request_tests {
                 + 1
         ]));
         assert!(TxEnvelope::try_from(request).is_err());
+    }
+
+    #[test]
+    fn native_requests_are_not_restricted_to_the_devnet_chain_id() {
+        for chain_id in [143, 10143, 20143, u64::MAX] {
+            let mut request = native_request();
+            request.chain_id = Some(U64::from(chain_id));
+            assert_eq!(
+                TxEnvelope::try_from(request).unwrap().chain_id(),
+                Some(chain_id)
+            );
+        }
     }
 
     #[test]
@@ -1964,6 +2058,44 @@ mod native_request_tests {
         let tx = TxEnvelope::try_from(request).unwrap();
         assert_eq!(tx.max_fee_per_gas(), u128::MAX);
         assert_eq!(tx.value(), U256::MAX);
+    }
+
+    #[test]
+    fn batch_requests_infer_type_and_round_trip_without_scalar_fields() {
+        let value = serde_json::json!({
+            "chainId": "0x8f", "gas": "0x100000", "nonce": "0x0",
+            "maxFeePerGas": "0x1", "maxPriorityFeePerGas": "0x0",
+            "calls": [{"to": Address::repeat_byte(1), "value": "0x2", "input": "0x1234"}]
+        });
+        let request: CallRequest = serde_json::from_value(value.clone()).unwrap();
+        let serialized = serde_json::to_value(&request).unwrap();
+        for key in ["to", "value", "input", "data"] {
+            assert!(serialized.get(key).is_none());
+        }
+        let restored: CallRequest = serde_json::from_value(serialized).unwrap();
+        let tx = TxEnvelope::try_from(restored).unwrap();
+        let native = tx.as_monad().unwrap().tx();
+        assert!(native.is_batch());
+        assert_eq!(native.calls.as_ref().unwrap().len(), 1);
+        assert_eq!(native.first_call().value, U256::from(2));
+        for key in ["to", "value", "input", "data"] {
+            let mut invalid = value.clone();
+            invalid[key] = serde_json::Value::Null;
+            assert!(serde_json::from_value::<CallRequest>(invalid).is_err());
+        }
+        for calls in [
+            serde_json::json!([]),
+            serde_json::Value::Null,
+            serde_json::json!([{"to": Address::ZERO}, {"to": null}]),
+            serde_json::json!([{"to": Address::ZERO, "data": "0x"}]),
+        ] {
+            let mut invalid = value.clone();
+            invalid["calls"] = calls;
+            assert!(serde_json::from_value::<CallRequest>(invalid).is_err());
+        }
+        let mut invalid = value;
+        invalid["type"] = serde_json::json!("0x2");
+        assert!(serde_json::from_value::<CallRequest>(invalid).is_err());
     }
 
     #[test]

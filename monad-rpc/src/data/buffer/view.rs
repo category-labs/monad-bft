@@ -181,6 +181,9 @@ impl BlockBufferView {
                 log_index += transaction_receipt.logs().len() as u64;
 
                 Ok(ReceiptWithLogIndex {
+                    calls_executed: self
+                        .get_transaction_by_hash(tx_hash)
+                        .and_then(|tx| tx.calls_executed()),
                     receipt: transaction_receipt.inner.clone().into_primitives_receipt(),
                     starting_log_index,
                 })

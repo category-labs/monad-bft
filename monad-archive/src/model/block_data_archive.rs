@@ -540,6 +540,7 @@ impl ReceiptStorageRepr {
                         let starting_log_index = pre_receipts as u64;
                         pre_receipts += receipt.logs().len();
                         ReceiptWithLogIndex {
+                            calls_executed: None,
                             starting_log_index,
                             receipt,
                         }
@@ -1024,6 +1025,7 @@ mod tests {
 
         let block_num = 1;
         let receipt = ReceiptWithLogIndex {
+            calls_executed: None,
             receipt: ReceiptEnvelope::Eip1559(make_receipt(10)),
             starting_log_index: 0,
         };
@@ -1217,6 +1219,7 @@ mod tests {
         let archive = BlockDataArchive::new(store.clone());
         let block = create_custom_block(1);
         let receipt = ReceiptWithLogIndex {
+            calls_executed: None,
             receipt: ReceiptEnvelope::Eip1559(make_receipt(5)),
             starting_log_index: 0,
         };

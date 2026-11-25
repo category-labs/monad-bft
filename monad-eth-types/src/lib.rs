@@ -274,13 +274,20 @@ pub struct TransactionLocation {
 pub struct ReceiptWithLogIndex {
     pub receipt: ReceiptEnvelope,
     pub starting_log_index: u64,
+    /// Execution metadata outside the canonical receipt and receipt trie hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calls_executed: Option<u32>,
 }
 
 impl Encodable for ReceiptWithLogIndex {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
         let mut encoded_receipt: BytesMut = BytesMut::new();
         self.receipt.encode(&mut encoded_receipt);
-        let enc: [&dyn Encodable; 2] = [&encoded_receipt, &self.starting_log_index];
+        let mut enc: Vec<&dyn Encodable> = vec![&encoded_receipt, &self.starting_log_index];
+        if let Some(count) = &self.calls_executed {
+            assert!(matches!(self.receipt, ReceiptEnvelope::Monad(_)) && *count > 0);
+            enc.push(count);
+        }
         encode_list::<_, dyn Encodable>(&enc, out);
     }
 }
@@ -291,6 +298,15 @@ impl Decodable for ReceiptWithLogIndex {
         let encoded_receipt = alloy_rlp::Header::decode_bytes(&mut record, false)?;
         let receipt = decode_stored_envelope(encoded_receipt)?;
         let starting_log_index = u64::decode(&mut record)?;
+        let calls_executed = if record.is_empty() {
+            None
+        } else {
+            let count = u32::decode(&mut record)?;
+            if count == 0 || !matches!(receipt, ReceiptEnvelope::Monad(_)) {
+                return Err(alloy_rlp::Error::Custom("invalid native execution count"));
+            }
+            Some(count)
+        };
         if !record.is_empty() {
             return Err(alloy_rlp::Error::UnexpectedLength);
         }
@@ -298,6 +314,7 @@ impl Decodable for ReceiptWithLogIndex {
         Ok(ReceiptWithLogIndex {
             receipt,
             starting_log_index,
+            calls_executed,
         })
     }
 }

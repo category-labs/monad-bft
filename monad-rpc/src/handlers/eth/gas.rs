@@ -194,6 +194,14 @@ fn requires_eip2930_encoding(tx: &CallRequest) -> bool {
 }
 
 fn validate_fill_transaction_type(tx: &CallRequest) -> Result<(), JsonRpcError> {
+    if tx.is_native() {
+        if !matches!(tx.gas_price_details, GasPriceDetails::Eip1559 { .. })
+            || tx.authorization_list.is_some()
+        {
+            return Err(JsonRpcError::invalid_params());
+        }
+        return Ok(());
+    }
     let Some(transaction_type) = tx.transaction_type else {
         return Ok(());
     };
@@ -500,7 +508,7 @@ async fn fill_transaction_with_provider<T: Triedb>(
 
     let from = tx.from.ok_or_else(JsonRpcError::invalid_params)?;
 
-    if tx.value.is_none() {
+    if tx.calls.is_none() && tx.value.is_none() {
         tx.value = Some(U256::ZERO);
     }
 
@@ -656,6 +664,18 @@ fn build_unsigned_transaction(
     tx: &CallRequest,
     chain_id: u64,
 ) -> Result<(UnformattedData, CallRequest), JsonRpcError> {
+    if tx.is_native() {
+        let mut filled = tx.clone();
+        filled.transaction_type = Some(U8::from(monad_transaction::MONAD_TX_TYPE));
+        filled.chain_id = Some(U64::from(chain_id));
+        let envelope: TxEnvelope = filled.clone().try_into()?;
+        let native = envelope
+            .as_monad()
+            .ok_or_else(JsonRpcError::invalid_params)?;
+        let mut raw = Vec::new();
+        native.tx().encode_for_signing(&mut raw);
+        return Ok((UnformattedData(raw), filled));
+    }
     let from = tx.from.unwrap_or_default();
     let nonce: u64 = tx
         .nonce
@@ -1362,6 +1382,7 @@ mod tests {
                 Bloom::repeat_byte(b'a'),
             );
             receipts.push(ReceiptWithLogIndex {
+                calls_executed: None,
                 receipt: ReceiptEnvelope::Eip1559(receipt),
                 starting_log_index: 0,
             });
@@ -1456,6 +1477,7 @@ mod tests {
         let transactions: Vec<monad_transaction::rpc::Transaction> = txs
             .into_iter()
             .map(|tx| monad_transaction::rpc::Transaction {
+                native_execution: Default::default(),
                 inner: Recovered::new_unchecked(tx, from_addr),
                 block_hash: None,
                 block_number: None,
@@ -1489,6 +1511,7 @@ mod tests {
         let to_addr = Address::repeat_byte(0x22);
 
         let call_request = CallRequest {
+            calls: None,
             from: Some(from_addr),
             to: Some(to_addr),
             gas: Some(U256::from(21_000)),
@@ -1576,6 +1599,49 @@ mod tests {
                 assert_eq!(max_priority_fee_per_gas, Some(U256::from(2_000_000_000u64)));
             }
             _ => panic!("Expected EIP-1559 gas price details"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fill_native_batch_preserves_calls_without_scalar_defaults() {
+        let from = Address::repeat_byte(0x11);
+        let data_provider = make_fill_data_provider(from, 7, 0, 1000, 100);
+        let config = mock_eth_call_handler_config();
+        let request: CallRequest = serde_json::from_value(serde_json::json!({
+            "from": from,
+            "calls": [
+                {"to": Address::repeat_byte(0x22), "value": "0x7", "input": "0x"},
+                {"to": Address::repeat_byte(0x33), "value": "0xb", "input": "0x"}
+            ]
+        }))
+        .unwrap();
+        let expected_calls = request.calls.clone();
+        let eth_call_fn = mock_eth_call(42_000, 0, MockTerminalResult::Success);
+        let result = fill_transaction_with_provider(
+            &data_provider,
+            &config,
+            143,
+            MonadEthFillTransactionParams { tx: request },
+            async |_, _, _, txn| {
+                assert!(txn.is_monad());
+                assert_eq!(txn.as_monad().unwrap().tx().calls, expected_calls);
+                eth_call_fn(txn).await
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.tx.calls, expected_calls);
+        assert_eq!(result.tx.value, None);
+        assert_eq!(result.tx.to, None);
+        assert_eq!(result.tx.input.input, None);
+        assert_eq!(result.tx.nonce, Some(U64::from(7)));
+        assert_eq!(result.tx.chain_id, Some(U64::from(143)));
+        assert_eq!(result.tx.transaction_type, Some(U8::from(0x40)));
+        assert_eq!(result.raw.0[0], 0x40);
+        let json = serde_json::to_value(&result.tx).unwrap();
+        for scalar in ["to", "value", "input", "data"] {
+            assert!(json.get(scalar).is_none());
         }
     }
 
@@ -2080,6 +2146,7 @@ mod tests {
         let gas_price = U256::from(2_000_000_000u64);
 
         let call_request = CallRequest {
+            calls: None,
             from: Some(from_addr),
             to: Some(to_addr),
             gas: Some(U256::from(21_000)),
@@ -2128,6 +2195,7 @@ mod tests {
             .max_code_size;
 
         let call_request = CallRequest {
+            calls: None,
             from: Some(Address::repeat_byte(0x11)),
             to: None,
             gas: Some(U256::from(100_000)),
@@ -2162,6 +2230,7 @@ mod tests {
         let to_addr = Address::repeat_byte(0x22);
 
         let call_request = CallRequest {
+            calls: None,
             from: Some(from_addr),
             to: Some(to_addr),
             gas: Some(U256::from(21_000)),
@@ -2200,6 +2269,7 @@ mod tests {
         let from_addr = Address::repeat_byte(0x11);
 
         let call_request = CallRequest {
+            calls: None,
             from: Some(from_addr),
             to: None,
             gas: Some(U256::from(100_000)),

@@ -110,7 +110,32 @@ impl HistoricalDataSource for ArchiveDataSource {
             return Ok(None);
         };
 
+        let calls_executed = if block
+            .body
+            .transactions
+            .iter()
+            .any(|tx| tx.tx.native_calls().is_some())
+        {
+            let receipts = self
+                .archive_reader
+                .get_block_receipts(block.header.number)
+                .await
+                .map_err(|e| DataSourceError::Internal(e.to_string()))?;
+            if receipts.len() != block.body.transactions.len() {
+                return Err(DataSourceError::Internal(
+                    "transaction/receipt count mismatch".into(),
+                ));
+            }
+            receipts
+                .iter()
+                .map(|receipt| receipt.calls_executed)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         Ok(Some(HistoricalBlockData {
+            calls_executed,
             header: block.header,
             header_hash_precomputed: None,
 

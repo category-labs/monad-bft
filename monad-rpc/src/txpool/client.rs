@@ -15,6 +15,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, TxHash};
 use flume::{Sender, TrySendError};
 use monad_transaction::TxEnvelope;
@@ -73,6 +74,10 @@ impl EthTxPoolBridgeClient {
 
     pub fn get_status_by_hash(&self, hash: &TxHash) -> Option<TxStatus> {
         self.state.get_status_by_hash(hash)
+    }
+
+    pub fn get_pending_native_transaction(&self, hash: &TxHash) -> Option<Recovered<TxEnvelope>> {
+        self.state.get_pending_native_transaction(hash)
     }
 
     pub fn get_status_by_address(&self, address: &Address) -> Option<HashMap<TxHash, TxStatus>> {

@@ -56,4 +56,5 @@ pub struct HistoricalBlockData {
     pub header_hash_precomputed: Option<alloy_primitives::BlockHash>,
 
     pub transactions: Vec<monad_eth_types::TxEnvelopeWithSender>,
+    pub calls_executed: Vec<Option<u32>>,
 }

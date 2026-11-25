@@ -89,10 +89,30 @@ pub struct MonadTransaction(
     #[schemars(schema_with = "schema_for_transaction")] pub Transaction<TxEnvelope>,
 );
 
+pub(crate) fn schema_for_native_calls(min_items: u32) -> schemars::schema::Schema {
+    serde_json::from_value(serde_json::json!({
+        "type": "array", "minItems": min_items,
+        "description": "Native type 0x40 calls in order. Requests carry all signed entries; transaction queries carry attempted entries only, or [] while pending.",
+        "items": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+                "to": {"type": ["string", "null"], "description": "Destination; omission or null selects creation, allowed only at index zero."},
+                "value": {"type": "string", "pattern": "^0x(0|[1-9a-fA-F][0-9a-fA-F]*)$", "default": "0x0"},
+                "input": {"type": "string", "pattern": "^0x([0-9a-fA-F]{2})*$", "default": "0x"}
+            }
+        }
+    })).expect("native calls JSON schema")
+}
+
 fn schema_for_transaction(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
     let rpc_tx = r#"{"blockHash":"0x883f974b17ca7b28cb970798d1c80f4d4bb427473dc6d39b2a7fe24edc02902d","blockNumber":"0xe26e6d","hash":"0x0e07d8b53ed3d91314c80e53cf25bcde02084939395845cbb625b029d568135c","accessList":[],"transactionIndex":"0xad","type":"0x2","nonce":"0x16d","input":"0x5ae401dc00000000000000000000000000000000000000000000000000000000628ced5b000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000016000000000000000000000000000000000000000000000000000000000000000e442712a6700000000000000000000000000000000000000000000b3ff1489674e11c40000000000000000000000000000000000000000000000000000004a6ed55bbcc18000000000000000000000000000000000000000000000000000000000000000800000000000000000000000003cf412d970474804623bb4e3a42de13f9bca54360000000000000000000000000000000000000000000000000000000000000002000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc20000000000000000000000003a75941763f31c930b19c041b709742b0b31ebb600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000412210e8a00000000000000000000000000000000000000000000000000000000","r":"0x7f2153019a74025d83a73effdd91503ceecefac7e35dd933adc1901c875539aa","s":"0x334ab2f714796d13c825fddf12aad01438db3a8152b2fe3ef7827707c25ecab3","chainId":"0x1","v":"0x0","gas":"0x46a02","maxPriorityFeePerGas":"0x59682f00","from":"0x3cf412d970474804623bb4e3a42de13f9bca5436","to":"0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45","maxFeePerGas":"0x7fc1a20a8","value":"0x4a6ed55bbcc180","gasPrice":"0x50101df3a"}"#;
     let tx = serde_json::from_str::<Transaction<TxEnvelope>>(rpc_tx).unwrap();
-    schemars::schema_for_value!(tx).schema.into()
+    let mut schema = schemars::schema_for_value!(tx).schema;
+    schema
+        .object()
+        .properties
+        .insert("calls".into(), schema_for_native_calls(0));
+    schema.into()
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
