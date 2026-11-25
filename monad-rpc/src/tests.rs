@@ -33,9 +33,8 @@ use crate::{
     types::jsonrpc::{ErrorCode, JsonRpcError, RequestId, Response, ResponseWrapper},
 };
 
-pub async fn init_server(
-) -> impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error> {
-    let app_state = MonadRpcResources {
+pub fn resources() -> MonadRpcResources {
+    MonadRpcResources {
         txpool_bridge_client: Some(EthTxPoolBridgeClient::for_testing()),
         eth_call_handler: None,
         chain_id: 1337,
@@ -55,7 +54,12 @@ pub async fn init_server(
         metrics: None,
         rpc_comparator: None,
         feehistory_limiter: std::sync::Arc::new(tokio::sync::Semaphore::new(100)),
-    };
+    }
+}
+
+pub async fn init_server(
+) -> impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error> {
+    let app_state = resources();
 
     test::init_service(
         App::new()
