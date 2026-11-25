@@ -161,7 +161,7 @@ mod tests {
     use monad_mcp_cadence::spec::ProposalHeader as _;
 
     use super::{
-        super::super::test_util::{epoch_handle, proposal_chunks},
+        super::super::test_util::{context, proposal_chunks},
         *,
     };
 
@@ -170,7 +170,7 @@ mod tests {
             slot: Slot(7),
             lane: Lane::new_unchecked(3),
             request: ChunkRequest {
-                pid: proposal_chunks(&epoch_handle(), 9).0.pid(),
+                pid: proposal_chunks(&context(), 9).0.pid(),
                 kind: ChunkRequestType::YourChunks,
                 subset,
             },

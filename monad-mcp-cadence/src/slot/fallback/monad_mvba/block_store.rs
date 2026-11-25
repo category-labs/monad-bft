@@ -21,6 +21,7 @@ use super::{
     super::{
         super::{
             super::message::Outbound,
+            context::ChorusContext,
             types::{Slot, TimestampDelta},
         },
         MVBAOutput, ValidateInput, Votable,
@@ -146,7 +147,7 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
     pub(crate) fn handle_response(
         &mut self,
         response: BlockResponseMsg<V>,
-        context: &V::Context,
+        context: &ChorusContext,
     ) -> bool {
         if response.slot != self.slot {
             return false;

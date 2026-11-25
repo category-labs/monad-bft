@@ -34,8 +34,8 @@
 //!
 //! The mock owns the header check the real layer owns: an announcement is
 //! accepted only if the header authenticates to the announced proposal
-//! lane. It is handed the very `HeaderAuth` consensus votes with, so the
-//! two cannot disagree about who proposes where.
+//! lane. It is handed the very `HeaderAuth` and epoch handle consensus
+//! votes with, so the two cannot disagree about who proposes where.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -44,13 +44,17 @@ use std::{
 
 use bytes::Bytes;
 use cadence::{
-    env::{D33, EncodingScheme, MerkleHash, ProposalSignature},
+    env::{D33, EncodingScheme, MerkleHash},
     slot::chorus::{ChorusDAEvent, ProposalDAEvent},
     types::{HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader},
 };
 use monad_mcp_cadence::{spec::proposal::ProposalHeader as _, stub as cadence};
-use monad_mcp_common::{Lane, Proposal, Slot, stub::NodeId};
-use monad_mcp_epoch::stub::election::{ProposerSchedule, is_proposer};
+use monad_mcp_common::{
+    Lane, Proposal, Slot,
+    spec::{ProposalKeyPair as _, ProposalSignature as _},
+    stub::{NodeId, ProposalKeyPair},
+};
+use monad_mcp_epoch::stub::EpochHandle;
 
 /// The mock's dissemination unit: the signed header a receiver needs to
 /// treat the proposal at `(header.slot, lane)` as available.
@@ -84,7 +88,8 @@ pub enum MockDaOutput {
 /// One node's mock DA layer; see the module docs.
 pub struct MockDa {
     me: NodeId,
-    /// The authenticator consensus votes with; see the module docs.
+    epoch_handle: EpochHandle,
+    /// The header check consensus votes with; see the module docs.
     header_auth: Arc<HeaderAuth>,
     /// Locally available (decoded) proposals.
     available: BTreeMap<(Slot, Lane), SignedProposalHeader>,
@@ -92,9 +97,10 @@ pub struct MockDa {
 }
 
 impl MockDa {
-    pub fn new(me: NodeId, header_auth: Arc<HeaderAuth>) -> Self {
+    pub fn new(me: NodeId, epoch_handle: EpochHandle, header_auth: Arc<HeaderAuth>) -> Self {
         Self {
             me,
+            epoch_handle,
             header_auth,
             available: BTreeMap::new(),
             outputs: VecDeque::new(),
@@ -105,9 +111,20 @@ impl MockDa {
     /// this check on the chunk header signature; here the signer is carried
     /// in the clear.
     fn authentic(&self, lane: Lane, header: &SignedProposalHeader) -> bool {
-        use monad_mcp_cadence::spec::proposal::HeaderAuth as _;
-
-        header.lane() == lane && self.header_auth.authenticate(header)
+        if header.lane() != lane {
+            return false;
+        }
+        let slot = header.slot();
+        let Ok(validators) = self.epoch_handle.validators_at(slot) else {
+            return false;
+        };
+        let Ok(proposer_set) = self.epoch_handle.proposers_at(slot) else {
+            return false;
+        };
+        let Some(proposer) = proposer_set.proposer(lane) else {
+            return false;
+        };
+        (self.header_auth)(header, &validators, &proposer)
     }
 
     pub fn handle_proposal(&mut self, proposal: Proposal<Bytes>) {
@@ -187,23 +204,14 @@ impl MockDa {
     }
 }
 
-/// The [`HeaderAuth`] backed by a proposer schedule: a header authenticates
-/// when its signer holds the header's lane at the header's slot.
+/// The [`HeaderAuth`] of the mock: a header authenticates when the proposer
+/// of its lane made its mock signature.
 ///
-/// This is the whole policy for an environment whose proposal signature
-/// names its signer outright. The production data-availability layer owns
-/// two further checks the header carries for it -- the encoding scheme is
-/// the canonical one for the validator set, and the author is *recovered*
-/// from the signature rather than taken at its word -- and then checks
-/// the lane against this very same schedule, so consensus and DA cannot
-/// disagree about who proposes where (see `monad-mcp-da`'s `header_auth`).
-pub fn header_auth<S>(schedule: Arc<S>) -> HeaderAuth
-where
-    S: ProposerSchedule + Send + Sync + 'static,
-{
-    HeaderAuth::new(move |header: &SignedProposalHeader| {
-        is_proposer(&header.sig.signer, header.scope(), &*schedule)
-    })
+/// The production data-availability layer owns two further checks the
+/// header carries for it -- the encoding scheme is the canonical one for
+/// the validator set, and the signature covers the header.
+pub fn header_auth() -> Arc<HeaderAuth> {
+    Arc::new(|header, _, proposer| header.sig.recover_author(&[]).as_ref() == Some(proposer))
 }
 
 /// The canonical mock payload of `proposer` for `(slot, lane)`. Tests
@@ -237,10 +245,8 @@ pub fn mock_header(
                 unix_ts: 0,
             }),
         },
-        sig: ProposalSignature {
-            signer: proposer,
-            checksum: 0,
-        },
+        // the mock signs no data: only the signer is read
+        sig: ProposalKeyPair::dummy(proposer).sign(&[]),
     }
 }
 
@@ -262,17 +268,16 @@ pub fn mock_root(payload: &Bytes) -> MerkleRoot {
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_common::stub::ValidatorData;
     use monad_mcp_epoch::stub::election::FixedProposerSchedule;
 
     use super::*;
 
     // index 0 -> validator 0, index 1 -> validator 1
     fn da(me: NodeId) -> MockDa {
-        let schedule = Arc::new(FixedProposerSchedule::new(vec![
-            NodeId::dummy(0),
-            NodeId::dummy(1),
-        ]));
-        MockDa::new(me, Arc::new(header_auth(schedule)))
+        let election = FixedProposerSchedule::new(vec![NodeId::dummy(0), NodeId::dummy(1)]);
+        let epoch_handle = EpochHandle::new(ValidatorData::dummy(4), election);
+        MockDa::new(me, epoch_handle, header_auth())
     }
 
     fn announcement(proposer: NodeId, slot: u64, lane: Lane) -> DaAnnouncement {

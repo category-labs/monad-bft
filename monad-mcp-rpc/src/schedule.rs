@@ -27,7 +27,7 @@ use monad_mcp_node::{
     NodeProposerSchedule,
     common::NodeId,
     config::NodeConfig,
-    election::{ProposerConfig, ProposerSchedule, ScheduleError},
+    election::{Election, ProposerScheduleConfig, ScheduleError},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,14 +79,14 @@ pub fn lead(node: &NodeConfig, margin: Option<TimestampDelta>) -> TimestampDelta
 pub const LOOKAHEAD: TimestampDelta = TimestampDelta::from_millis(5_000);
 
 // K · (y + z): the longest a proposer can hold one lane
-pub fn tenure_horizon(config: &ProposerConfig) -> u64 {
+pub fn tenure_horizon(config: &ProposerScheduleConfig) -> u64 {
     (config.concurrent_proposers as u64).saturating_mul(config.slots_per_rotation())
 }
 
 // the proposers at `target` in lane order, each with the slots it keeps its
 // lane from `target` on, counted up to `horizon`
 fn tenures(
-    schedule: &(impl ProposerSchedule + ?Sized),
+    schedule: &(impl Election + ?Sized),
     target: Slot,
     horizon: u64,
 ) -> Vec<(Lane, NodeId, u64)> {
@@ -130,7 +130,7 @@ fn most_tenured(tenures: &[(Lane, NodeId, u64)]) -> Option<(Lane, NodeId)> {
 // among the proposers at `target`, the one keeping its lane for the most
 // slots from `target` on, counted up to `horizon`; ties go to the lower lane
 pub fn choose_leader(
-    schedule: &(impl ProposerSchedule + ?Sized),
+    schedule: &(impl Election + ?Sized),
     target: Slot,
     horizon: u64,
 ) -> Option<(Lane, NodeId)> {
@@ -144,7 +144,7 @@ pub type Latency = HashMap<NodeId, Duration>;
 // at least `min_tenure` slots, the nearest; ties go to more tenure, then the
 // lower lane. With none, the most tenured other than `avoid`
 pub fn choose_nearest(
-    schedule: &(impl ProposerSchedule + ?Sized),
+    schedule: &(impl Election + ?Sized),
     target: Slot,
     horizon: u64,
     latency: &Latency,
@@ -200,7 +200,7 @@ impl Planner {
         node: &NodeConfig,
         lead_margin: Option<TimestampDelta>,
     ) -> Result<Self, ScheduleError> {
-        let schedule = node.epoch_handle()?.proposers;
+        let schedule = Arc::new(node.proposer_schedule()?);
         Ok(Self {
             clock: SlotClock::of(node),
             lead: lead(node, lead_margin),

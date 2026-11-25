@@ -28,17 +28,18 @@ use super::{
         super::{
             super::{
                 message::{Outbound, SlotRecipients},
-                types::ValidatorIndex,
+                test_utils::{epoch_handle, reject_each_header},
+                types::{NodeCredential, ValidatorIndex},
             },
+            context::{ChorusConfig, ChorusContext},
             fast::{CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry},
             types::{
-                HeaderAuth, IsVote, Lane, Lanes, NodeId, ProposalId, ProposalScope, Slot, StrongQc,
+                IsVote, Lane, Lanes, NodeId, ProposalId, ProposalScope, Slot, StrongQc,
                 TimestampDelta, ValidatorData, VoteMsg, VotePool, WeakQc,
             },
         },
         FallbackView, MVBAOutput, Metablock, Mvba, MvbaScope, Votable,
     },
-    MvbaContext,
     block_store::{BlockRequestMsg, BlockResponseMsg},
     messages::{FallbackCommitVote, PrepareVote},
 };
@@ -102,16 +103,24 @@ pub(super) fn leader_of(v: FallbackView) -> NodeId {
     nodes()[index as usize]
 }
 
-pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMvba {
-    MonadMvba::new(MvbaContext {
-        slot: SLOT,
-        num_lanes: NUM_LANES,
-        self_index: dummy_index(node),
-        key: Arc::new(node.keypair()),
-        validator_data: validator_data.clone(),
-        header_auth: Arc::new(HeaderAuth::new(|_| false)),
+// what `node` knows about `slot`, where validator j proposes at lane j
+pub(super) fn context_at(node: NodeId, slot: Slot) -> Arc<ChorusContext> {
+    let config = ChorusConfig {
         delta: DELTA,
-    })
+        credential: NodeCredential::dummy(u64::from(node)),
+        header_auth: reject_each_header(),
+    };
+    let epoch_handle = epoch_handle(NUM_NODES, NUM_LANES as u64);
+    let context = config.at_slot(slot, &epoch_handle).expect("in bound");
+    Arc::new(context)
+}
+
+pub(super) fn context(node: NodeId) -> Arc<ChorusContext> {
+    context_at(node, SLOT)
+}
+
+pub(super) fn mvba(node: NodeId) -> MonadMvba {
+    MonadMvba::new(context(node))
 }
 
 /// A valid metablock whose entries are determined by `seed`, so two seeds give
@@ -263,9 +272,8 @@ pub(super) fn delivered(message: Message) -> Option<Message> {
 pub(super) fn timeout_certificate(
     v: FallbackView,
     high_prep_qc: Option<PrepareQc>,
-    validator_data: &Arc<ValidatorData>,
 ) -> TimeoutCertificate {
-    timeout_certificate_in(SLOT, v, high_prep_qc, validator_data)
+    timeout_certificate_in(SLOT, v, high_prep_qc)
 }
 
 /// [`timeout_certificate`] for a slot other than the one under test
@@ -273,13 +281,12 @@ pub(super) fn timeout_certificate_in(
     slot: Slot,
     v: FallbackView,
     high_prep_qc: Option<PrepareQc>,
-    validator_data: &Arc<ValidatorData>,
 ) -> TimeoutCertificate {
-    let mut collectors = ViewCollectors::new(slot, v, validator_data);
+    let mut collectors = ViewCollectors::new(v, &context_at(nodes()[0], slot));
     for node in quorum() {
         collectors.store_timeout(
             dummy_index(node),
-            TimeoutMsg::new_signed(slot, v, high_prep_qc.clone(), &node.keypair()),
+            TimeoutMsg::new_signed(v, high_prep_qc.clone(), &context_at(node, slot)),
         );
     }
 
@@ -346,7 +353,7 @@ pub(super) fn feed_timeouts(
     signers: &[NodeId],
 ) {
     for node in signers {
-        let msg = TimeoutMsg::new_signed(SLOT, v, high_prep_qc.clone(), &node.keypair());
+        let msg = TimeoutMsg::new_signed(v, high_prep_qc.clone(), &context(*node));
         instance.handle_message(dummy_index(node), Message::Timeout(msg));
     }
 }
@@ -500,7 +507,7 @@ pub(super) fn started(
     block: &Metablock,
     validator_data: &Arc<ValidatorData>,
 ) -> MonadMvba {
-    let mut instance = mvba(node, validator_data);
+    let mut instance = mvba(node);
     instance.propose(block.clone(), Some(enter_fallback_cert(validator_data)));
     instance
 }

@@ -36,11 +36,11 @@ mod tests {
 
     #[test]
     fn a_send_order_is_a_permutation_fixed_by_proposal_and_sender() {
-        use super::super::test_util::{epoch_handle, proposal_chunks};
+        use super::super::test_util::{context, proposal_chunks};
 
         let pid = |payload| -> ProposalId {
             use monad_mcp_cadence::spec::ProposalHeader as _;
-            proposal_chunks(&epoch_handle(), payload).0.pid()
+            proposal_chunks(&context(), payload).0.pid()
         };
         let order = |pid: &ProposalId, sender: u64| {
             let mut nodes: Vec<u64> = (0..16).collect();

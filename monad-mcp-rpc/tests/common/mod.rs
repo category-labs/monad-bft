@@ -35,7 +35,7 @@ use monad_mcp_node::{
     NodeProposerSchedule,
     common::{KeyPair, NodeId},
     config::{NodeConfig, ValidatorConfig},
-    election::ProposerSchedule,
+    election::Election,
     network::WireAppMessage,
     transport::udp::decode_frame,
 };
@@ -93,13 +93,14 @@ pub fn node_config(self_id: u64, addresses: &[SocketAddr], genesis: Timestamp) -
         })
         .collect();
     config.node_id = NodeId::dummy(self_id);
-    config.proposal_key_pair = monad_mcp_node::da::ProposalKeyPair::dummy(NodeId::dummy(self_id));
+    config.proposal_key_pair =
+        monad_mcp_node::common::ProposalKeyPair::dummy(NodeId::dummy(self_id));
     config.cadence_key_pair = KeyPair::dummy(self_id);
     config
 }
 
 pub fn schedule_of(node: &NodeConfig) -> Arc<NodeProposerSchedule> {
-    node.epoch_handle().unwrap().proposers
+    Arc::new(node.proposer_schedule().unwrap())
 }
 
 // K · (y + z), from the schedule's own parameters
@@ -110,7 +111,7 @@ pub fn horizon_of(schedule: &NodeProposerSchedule) -> u64 {
 
 // slots from `from` on, up to `horizon`, that `node` keeps holding `lane`
 pub fn run_of(
-    schedule: &(impl ProposerSchedule + ?Sized),
+    schedule: &(impl Election + ?Sized),
     from: Slot,
     lane: Lane,
     node: NodeId,
@@ -127,7 +128,7 @@ pub fn run_of(
 
 // the reference rule: the longest run from `slot`, ties to the lower lane
 pub fn most_tenured(
-    schedule: &(impl ProposerSchedule + ?Sized),
+    schedule: &(impl Election + ?Sized),
     slot: Slot,
     horizon: u64,
 ) -> Option<(Lane, NodeId)> {

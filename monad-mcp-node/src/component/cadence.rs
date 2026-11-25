@@ -13,9 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
-
-use monad_mcp_common::{Slot, SlotDeadline, Timestamp, stub::ValidatorData};
+use monad_mcp_common::{Slot, SlotDeadline, Timestamp};
 
 use super::Component;
 use crate::{
@@ -25,6 +23,7 @@ use crate::{
         conductor::{CadenceConductor, acs::nop::NopAcs},
         slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, ChorusLocalOut, SlotFinalization},
     },
+    epoch::EpochHandle,
     proposing::VoteReceived,
 };
 
@@ -55,10 +54,10 @@ impl Cadence {
     pub fn new(
         slot_manager: SlotManager<Chorus>,
         conductor: Conductor,
-        validator_data: Arc<ValidatorData>,
+        epoch_handle: EpochHandle,
     ) -> Self {
         Self {
-            runtime: CadenceRuntime::new(slot_manager, conductor, validator_data),
+            runtime: CadenceRuntime::new(slot_manager, conductor, epoch_handle),
             now: Timestamp::GENESIS,
         }
     }

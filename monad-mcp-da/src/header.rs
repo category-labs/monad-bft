@@ -13,10 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
-
 use super::{
-    types::{HeaderAuth, ProposerSchedule, SignedProposalHeader, ValidatorData},
+    types::{NodeId, SignedProposalHeader, ValidatorData},
     wire,
 };
 
@@ -27,62 +25,59 @@ pub enum InvalidProposalHeader {
     Unauthenticated,
 }
 
-// the header check shared by consensus and DA: the scheme is the one
-// the proposer must have chosen for the validator set, and a proposer
-// of the slot signed the header. The schedule is the same one consensus
-// holds, so the two cannot disagree on who proposes where.
-pub fn header_auth<S>(schedule: Arc<S>, validator_data: Arc<ValidatorData>) -> HeaderAuth
-where
-    S: ProposerSchedule + Send + Sync + 'static,
-{
-    use monad_mcp_cadence::spec::{ProposalHeader as _, SignedProposalHeader as _};
-    use monad_mcp_common::spec::ValidatorData as _;
+// The header check that consensus and DA share: the scheme is the one the
+// proposer must choose for the validators, and the proposer signed the header.
+pub fn validate_header(
+    signed: &SignedProposalHeader,
+    validators: &ValidatorData,
+    proposer: &NodeId,
+) -> bool {
+    use monad_mcp_cadence::spec::SignedProposalHeader as _;
+    use monad_mcp_common::spec::{ProposalSignature as _, ValidatorData as _};
 
-    use super::{encoding_scheme::is_canonical, epoch::election::is_proposer};
-    use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
+    use super::encoding_scheme::is_canonical;
+    use crate::spec::DAProposalHeader as _;
 
-    HeaderAuth::new(move |signed: &SignedProposalHeader| {
-        // todo: cache the auth result by (ProposalHeader, slot).
-
-        if !is_canonical(signed.scheme(), validator_data.len()) {
-            return false;
-        }
-        let preimage = wire::signed_bytes(&signed.header);
-        let Some(author) = signed.sig().recover_author(&preimage) else {
-            return false;
-        };
-        is_proposer(&author, signed.scope(), &*schedule)
-    })
+    if !is_canonical(signed.scheme(), validators.len()) {
+        return false;
+    }
+    let preimage = wire::signed_bytes(&signed.header);
+    signed.sig().recover_author(&preimage).as_ref() == Some(proposer)
 }
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_cadence::spec::proposal::HeaderAuth as _;
-
-    use super::super::{
-        runtime::EpochHandle,
-        test_util::{SLOT, d33_scheme_at, epoch_handle, proposal_chunks_under, signed_header},
-        types::{EncodingScheme, Lane, MerkleRoot, SignedProposalHeader},
+    use super::{
+        super::{
+            runtime::DAContext,
+            test_util::{
+                SLOT, author, context, d33_scheme_at, proposal_chunks_under, signed_header,
+            },
+            types::{EncodingScheme, Lane, MerkleRoot, SignedProposalHeader},
+        },
+        validate_header,
     };
     use crate::spec::DAMerkleRoot as _;
 
     // a d33 proposal of the fixture's message at lane 0, signed by `author_id`
-    fn d33_header(epoch_handle: &EpochHandle, author_id: u64) -> SignedProposalHeader {
-        let scheme = d33_scheme_at(epoch_handle, SLOT, Lane::new_unchecked(0));
-        let (header, _) = proposal_chunks_under(epoch_handle, scheme, author_id, 1);
+    fn d33_header(context: &DAContext, author_id: u64) -> SignedProposalHeader {
+        let scheme = d33_scheme_at(context, SLOT, Lane::new_unchecked(0));
+        let (header, _) = proposal_chunks_under(context, scheme, author_id, 1);
         header
     }
 
     #[test]
     fn authentication_needs_a_canonical_scheme_signed_by_a_proposer() {
-        let epoch_handle = epoch_handle();
-        let auth = &epoch_handle.header_auth;
-        let header = d33_header(&epoch_handle, 0);
-        assert!(auth.authenticate(&header));
+        let context = context();
+        let auth = |header: &SignedProposalHeader| {
+            validate_header(header, &context.validator_data, &author())
+        };
+        let header = d33_header(&context, 0);
+        assert!(auth(&header));
 
         // signed by a non-proposer
-        let other = d33_header(&epoch_handle, 2);
-        assert!(!auth.authenticate(&other));
+        let other = d33_header(&context, 2);
+        assert!(!auth(&other));
 
         // the signature no longer covers the header
         let SignedProposalHeader {
@@ -94,7 +89,7 @@ mod tests {
             header: tampered,
             sig,
         };
-        assert!(!auth.authenticate(&tampered));
+        assert!(!auth(&tampered));
 
         // validly signed, but one level deeper than the message needs
         let SignedProposalHeader {
@@ -105,6 +100,6 @@ mod tests {
         };
         d33.depth += 1;
         let deeper = signed_header(deeper, 0);
-        assert!(!auth.authenticate(&deeper));
+        assert!(!auth(&deeper));
     }
 }

@@ -17,17 +17,17 @@
 //! itself a component, for simulation and tests. `AsyncNode` runs the
 //! same router with the components in tasks.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
-use monad_mcp_common::Timestamp;
+use monad_mcp_common::{Slot, Timestamp, spec::ValidatorData as _};
 
 use crate::{
     RunError,
-    cadence::{SlotManager, conductor::CadenceConductor},
+    cadence::{SlotManager, conductor::CadenceConductor, types::HeaderAuth},
     component::{Cadence, Component, DA, MempoolProposing, Proposing, RandomProposing},
     config::{NodeConfig, SourceKind},
-    da::DARuntime,
-    epoch::{EpochHandle, Epochs},
+    da::{DARuntime, validate_header},
+    epoch::{EpochHandle, EpochManager},
     finalization::{FinalizationCollector, FinalizedSlot},
     network::{Network, NodeAppMessage, Wire, WireInbound, WireOutbound},
     proposing::Mempool,
@@ -50,6 +50,7 @@ pub struct Node<R = NodeRouter, W = NodeAppMessage> {
 
 pub(crate) struct Parts<W> {
     // components
+    pub(crate) epoch_manager: EpochManager,
     pub(crate) cadence: Cadence,
     pub(crate) da: DA,
     pub(crate) collector: FinalizationCollector,
@@ -60,44 +61,48 @@ pub(crate) struct Parts<W> {
 impl<W> Node<NodeRouter, W> {
     pub fn new(config: &NodeConfig) -> Result<Self, RunError> {
         config.validate()?;
-        let epoch_handle = config.epoch_handle()?;
+        let credential = config.credential();
+        let epoch_manager = config.epoch_manager()?;
+        let epoch_handle = epoch_manager.genesis();
 
-        let slot_config = config.cadence.chorus();
         // todo: a full node, which has no slot instance
-        let chorus = epoch_handle
-            .chorus()
-            .ok_or("this node is not a validator")?;
-        let slot_manager = SlotManager::new(slot_config, chorus);
+        let validators = epoch_handle
+            .validators_at(Slot::FIRST)
+            .map_err(|_| "no validators at the first slot")?;
+        if validators.index_of(&credential.node_id).is_none() {
+            return Err("this node is not a validator".into());
+        }
+
+        let header_auth: Arc<HeaderAuth> = Arc::new(validate_header);
+        let slot_config = config.cadence.chorus(&credential, header_auth);
+        let slot_manager = SlotManager::new(slot_config, epoch_handle.clone());
         let conductor_config = config.cadence.conductor(config.genesis_deadline)?;
-        let validator_data = epoch_handle.validator_data.clone();
-        let conductor = CadenceConductor::genesis(conductor_config, validator_data.clone(), ())?;
-        let cadence = Cadence::new(slot_manager, conductor, validator_data);
+        let conductor = CadenceConductor::genesis(conductor_config, epoch_handle.clone(), ())?;
+        let cadence = Cadence::new(slot_manager, conductor, epoch_handle.clone());
 
-        let da = DARuntime::new(
-            config.da.runtime(config.cadence.delta),
-            epoch_handle.da(),
-            epoch_handle.proposers.clone(),
-        );
+        let da_config = config.da.runtime(config.cadence.delta);
+        let da = DARuntime::new(da_config, &credential, epoch_handle.clone());
 
+        let planner = config.planner(epoch_handle.clone());
         let proposing: Proposing = match config.proposal.source {
             SourceKind::Random | SourceKind::Fixed => {
-                let proposing = RandomProposing::new(&epoch_handle, &config.proposal, config.rng());
+                let proposing = RandomProposing::new(planner, &config.proposal, config.rng());
                 Box::new(proposing)
             }
             SourceKind::Mempool => {
                 let mempool = Mempool::new(config.mempool.into());
-                let proposing = MempoolProposing::new(&epoch_handle, &config.proposal, mempool);
+                let proposing = MempoolProposing::new(planner, &config.proposal, mempool);
                 Box::new(proposing)
             }
         };
-        let epochs = Epochs::new(epoch_handle.clone());
-        let mut network = Network::new(epochs);
+        let mut network = Network::new(credential.node_id, epoch_handle.clone());
         if let Some(repeater) = config.repeater() {
             network = network.with_repeater(repeater);
         }
         let collector = FinalizationCollector::default();
 
         let parts = Parts {
+            epoch_manager,
             cadence,
             da,
             collector,
@@ -185,6 +190,9 @@ impl<R: Router<W>, W: Wire<NodeAppMessage>> Component for Node<R, W> {
 // produce/handle external effects (transport and ledger).
 impl<W: Wire<NodeAppMessage>> Parts<W> {
     fn poll(&mut self) -> Option<Effect<W>> {
+        if let Some(epoch_handle) = self.epoch_manager.poll() {
+            return Some(Effect::Epoch(epoch_handle));
+        }
         if let Some(output) = self.network.poll() {
             return Some(Effect::Network(output));
         }
@@ -234,6 +242,7 @@ impl<W: Wire<NodeAppMessage>> Sink<Routed<W>> for NodeSink<'_, W> {
         let now = self.now;
         let parts = &mut *self.parts;
         match routed {
+            Routed::Epoch(event) => parts.epoch_manager.handle(now, event),
             Routed::Cadence(input) => parts.cadence.handle(now, input),
             Routed::DA(input) => parts.da.handle(now, input),
             Routed::Finalization(input) => parts.collector.handle(now, input),

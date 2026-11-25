@@ -28,6 +28,7 @@ use monad_mcp_common::{
     Slot, Timestamp,
     stub::{NodeId, ValidatorData},
 };
+use monad_mcp_epoch::stub::EpochHandle;
 use monad_mcp_proposing::stub::{FixedLeadPlanner, ProposingRuntime};
 use monad_sim::{RunOutcome, StepLabel};
 use monad_sim_swarm::{Network, Swarm};
@@ -44,6 +45,7 @@ pub struct CadenceSwarmBuilder<S: SlotConsensus, C: Conductor> {
     seed: u64,
     network: Network<NodeId, SimMessage<CadenceWireMsg<S, C>>>,
     nodes: Vec<(NodeId, CadenceNode<S, C>)>,
+    // resolves a recipient named by its validator index
     validators: Option<Arc<ValidatorData>>,
     track_logs: bool,
     log: FinalizationLog,
@@ -73,15 +75,11 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         self.seed = seed;
     }
 
-    /// The table that resolves a recipient named by its validator index.
-    pub fn set_validators(&mut self, validators: Arc<ValidatorData>) {
-        self.validators = Some(validators);
-    }
-
-    // the runtime of each node needs the table
-    fn validators(&self) -> Arc<ValidatorData> {
-        let validators = self.validators.clone();
-        validators.expect("set_validators comes before a node")
+    // The nodes of a swarm are in one epoch, so the table of the first slot
+    // of any node resolves each recipient.
+    fn read_validators(&mut self, epoch_handle: &EpochHandle) {
+        let validators = epoch_handle.validators_at(Slot::FIRST);
+        self.validators = Some(validators.expect("the first slot is in bound"));
     }
 
     pub fn track_logs(&mut self, track: bool) {
@@ -93,7 +91,7 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         id: NodeId,
         conductor: C,
         slot_config: S::Config,
-        slot_context: S::Context,
+        epoch_handle: EpochHandle,
     ) where
         S: 'static,
         C: 'static,
@@ -101,8 +99,9 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         CadenceRuntime<S, C>: Send,
         CadenceWireMsg<S, C>: Send,
     {
-        let slot_manager = SlotManager::new(slot_config, slot_context);
-        let runtime = CadenceRuntime::new(slot_manager, conductor, self.validators());
+        self.read_validators(&epoch_handle);
+        let slot_manager = SlotManager::new(slot_config, epoch_handle.clone());
+        let runtime = CadenceRuntime::new(slot_manager, conductor, epoch_handle);
 
         let mut record = self.track_logs.then(|| self.log.allocate(id));
         let on_output = move |now: Timestamp, output: CadenceOutput<S>| {
@@ -132,7 +131,7 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         id: NodeId,
         conductor: C,
         slot_config: S::Config,
-        slot_context: S::Context,
+        epoch_handle: EpochHandle,
         planner: FixedLeadPlanner,
         da: MockDa,
         mut observer: impl FnMut(Timestamp, Slot, &S::FinalizationData) + Send + 'static,
@@ -145,8 +144,9 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
     {
         let proposing = ProposingRuntime::new(planner, MockSource::new(id));
 
-        let slot_manager = SlotManager::new(slot_config, slot_context);
-        let runtime = CadenceRuntime::new(slot_manager, conductor, self.validators());
+        self.read_validators(&epoch_handle);
+        let slot_manager = SlotManager::new(slot_config, epoch_handle.clone());
+        let runtime = CadenceRuntime::new(slot_manager, conductor, epoch_handle);
 
         let mut record = self.track_logs.then(|| self.log.allocate(id));
         let on_output = move |now: Timestamp, output: CadenceOutput<S>| match output {

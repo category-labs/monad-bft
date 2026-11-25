@@ -24,19 +24,18 @@ use std::{num::NonZeroU64, sync::Arc, time::Duration};
 
 use cadence::{
     conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
-    slot::chorus::{Chorus, ChorusConfig, ChorusContext},
-    types::HeaderAuth,
+    slot::chorus::{Chorus, ChorusConfig},
 };
 use helper::{expect_finalized, expect_finalized_at};
 use monad_mcp_cadence::stub as cadence;
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
 use monad_mcp_common::{
     Lane, Slot, SlotDeadline, Timestamp, TimestampDelta,
-    spec::ValidatorData as _,
-    stub::{NodeId, Stake, ValidatorData},
+    stub::{NodeCredential, NodeId, Stake, ValidatorData},
 };
-use monad_mcp_epoch::stub::election::{
-    CreditLotterySchedule, ProposerConfig, ProposerSchedule, RotatingProposerSchedule,
+use monad_mcp_epoch::stub::{
+    EpochHandle,
+    election::{CreditLotterySchedule, Election, ProposerScheduleConfig, RotatingProposerSchedule},
 };
 
 const NODES: u64 = 8;
@@ -53,7 +52,7 @@ const GENESIS_DEADLINE: Timestamp = Timestamp::from_millis(100);
 
 type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
-fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
+fn conductor(epoch_handle: &EpochHandle) -> Conductor {
     let config = ConductorConfig::new(
         SLOTS_PER_WINDOW,
         SYNC_BOUNDARY_SLOTS,
@@ -62,7 +61,7 @@ fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    Conductor::genesis(config, val_data.clone(), ()).unwrap()
+    Conductor::genesis(config, epoch_handle.clone(), ()).unwrap()
 }
 
 // Non-uniform stakes: the heaviest validator holds 20/90 ≈ 22% of the
@@ -91,17 +90,24 @@ fn gen_validator_data() -> ValidatorData {
     ValidatorData::new(valset, mapping)
 }
 
-fn proposer_schedule(
-    val_data: &Arc<ValidatorData>,
-) -> Arc<RotatingProposerSchedule<CreditLotterySchedule>> {
-    let config = ProposerConfig {
-        concurrent_proposers: CONCURRENT_PROPOSERS,
-        observation_cutoff: 0,
-        rotation_slack: 1, // one rotation per slot
-        slots_per_epoch: 4,
-    };
+type Schedule = RotatingProposerSchedule<CreditLotterySchedule>;
+
+fn proposer_schedule(config: ProposerScheduleConfig) -> Schedule {
     let algorithm = CreditLotterySchedule::recommended(&config, 0xC0FFEE);
-    Arc::new(RotatingProposerSchedule::new(config, algorithm, val_data.clone()).unwrap())
+    RotatingProposerSchedule::new(config, algorithm, &gen_validator_data()).unwrap()
+}
+
+// what one node derives on its own from the shared config, seed and stakes
+fn epoch_handle(config: ProposerScheduleConfig) -> EpochHandle {
+    EpochHandle::new(gen_validator_data(), proposer_schedule(config))
+}
+
+fn chorus_config(id: u64) -> ChorusConfig {
+    ChorusConfig {
+        delta: TimestampDelta::from_millis(DELTA),
+        credential: NodeCredential::dummy(id),
+        header_auth: Arc::new(|_, _, _| false),
+    }
 }
 
 #[test]
@@ -109,27 +115,26 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
     let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(Duration::from_millis(LATENCY));
 
-    let val_data = Arc::new(gen_validator_data());
-    builder.set_validators(val_data.clone());
+    let config = ProposerScheduleConfig {
+        concurrent_proposers: CONCURRENT_PROPOSERS,
+        observation_cutoff: 0,
+        rotation_slack: 1, // one rotation per slot
+        slots_per_epoch: 4,
+    };
     // One scheduler per node: every node derives the schedule independently
     // from the shared (config, seed, stakes) inputs.
-    let mut schedules = Vec::new();
+    let mut epoch_handles = Vec::new();
     for id in 0..NODES {
-        let node_id = NodeId::dummy(id);
-        let schedule = proposer_schedule(&val_data);
-        schedules.push(schedule.clone());
+        let epoch_handle = epoch_handle(config.clone());
+        epoch_handles.push(epoch_handle.clone());
 
-        let config = ChorusConfig {
-            delta: TimestampDelta::from_millis(DELTA),
-        };
-        let context = ChorusContext {
-            self_index: val_data.index_of(&node_id).expect("a validator"),
-            key: Arc::new(node_id.keypair()),
-            validator_data: val_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            occupancy: schedule,
-        };
-        builder.add_node(node_id, conductor(&val_data), config, context);
+        let conductor = conductor(&epoch_handle);
+        builder.add_node(
+            NodeId::dummy(id),
+            conductor,
+            chorus_config(id),
+            epoch_handle,
+        );
     }
 
     let mut swarm = builder.build();
@@ -147,13 +152,14 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
     // Cross-node determinism: identical proposer sets everywhere. The
     // schedulers populated their epoch caches lazily during the run.
     for slot in (0..SLOTS).map(Slot) {
-        let reference = schedules[0].proposers_at(slot).unwrap();
-        for schedule in &schedules[1..] {
-            assert_eq!(schedule.proposers_at(slot).unwrap(), reference);
+        let reference = epoch_handles[0].proposers_at(slot).unwrap();
+        for epoch_handle in &epoch_handles[1..] {
+            assert_eq!(epoch_handle.proposers_at(slot).unwrap(), reference);
         }
     }
 
-    let schedule = &schedules[0];
+    // the same derivation once more, to read what the handles do not show
+    let schedule = &proposer_schedule(config);
     let leaders: Vec<NodeId> = (0..SLOTS)
         .map(|rotation| schedule.leader_of_global_rotation(rotation).unwrap())
         .collect();
@@ -208,17 +214,13 @@ fn vacant_indices_do_not_delay_the_fast_path() {
     // finalization must stay on the exact fast-path schedule.
     const SLOTS_RUN: u64 = 8; // two epochs of two rotations
 
-    let config = ProposerConfig {
+    let config = ProposerScheduleConfig {
         concurrent_proposers: 2,
         observation_cutoff: 1,
         rotation_slack: 1, // two slots per rotation
         slots_per_epoch: 4,
     };
-
-    let val_data = Arc::new(gen_validator_data());
-    let algorithm = CreditLotterySchedule::recommended(&config, 0xC0FFEE);
-    let schedule =
-        Arc::new(RotatingProposerSchedule::new(config, algorithm, val_data.clone()).unwrap());
+    let schedule = proposer_schedule(config.clone());
 
     // Sanity: the vacancies this test is about do occur. Rotation starts
     // (slots 2, 4, 6) run with one lane vacant; all other slots — and the
@@ -238,21 +240,16 @@ fn vacant_indices_do_not_delay_the_fast_path() {
 
     let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(Duration::from_millis(LATENCY));
-    builder.set_validators(val_data.clone());
 
     for id in 0..NODES {
-        let node_id = NodeId::dummy(id);
-        let chorus_config = ChorusConfig {
-            delta: TimestampDelta::from_millis(DELTA),
-        };
-        let context = ChorusContext {
-            self_index: val_data.index_of(&node_id).expect("a validator"),
-            key: Arc::new(node_id.keypair()),
-            validator_data: val_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            occupancy: schedule.clone(),
-        };
-        builder.add_node(node_id, conductor(&val_data), chorus_config, context);
+        let epoch_handle = epoch_handle(config.clone());
+        let conductor = conductor(&epoch_handle);
+        builder.add_node(
+            NodeId::dummy(id),
+            conductor,
+            chorus_config(id),
+            epoch_handle,
+        );
     }
 
     let mut swarm = builder.build();

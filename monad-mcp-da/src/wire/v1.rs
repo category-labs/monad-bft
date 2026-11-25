@@ -292,7 +292,7 @@ mod tests {
         super::{
             super::{
                 encoding_scheme::d33::D33Layout,
-                test_util::{epoch_handle, group, proposal_chunks},
+                test_util::{context, group, proposal_chunks},
                 types::D33,
             },
             header_bytes, write_chunk, write_envelope,
@@ -319,8 +319,8 @@ mod tests {
 
     #[test]
     fn a_packet_is_the_signature_the_version_the_header_then_the_body() {
-        let epoch_handle = epoch_handle();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let context = context();
+        let (header, chunks) = proposal_chunks(&context, 1);
         let depth = depth_of(&header);
         let (_, chunk_id, data) = chunks[3].clone().into_parts();
 
@@ -346,8 +346,8 @@ mod tests {
 
     #[test]
     fn chunks_round_trip_and_regroup_into_their_envelope() {
-        let epoch_handle = epoch_handle();
-        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+        let context = context();
+        let (_, chunks) = proposal_chunks(&context, 1);
         for chunk in &chunks {
             let packet = write_chunk(chunk);
             assert_eq!(D33Layout::read_chunk(packet), Ok(chunk.clone()));
@@ -366,8 +366,8 @@ mod tests {
 
     #[test]
     fn a_header_alone_is_a_packet_that_stops_before_the_body() {
-        let epoch_handle = epoch_handle();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let context = context();
+        let (header, chunks) = proposal_chunks(&context, 1);
         let header_only = ProposalEnvelope::from_header(header.clone());
 
         let packets = write_envelope(&header_only);
@@ -394,8 +394,8 @@ mod tests {
 
     #[test]
     fn malformed_frames_are_rejected() {
-        let epoch_handle = epoch_handle();
-        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+        let context = context();
+        let (_, chunks) = proposal_chunks(&context, 1);
         let chunk = &chunks[0];
         let body = D33Layout::HEADER_LEN;
 
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn the_body_is_the_proof_the_chunk_header_and_the_symbol() {
-        let (header, _) = proposal_chunks(&epoch_handle(), 1);
+        let (header, _) = proposal_chunks(&context(), 1);
         let layout = header.scheme();
 
         let body_len = proof_len(5) + D33::CHUNK_HEADER_LEN + D33Layout::symbol_len_at(5);
@@ -439,9 +439,8 @@ mod tests {
             signed_bytes,
         };
 
-        let epoch_handle = epoch_handle();
-        let (header, chunks) =
-            proposal_chunks_under(&epoch_handle, hollow_scheme(&epoch_handle), 0, 1);
+        let context = context();
+        let (header, chunks) = proposal_chunks_under(&context, hollow_scheme(&context), 0, 1);
         type HollowD33Layout<'a> = HollowLayout<'a, Hollow<D33>>;
 
         for chunk in &chunks {

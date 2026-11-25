@@ -13,13 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{cell::OnceCell, collections::BTreeMap, sync::Arc};
+use std::{cell::OnceCell, collections::BTreeMap};
 
 use monad_mcp_common::spec::{Stake as _, ValidatorData as _};
 
 use super::{
     super::{
-        super::types::{IsVote, Slot, StrongQc, ValidatorData, ValidatorIndex, VoteMsg, VotePool},
+        super::{
+            context::ChorusContext,
+            types::{IsVote, Slot, StrongQc, ValidatorIndex, VoteMsg, VotePool},
+        },
         FallbackView, MvbaScope, ValidateCert, Votable,
     },
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate, TimeoutGroup},
@@ -45,9 +48,9 @@ pub(crate) struct SealingVotePool<V: IsVote> {
 }
 
 impl<V: IsVote> SealingVotePool<V> {
-    fn new(scope: V::Scope, validator_data: Arc<ValidatorData>) -> Self {
+    fn new(votes: VotePool<V>) -> Self {
         Self {
-            votes: VotePool::new(scope, validator_data),
+            votes,
             sealed: OnceCell::new(),
         }
     }
@@ -91,15 +94,16 @@ pub(crate) struct ViewCollectors<V: Votable, C: ValidateCert> {
 }
 
 impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
-    pub(crate) fn new(slot: Slot, view: FallbackView, validator_data: &Arc<ValidatorData>) -> Self {
+    pub(crate) fn new(view: FallbackView, context: &ChorusContext) -> Self {
+        let slot = context.slot;
         let scope = MvbaScope::new(slot, view);
         Self {
             slot,
             view,
             pre_prepare: None,
-            prepare_votes: SealingVotePool::new(scope, validator_data.clone()),
-            commit_votes: SealingVotePool::new(scope, validator_data.clone()),
-            timeout_votes: VotePool::new(scope, validator_data.clone()),
+            prepare_votes: SealingVotePool::new(context.vote_pool(scope)),
+            commit_votes: SealingVotePool::new(context.vote_pool(scope)),
+            timeout_votes: context.vote_pool(scope),
             prep_qcs: BTreeMap::new(),
             harvested_tc: None,
         }

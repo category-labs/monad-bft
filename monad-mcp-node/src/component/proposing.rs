@@ -22,7 +22,6 @@ use super::Component;
 use crate::{
     common::NodeId,
     config::{ProposalConfig, SourceKind},
-    epoch::EpochHandle,
     proposing::{
         self, FixedLeadPlanner, Mempool, MempoolInput, MempoolSource, ProposingRuntime,
         RandomSource, VoteReceived,
@@ -85,9 +84,9 @@ pub struct MempoolProposing {
 }
 
 impl MempoolProposing {
-    pub fn new(epoch_handle: &EpochHandle, config: &ProposalConfig, mempool: Mempool) -> Self {
+    pub fn new(planner: FixedLeadPlanner, config: &ProposalConfig, mempool: Mempool) -> Self {
         let source = MempoolSource::new(mempool, config.proposal_size_limit());
-        let runtime = ProposingRuntime::new(planner(epoch_handle, config), source);
+        let runtime = ProposingRuntime::new(planner, source);
         Self { runtime }
     }
 }
@@ -134,13 +133,13 @@ pub struct RandomProposing {
 }
 
 impl RandomProposing {
-    pub fn new(epoch_handle: &EpochHandle, config: &ProposalConfig, rng: ChaCha8Rng) -> Self {
+    pub fn new(planner: FixedLeadPlanner, config: &ProposalConfig, rng: ChaCha8Rng) -> Self {
         let limit = config.proposal_size_limit();
         let source = match config.source {
             SourceKind::Fixed => RandomSource::fixed_size(limit, rng),
             SourceKind::Random | SourceKind::Mempool => RandomSource::log_uniform(limit, rng),
         };
-        let runtime = ProposingRuntime::new(planner(epoch_handle, config), source);
+        let runtime = ProposingRuntime::new(planner, source);
         Self { runtime }
     }
 }
@@ -180,14 +179,6 @@ impl Component for RandomProposing {
     }
 }
 
-fn planner(epoch_handle: &EpochHandle, config: &ProposalConfig) -> FixedLeadPlanner {
-    FixedLeadPlanner::new(
-        epoch_handle.self_id,
-        epoch_handle.proposers.clone(),
-        config.planner(&epoch_handle.proposers),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use monad_mcp_ledger::decode_sealed_batch; // demo(tx-timeline)
@@ -200,9 +191,10 @@ mod tests {
     }
 
     fn proposing_of(config: &NodeConfig) -> MempoolProposing {
-        let epoch_handle = config.epoch_handle().unwrap();
+        let epoch_handle = config.epoch_manager().unwrap().genesis();
+        let planner = config.planner(epoch_handle);
         let mempool = Mempool::new(config.mempool.into());
-        MempoolProposing::new(&epoch_handle, &config.proposal, mempool)
+        MempoolProposing::new(planner, &config.proposal, mempool)
     }
 
     // demo(tx-timeline)

@@ -20,10 +20,9 @@ use super::Component;
 use crate::{
     cadence::{Inbound, SlotLifecycle, slot::chorus::ChorusDACommand},
     da::{ChunkPull, DAOutput, DARuntime, ProposalEnvelope, ProposalScheme},
-    epoch::NodeProposerSchedule,
 };
 
-pub type DA = DARuntime<NodeProposerSchedule>;
+pub type DA = DARuntime;
 
 pub enum DAInput {
     Envelope(Inbound<ProposalEnvelope>),

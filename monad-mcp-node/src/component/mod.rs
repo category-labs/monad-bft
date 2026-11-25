@@ -15,6 +15,7 @@
 
 mod cadence;
 mod da;
+mod epoch;
 mod finalization;
 mod proposing;
 

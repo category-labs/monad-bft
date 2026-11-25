@@ -81,15 +81,16 @@ impl<S: ProposalSource> ProposingRuntime<S> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use monad_mcp_common::{Lane, Slot, TimestampDelta};
     use rand::SeedableRng as _;
     use rand_chacha::ChaCha8Rng;
 
     use super::{
         super::{
-            env::{common::NodeId, epoch::election::FixedProposerSchedule},
+            env::{
+                common::{NodeId, ValidatorData},
+                epoch::{EpochHandle, election::FixedProposerSchedule},
+            },
             planner::{FixedLeadConfig, FixedLeadPlanner},
             source::RandomSource,
         },
@@ -102,13 +103,14 @@ mod tests {
     #[test]
     fn the_source_seals_when_the_planner_says_to_propose() {
         let me = NodeId::dummy(0);
-        let schedule = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(1), me]));
+        let election = FixedProposerSchedule::new(vec![NodeId::dummy(1), me]);
+        let epoch_handle = EpochHandle::new(ValidatorData::dummy(4), election);
         let config = FixedLeadConfig {
             lead: LEAD,
             min_lead: TimestampDelta::ZERO,
             observation_cutoff: 0,
         };
-        let planner = FixedLeadPlanner::new(me, schedule, config);
+        let planner = FixedLeadPlanner::new(me, epoch_handle, config);
         let source = RandomSource::fixed_size(PROPOSAL_SIZE, ChaCha8Rng::seed_from_u64(7));
         let mut runtime = ProposingRuntime::new(planner, source);
 

@@ -34,6 +34,7 @@ use super::{
         runtime::Runtime,
         timers::Timers,
     },
+    context::ChorusContext,
     types::{
         IsVote, Lanes, Slot, StrongQc, Timestamp, TimestampDelta, ValidatorData, ValidatorIndex,
     },
@@ -110,18 +111,14 @@ impl Metablock {
 }
 
 pub trait ValidateInput {
-    type Context;
-
-    fn validate(&self, context: &Self::Context) -> bool;
+    fn validate(&self, context: &ChorusContext) -> bool;
 
     /// Whether the value is admissible alone, without an fbcert
     fn fbcert_optional(&self) -> bool;
 }
 
 pub trait ValidateCert: Clone + Eq + Hash + Debug {
-    type Context;
-
-    fn validate(&self, context: &Self::Context) -> bool;
+    fn validate(&self, context: &ChorusContext) -> bool;
 }
 
 /// The votable projection of an MVBA value: `entries(x)` in the paper

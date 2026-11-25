@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     slot::{SlotConsensus, SlotOutput},
-    types::Slot,
+    types::{EpochHandle, Slot},
 };
 
 pub struct SlotManager<S>
@@ -30,21 +30,21 @@ where
     cap: Slot,
 
     config: S::Config,
-    context: S::Context,
+    epoch_handle: EpochHandle,
 }
 
 impl<S> SlotManager<S>
 where
     S: SlotConsensus,
 {
-    pub fn new(config: S::Config, context: S::Context) -> Self {
+    pub fn new(config: S::Config, epoch_handle: EpochHandle) -> Self {
         Self {
             slots: BTreeMap::new(),
             closed_slots: BTreeSet::new(),
             cap: Slot::MIN,
             // pending: PendingSlotBuffers,
             config,
-            context,
+            epoch_handle,
         }
     }
 
@@ -60,8 +60,11 @@ where
             return;
         }
 
-        let instance = S::new(slot, &self.config, &self.context);
-        self.slots.insert(slot, instance);
+        let Ok(context) = S::context_at(&self.config, slot, &self.epoch_handle) else {
+            tracing::warn!("Refuse to open a slot out of bound: {:?}", slot);
+            return;
+        };
+        self.slots.insert(slot, S::new(context));
     }
 
     /// The instance for an open, not-yet-closed slot, if any.

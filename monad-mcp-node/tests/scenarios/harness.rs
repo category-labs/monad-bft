@@ -27,14 +27,14 @@ use monad_mcp_common::{
     FinalizationPath, Lane, Lanes, Slot, Timestamp, TimestampDelta, WirePriority,
 };
 use monad_mcp_node::{
-    Component, Epochs, Node, NodeOutput, Router,
+    Component, EpochHandle, Node, NodeOutput, Router,
     cadence::types::ProposalId,
-    common::NodeId,
+    common::{NodeId, ProposalKeyPair},
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
         RepeaterSection, ValidatorConfig,
     },
-    da::{self, ProposalKeyPair, ProposalScheme},
+    da::{self, ProposalScheme},
     network::{WireAppMessage, WireInbound, WireOutbound, node_ids},
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
@@ -110,7 +110,7 @@ pub struct SimNode {
     id: NodeId,
     node: Box<dyn Component<Input = SimInbound, Output = SimOutput> + Send>,
     // the table of a slot names the recipients of a wire message
-    epochs: Epochs,
+    epoch_handle: EpochHandle,
     finalized: BTreeMap<Slot, Pattern>,
     // the lanes a slot committed whose proposal resolved invalid, for the
     // slots that have any
@@ -136,20 +136,20 @@ impl SimNode {
     where
         R: Router<WireAppMessage> + Send + 'static,
     {
-        let epochs = Epochs::new(node.epoch_handle().clone());
-        Self::with_epochs(id, node, epochs)
+        let epoch_handle = node.epoch_handle().clone();
+        Self::with_epoch_handle(id, node, epoch_handle)
     }
 
     // a component that is not a Node
-    pub fn with_epochs(
+    pub fn with_epoch_handle(
         id: NodeId,
         node: impl Component<Input = SimInbound, Output = SimOutput> + Send + 'static,
-        epochs: Epochs,
+        epoch_handle: EpochHandle,
     ) -> Self {
         Self {
             id,
             node: Box::new(node),
-            epochs,
+            epoch_handle,
             finalized: BTreeMap::new(),
             invalid: BTreeMap::new(),
             paths: BTreeMap::new(),
@@ -227,7 +227,7 @@ impl SimNode {
     fn transmit(&mut self, outbound: WireOutbound<WireAppMessage>, ctx: &mut Ctx) {
         let net = self.net.expect("node not wired");
         let WireOutbound { to, message, qos } = outbound;
-        let to: Vec<NodeId> = node_ids(&to, &self.epochs).copied().collect();
+        let to: Vec<NodeId> = node_ids(&to, &self.epoch_handle).collect();
         let priority = qos;
         let message = SimMessage { message, priority };
         ctx.schedule(

@@ -13,69 +13,33 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_rlp::{Decodable, Encodable};
 use bytes::BufMut;
-use monad_crypto::hasher::HasherType;
 pub(crate) use monad_mcp_cadence::stub as cadence;
 pub(crate) use monad_mcp_common::stub as common;
 pub(crate) use monad_mcp_epoch::stub as epoch;
 
 use self::cadence::env::{
-    EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature, SignedProposalHeader,
+    EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, SignedProposalHeader,
 };
-pub(crate) use self::common::NodeId;
-use crate::spec::{
-    DAMerkleRoot, DANodeId, DAProposalHeader, DAProposalKeyPair, DAProposalSignature, SIGNATURE_LEN,
-};
+pub(crate) use self::common::{NodeId, ProposalKeyPair, ProposalSignature};
+use crate::spec::{DAMerkleRoot, DANodeId, DAProposalHeader, DAProposalSignature, SIGNATURE_LEN};
 
-// The keypair used to sign/verify proposal. Not used for aggregation.
-#[derive(Clone)]
-pub struct ProposalKeyPair(NodeId);
-
-impl ProposalKeyPair {
-    pub fn dummy(node_id: NodeId) -> Self {
-        Self(node_id)
-    }
-}
-
-impl DAProposalKeyPair for ProposalKeyPair {
-    type Signature = ProposalSignature;
-
-    fn sign(&self, signed_bytes: &[u8]) -> ProposalSignature {
-        ProposalSignature {
-            signer: self.0,
-            checksum: checksum(signed_bytes),
-        }
-    }
-}
-
-// signer(8) checksum(8), zero padded to the field
+// the rlp form, zero padded to the field
 impl DAProposalSignature for ProposalSignature {
-    type NodeId = NodeId;
-
     fn to_bytes(&self, out: &mut impl BufMut) {
-        out.put_u64_le(u64::from(self.signer));
-        out.put_u64_le(self.checksum);
-        out.put_bytes(0, SIGNATURE_LEN - 16);
+        let padding = SIGNATURE_LEN - self.length();
+        self.encode(out);
+        out.put_bytes(0, padding);
     }
 
     fn from_bytes(field: &[u8]) -> Option<Self> {
-        let (signer, rest) = field.split_first_chunk::<8>()?;
-        let (checksum, padding) = rest.split_first_chunk::<8>()?;
+        let mut padding = field;
+        let signature = Self::decode(&mut padding).ok()?;
         if padding.iter().any(|byte| *byte != 0) {
             return None;
         }
-
-        Some(ProposalSignature {
-            signer: NodeId::dummy(u64::from_le_bytes(*signer)),
-            checksum: u64::from_le_bytes(*checksum),
-        })
-    }
-
-    fn recover_author(&self, signed_bytes: &[u8]) -> Option<NodeId> {
-        if checksum(signed_bytes) != self.checksum {
-            return None;
-        }
-        Some(self.signer)
+        Some(signature)
     }
 }
 
@@ -113,17 +77,6 @@ impl DANodeId for NodeId {
         field.fill(0);
         field[1..9].copy_from_slice(&u64::from(*self).to_le_bytes());
     }
-}
-
-// a hash prefix of the signed bytes
-fn checksum(signed_bytes: &[u8]) -> u64 {
-    use monad_crypto::hasher::Hasher as _;
-
-    let mut hasher = HasherType::new();
-    hasher.update(signed_bytes);
-    let hash = hasher.hash();
-    let prefix = hash.0[..8].try_into().expect("8 bytes");
-    u64::from_le_bytes(prefix)
 }
 
 const _: () = crate::spec::assert_env::<

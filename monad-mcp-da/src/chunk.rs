@@ -251,15 +251,15 @@ impl ProposalEnvelope {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::test_util::{epoch_handle, group, proposal_chunks},
+        super::test_util::{context, group, proposal_chunks},
         *,
     };
 
     #[test]
     fn grouping_collects_each_proposal_once() {
-        let epoch_handle = epoch_handle();
-        let (header_a, a) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, b) = proposal_chunks(&epoch_handle, 2);
+        let context = context();
+        let (header_a, a) = proposal_chunks(&context, 1);
+        let (header_b, b) = proposal_chunks(&context, 2);
 
         let mixed = [a[0].clone(), b[0].clone(), a[1].clone()];
         let mut envelopes: Vec<_> = ProposalEnvelope::group(mixed).collect();
@@ -273,8 +273,8 @@ mod tests {
 
     #[test]
     fn an_envelope_views_its_chunks_under_one_header() {
-        let epoch_handle = epoch_handle();
-        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+        let context = context();
+        let (_, chunks) = proposal_chunks(&context, 1);
         let envelope = group(&chunks[1..4]);
 
         let views: Vec<_> = envelope.chunks().collect();
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn only_a_single_chunk_envelope_is_a_chunk() {
-        let (header, chunks) = proposal_chunks(&epoch_handle(), 1);
+        let (header, chunks) = proposal_chunks(&context(), 1);
         let single = ProposalEnvelope::from_chunk(chunks[2].clone());
         assert_eq!(single.into_chunk(), Some(chunks[2].clone()));
         assert_eq!(group(&chunks[1..3]).into_chunk(), None);

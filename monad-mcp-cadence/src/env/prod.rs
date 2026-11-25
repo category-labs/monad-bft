@@ -13,10 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub(crate) use monad_mcp_common::prod::{KeyPair, NodeId, PubKey, Signature, Stake, ValidatorData};
+pub(crate) use monad_mcp_common::prod::{
+    KeyPair, NodeCredential, NodeId, PubKey, Signature, Stake, ValidatorData,
+};
+pub(crate) use monad_mcp_epoch::prod as epoch;
 
 pub use crate::env::stub::{
-    HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignatureCollection, SignedProposalHeader,
+    MerkleRoot, ProposalHeader, ProposalId, SignatureCollection, SignedProposalHeader,
     VoteAggregation,
 };
 
@@ -35,5 +38,4 @@ const _: () = crate::spec::assert_env::<
     ProposalId,
     ProposalHeader,
     SignedProposalHeader,
-    HeaderAuth,
 >();

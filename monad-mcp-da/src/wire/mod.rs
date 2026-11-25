@@ -243,19 +243,20 @@ pub fn write_envelope(envelope: &ProposalEnvelope) -> Vec<Bytes> {
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_common::spec::ProposalSignature as _;
+
     use super::{
         super::{
             encoding_scheme::d33::D33Layout,
-            test_util::{SLOT, author, epoch_handle, group, proposal_chunks, proposal_chunks_from},
+            test_util::{SLOT, author, context, group, proposal_chunks, proposal_chunks_from},
             types::NodeId,
         },
         *,
     };
-    use crate::spec::DAProposalSignature as _;
 
     #[test]
     fn packets_are_routed_by_version_then_scheme() {
-        let (_, chunks) = proposal_chunks(&epoch_handle(), 1);
+        let (_, chunks) = proposal_chunks(&context(), 1);
         let packet = write_chunk(&chunks[0]);
         assert_eq!(packet.len(), v1::SEGMENT_LEN);
         assert_eq!(version(&packet), Some(v1::VERSION));
@@ -278,7 +279,7 @@ mod tests {
 
     #[test]
     fn an_envelope_writes_the_packet_of_each_of_its_chunks() {
-        let (_, chunks) = proposal_chunks(&epoch_handle(), 1);
+        let (_, chunks) = proposal_chunks(&context(), 1);
         let envelope = group(&chunks[1..4]);
 
         let mut expected = Vec::new();
@@ -290,7 +291,7 @@ mod tests {
 
     #[test]
     fn a_header_alone_crosses_the_wire_as_one_packet() {
-        let (header, chunks) = proposal_chunks(&epoch_handle(), 1);
+        let (header, chunks) = proposal_chunks(&context(), 1);
         let envelope = ProposalEnvelope::from_header(header.clone());
 
         let packets = write_envelope(&envelope);
@@ -313,8 +314,8 @@ mod tests {
 
     #[test]
     fn the_signature_binds_the_signed_bytes() {
-        let epoch_handle = epoch_handle();
-        let (header, _) = proposal_chunks(&epoch_handle, 1);
+        let context = context();
+        let (header, _) = proposal_chunks(&context, 1);
         let signed = signed_bytes(&header.header);
         assert_eq!(signed.len(), D33Layout::SIGNED_LEN);
         assert_eq!(header.sig().recover_author(&signed), Some(author()));
@@ -324,7 +325,7 @@ mod tests {
         assert_eq!(header.sig().recover_author(&altered), None);
 
         // the same bytes signed by another author recover that author
-        let (other, _) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
+        let (other, _) = proposal_chunks_from(&context, 2, SLOT, 1);
         assert_eq!(other.sig().recover_author(&signed), Some(NodeId::dummy(2)));
     }
 
@@ -333,9 +334,9 @@ mod tests {
     fn a_hollow_chunk_is_routed_to_its_frame_and_stands_for_a_segment() {
         use super::super::test_util::{hollow_scheme, proposal_chunks_under};
 
-        let epoch_handle = epoch_handle();
-        let scheme = hollow_scheme(&epoch_handle);
-        let (header, chunks) = proposal_chunks_under(&epoch_handle, scheme, 0, 1);
+        let context = context();
+        let scheme = hollow_scheme(&context);
+        let (header, chunks) = proposal_chunks_under(&context, scheme, 0, 1);
 
         let packet = write_chunk(&chunks[0]);
         assert_eq!(packet[v1::SCHEME_VARIANT_OFFSET], Hollow::<D33>::VARIANT);
@@ -347,7 +348,7 @@ mod tests {
         assert_eq!(read_envelope(header_only.clone()), Ok(envelope));
         assert_eq!(nominal_len(&header_only), D33Layout::HEADER_LEN);
 
-        let (_, d33_chunks) = proposal_chunks(&epoch_handle, 1);
+        let (_, d33_chunks) = proposal_chunks(&context, 1);
         let d33_packet = write_chunk(&d33_chunks[0]);
         assert_eq!(nominal_len(&d33_packet), v1::SEGMENT_LEN);
     }

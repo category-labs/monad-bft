@@ -9,7 +9,7 @@ bench = false
 
 [features]
 # exposes the stub instantiation (crate::stub).
-enable_stub = []
+enable_stub = ["monad-mcp-epoch/enable_stub"]
 # adds the hollow scheme to the stub, for the nodes of one process.
 enable_hollow = ["enable_stub"]
 
@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 monad-mcp-common = { workspace = true }
+monad-mcp-epoch = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

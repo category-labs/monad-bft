@@ -16,21 +16,13 @@
 //! Finalized slots into the on-disk ledger, on a thread of their own so
 //! disk writes never stall the node's event loop.
 
-use std::{
-    path::Path,
-    sync::{Arc, mpsc},
-    thread,
-};
+use std::{path::Path, sync::mpsc, thread};
 
 use monad_mcp_ledger::{
     CommittedLane, FinalizationPath, LanePid, LedgerError, LedgerWriter, NewBlock, NewLane,
 };
 
-use crate::{
-    election::{ProposerSchedule, ProposerSet},
-    finalization::FinalizedSlot,
-    logging,
-};
+use crate::{election::ProposerSet, epoch::EpochHandle, finalization::FinalizedSlot, logging};
 
 // the block the writer stores for a finalized slot; `proposers` is the
 // slot's schedule, None if it could not be queried
@@ -189,24 +181,21 @@ fn write(writer: &LedgerWriter, block: &NewBlock) {
 
 // what the node does with each finalized slot: log it, then store it
 pub struct Recorder {
-    schedule: Arc<dyn ProposerSchedule + Send + Sync>,
+    epoch_handle: EpochHandle,
     sink: LedgerSink,
 }
 
 impl Recorder {
-    pub fn new(schedule: Arc<dyn ProposerSchedule + Send + Sync>, sink: LedgerSink) -> Self {
-        Self { schedule, sink }
+    pub fn new(epoch_handle: EpochHandle, sink: LedgerSink) -> Self {
+        Self { epoch_handle, sink }
     }
 
     pub fn record(&mut self, finalized: FinalizedSlot) {
         log_finalized(&finalized);
-        let proposers = match self.schedule.proposers_at(finalized.slot) {
-            Ok(set) => Some(set),
-            Err(error) => {
-                tracing::warn!(slot = finalized.slot.0, %error, "no proposers for the ledger");
-                None
-            }
-        };
+        let proposers = self.epoch_handle.proposers_at(finalized.slot).ok();
+        if proposers.is_none() {
+            tracing::warn!(slot = finalized.slot.0, "no proposers for the ledger");
+        }
         self.sink.write(new_block(&finalized, proposers.as_ref()));
     }
 }

@@ -16,10 +16,7 @@
 use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc};
 
 use alloy_rlp::Encodable as _;
-use monad_mcp_common::{
-    Timestamp, TimestampDelta,
-    spec::{KeyPair as _, ValidatorData as _},
-};
+use monad_mcp_common::{Timestamp, TimestampDelta, spec::KeyPair as _};
 use monad_mcp_ledger::BatchBuilder;
 use rand::SeedableRng as _;
 use rand_chacha::ChaCha8Rng;
@@ -29,14 +26,21 @@ use crate::{
     cadence::{
         conductor::{ConductorConfig, ConductorError},
         slot::chorus::ChorusConfig,
+        types::HeaderAuth,
     },
-    common::{KeyPair, NodeId, PubKey, Stake, ValidatorData},
-    da::{self, ProposalKeyPair, header_auth},
-    election::{ProposerConfig, RotatingProposerSchedule, RoundRobinLeaderSchedule, ScheduleError},
-    epoch::{EpochHandle, NodeProposerSchedule},
+    common::{KeyPair, NodeCredential, NodeId, ProposalKeyPair, PubKey, Stake, ValidatorData},
+    da,
+    election::{
+        ProposerScheduleConfig, RotatingProposerSchedule, RoundRobinLeaderSchedule, ScheduleError,
+    },
+    epoch::{EpochHandle, EpochManager},
     network::RepeaterConfig,
-    proposing::{self, FixedLeadConfig, source::mempool},
+    proposing::{self, FixedLeadConfig, FixedLeadPlanner, source::mempool},
 };
+
+/// The node's proposer schedule: the real rotating schedule over the
+/// round-robin leader sequence, which keeps devnet assignments predictable.
+pub type NodeProposerSchedule = RotatingProposerSchedule<RoundRobinLeaderSchedule>;
 
 #[derive(Deserialize)]
 pub struct NodeConfig {
@@ -149,23 +153,30 @@ impl NodeConfig {
         })
     }
 
-    pub fn epoch_handle(&self) -> Result<EpochHandle, ScheduleError> {
-        let validator_data = Arc::new(self.validator_data());
-        let proposers = Arc::new(
-            self.proposal
-                .schedule(&self.leader_election, validator_data.clone())?,
-        );
-        let header_auth = Arc::new(header_auth(proposers.clone(), validator_data.clone()));
-
-        Ok(EpochHandle {
-            self_id: self.node_id,
-            self_index: validator_data.index_of(&self.node_id),
-            key: Arc::new(self.cadence_key_pair.clone()),
+    pub fn credential(&self) -> NodeCredential {
+        NodeCredential {
+            node_id: self.node_id,
+            vote_key: Arc::new(self.cadence_key_pair.clone()),
             proposal_key: Arc::new(self.proposal_key_pair.clone()),
-            validator_data,
-            proposers,
-            header_auth,
-        })
+        }
+    }
+
+    // the validators of the config, in one epoch that never ends
+    pub fn epoch_manager(&self) -> Result<EpochManager, ScheduleError> {
+        let validators = self.validator_data();
+        let election = self.proposal.schedule(&self.leader_election, &validators)?;
+        Ok(EpochManager::new_fixed(validators, election))
+    }
+
+    pub fn planner(&self, epoch_handle: EpochHandle) -> FixedLeadPlanner {
+        let config = self.proposal.planner(&self.leader_election);
+        FixedLeadPlanner::new(self.node_id, epoch_handle, config)
+    }
+
+    // the schedule itself, for a reader that follows its rotations
+    pub fn proposer_schedule(&self) -> Result<NodeProposerSchedule, ScheduleError> {
+        let validators = self.validator_data();
+        self.proposal.schedule(&self.leader_election, &validators)
     }
 
     pub fn peers(&self) -> HashMap<NodeId, SocketAddr> {
@@ -255,8 +266,16 @@ impl CadenceConfig {
         )
     }
 
-    pub fn chorus(&self) -> ChorusConfig {
-        ChorusConfig { delta: self.delta }
+    pub fn chorus(
+        &self,
+        credential: &NodeCredential,
+        header_auth: Arc<HeaderAuth>,
+    ) -> ChorusConfig {
+        ChorusConfig {
+            delta: self.delta,
+            credential: credential.clone(),
+            header_auth,
+        }
     }
 }
 
@@ -377,12 +396,12 @@ impl ProposalConfig {
 
     // the epoch is the smallest whole number of rotations covering both
     // MIN_SLOTS_PER_EPOCH and the K rotations the schedule requires
-    fn proposer_config(&self, election: &LeaderElectionConfig) -> ProposerConfig {
+    fn proposer_config(&self, election: &LeaderElectionConfig) -> ProposerScheduleConfig {
         let rotation = Self::OBSERVATION_CUTOFF.saturating_add(election.rotation_slack);
         let rotations = Self::MIN_SLOTS_PER_EPOCH
             .div_ceil(rotation)
             .max(self.num_lanes as u64);
-        ProposerConfig {
+        ProposerScheduleConfig {
             concurrent_proposers: self.num_lanes,
             observation_cutoff: Self::OBSERVATION_CUTOFF,
             rotation_slack: election.rotation_slack,
@@ -393,7 +412,7 @@ impl ProposalConfig {
     fn schedule(
         &self,
         election: &LeaderElectionConfig,
-        validator_data: Arc<ValidatorData>,
+        validator_data: &ValidatorData,
     ) -> Result<NodeProposerSchedule, ScheduleError> {
         let cfg = self.proposer_config(election);
         let algorithm = RoundRobinLeaderSchedule::new(&cfg);
@@ -401,11 +420,11 @@ impl ProposalConfig {
     }
 
     // the gate's cutoff is the schedule's own: the two cannot disagree
-    pub fn planner(&self, proposers: &NodeProposerSchedule) -> FixedLeadConfig {
+    pub fn planner(&self, election: &LeaderElectionConfig) -> FixedLeadConfig {
         FixedLeadConfig {
             lead: self.propose_before_deadline,
             min_lead: self.withhold_before_deadline,
-            observation_cutoff: proposers.config().observation_cutoff,
+            observation_cutoff: self.proposer_config(election).observation_cutoff,
         }
     }
 }
@@ -478,8 +497,8 @@ mod de {
     use serde::{Deserialize, Deserializer};
 
     use crate::{
-        common::{KeyPair, NodeId, PubKey},
-        da::{ProposalKeyPair, ProposalScheme},
+        common::{KeyPair, NodeId, ProposalKeyPair, PubKey},
+        da::ProposalScheme,
     };
 
     pub fn node_id<'de, D: Deserializer<'de>>(d: D) -> Result<NodeId, D::Error> {
@@ -528,16 +547,16 @@ mod tests {
     use monad_mcp_common::Slot;
 
     use super::*;
-    use crate::election::ProposerSchedule as _;
+    use crate::election::Election as _;
 
-    fn validator_data(n: u64) -> Arc<ValidatorData> {
+    fn validator_data(n: u64) -> ValidatorData {
         let valset = (0..n)
             .map(|id| (NodeId::dummy(id), Stake::from(1)))
             .collect();
         let mapping = (0..n)
             .map(|id| (NodeId::dummy(id), NodeId::dummy(id).keypair().pubkey()))
             .collect();
-        Arc::new(ValidatorData::new(valset, mapping))
+        ValidatorData::new(valset, mapping)
     }
 
     // the default K exceeds a small devnet's validator count; the effective
@@ -546,7 +565,7 @@ mod tests {
     fn the_default_schedule_builds_for_any_validator_count() {
         for n in 1..=7 {
             let schedule = ProposalConfig::default()
-                .schedule(&LeaderElectionConfig::default(), validator_data(n))
+                .schedule(&LeaderElectionConfig::default(), &validator_data(n))
                 .unwrap_or_else(|err| panic!("{n} validators: {err}"));
             let set = schedule.proposers_at(Slot(0)).expect("genesis epoch");
             assert!(set.iter().any(|(_, proposer)| proposer.is_some()));
@@ -573,7 +592,7 @@ mod tests {
         assert_eq!((cfg.rotation_slack, cfg.slots_per_epoch), (95, 500));
         for n in [4, 8] {
             proposal
-                .schedule(&with.leader_election, validator_data(n))
+                .schedule(&with.leader_election, &validator_data(n))
                 .unwrap_or_else(|err| panic!("{n} validators: {err}"));
         }
 
@@ -605,10 +624,9 @@ mod tests {
     #[test]
     fn the_planner_takes_its_cutoff_from_the_schedule() {
         let config = ProposalConfig::default();
-        let schedule = config
-            .schedule(&LeaderElectionConfig::default(), validator_data(4))
-            .unwrap();
-        let planner = config.planner(&schedule);
+        let election = LeaderElectionConfig::default();
+        let schedule = config.schedule(&election, &validator_data(4)).unwrap();
+        let planner = config.planner(&election);
         assert_eq!(
             planner.observation_cutoff,
             schedule.config().observation_cutoff
@@ -626,13 +644,8 @@ mod tests {
         );
 
         let config: ProposalConfig = toml::from_str("withhold_before_deadline = 150").unwrap();
-        let schedule = config
-            .schedule(&LeaderElectionConfig::default(), validator_data(4))
-            .unwrap();
-        assert_eq!(
-            config.planner(&schedule).min_lead,
-            TimestampDelta::from_millis(150)
-        );
+        let planner = config.planner(&LeaderElectionConfig::default());
+        assert_eq!(planner.min_lead, TimestampDelta::from_millis(150));
     }
 
     const MINIMAL: &str = r#"

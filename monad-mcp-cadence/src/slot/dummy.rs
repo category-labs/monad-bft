@@ -22,7 +22,10 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use super::{
     Outbound, SlotConsensus, SlotOutput,
-    types::{IsVote, KeyPair, NodeId, RepeatUntil, Slot, SlotScoped, VoteMsg},
+    types::{
+        EpochHandle, IsVote, KeyPair, NodeId, RepeatUntil, Slot, SlotOutOfBound, SlotScoped,
+        VoteMsg,
+    },
 };
 use crate::spec::vote::{SigningDomain, assert_signing_prefix};
 
@@ -31,7 +34,6 @@ use crate::spec::vote::{SigningDomain, assert_signing_prefix};
 /// 1. On deadline, cast a vote.
 /// 2. On each received vote, finalize the slot once quorum is met.
 pub struct DummySlotConsensus {
-    key: Arc<KeyPair>,
     slot: Slot, // only used as FinalizationData
     outputs: VecDeque<SlotOutput<DummySlotConsensus>>,
     config: DummySlotConsensusConfig,
@@ -43,12 +45,12 @@ pub struct DummySlotConsensus {
 #[derive(Clone)]
 pub struct DummySlotConsensusConfig {
     pub quorum: usize,
+    pub key: Arc<KeyPair>,
 }
 
-impl Default for DummySlotConsensusConfig {
-    fn default() -> Self {
-        Self { quorum: 1 }
-    }
+pub struct DummySlotContext {
+    slot: Slot,
+    config: DummySlotConsensusConfig,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
@@ -74,7 +76,7 @@ impl SlotScoped for VoteMsg<DummyVote> {
 
 impl SlotConsensus for DummySlotConsensus {
     type Config = DummySlotConsensusConfig;
-    type Context = Arc<KeyPair>;
+    type Context = DummySlotContext;
 
     type Message = VoteMsg<DummyVote>;
     type Timer = ();
@@ -83,18 +85,28 @@ impl SlotConsensus for DummySlotConsensus {
     type LocalIn = ();
     type LocalOut = ();
 
-    fn new(slot: Slot, config: &Self::Config, key: &Arc<KeyPair>) -> Self {
+    // it reads no epoch: its context is the config and the slot
+    fn context_at(
+        config: &Self::Config,
+        slot: Slot,
+        _epoch_handle: &EpochHandle,
+    ) -> Result<DummySlotContext, SlotOutOfBound> {
+        let config = config.clone();
+        Ok(DummySlotContext { slot, config })
+    }
+
+    fn new(context: DummySlotContext) -> Self {
+        let DummySlotContext { slot, config } = context;
         Self {
             slot,
-            config: config.clone(),
-            key: key.clone(),
+            config,
             voters: HashSet::new(),
             outputs: VecDeque::new(),
         }
     }
 
     fn handle_deadline(&mut self) {
-        let vote = VoteMsg::new_signed(self.slot, DummyVote, &self.key);
+        let vote = VoteMsg::new_signed(self.slot, DummyVote, &self.config.key);
         let outbound = Outbound::broadcast(vote);
         let outbound = outbound.repeat_until(RepeatUntil::Commit(self.slot));
         self.outputs.push_back(SlotOutput::Send(outbound));

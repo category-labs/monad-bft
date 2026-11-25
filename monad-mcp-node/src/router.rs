@@ -22,6 +22,7 @@ use crate::{
     },
     config::NodeConfig,
     da::{DAOutput, ProposalScheme},
+    epoch::EpochHandle,
     finalization::FinalizedSlot,
     network::{
         AppMessage, NetworkInput, NetworkOutput, NodeAppMessage, NodeInbound, WireInbound,
@@ -31,6 +32,8 @@ use crate::{
 
 // everything the wiring takes in, named by where it comes from
 pub enum Effect<W> {
+    // the next sealed epoch
+    Epoch(EpochHandle),
     Transport(WireInbound<W>),
     Network(NetworkOutput<NodeAppMessage, W>),
     Cadence(CadenceOutput),
@@ -41,6 +44,7 @@ pub enum Effect<W> {
 
 // everything the wiring can emit, named by where it goes
 pub enum Routed<W> {
+    Epoch(SlotLifecycle),
     Cadence(CadenceInput),
     DA(DAInput),
     Finalization(FinalizationInput),
@@ -86,6 +90,7 @@ impl NodeRouter {
             }
 
             CadenceOutput::Lifecycle(event) => {
+                sink.send(Routed::Epoch(event));
                 sink.send(Routed::DA(DAInput::Lifecycle(event)));
                 // the network ends its repeats on these
                 sink.send(Routed::Network(NetworkInput::Lifecycle(event)));
@@ -162,6 +167,9 @@ impl NodeRouter {
 impl<W> Router<W> for NodeRouter {
     fn route(&mut self, now: Timestamp, effect: Effect<W>, sink: &mut impl Sink<Routed<W>>) {
         match effect {
+            Effect::Epoch(_epoch_handle) => {
+                todo!("give the next epoch to the components that read epochs")
+            }
             Effect::Transport(inbound) => {
                 sink.send(Routed::Network(NetworkInput::FromWire(inbound)));
             }

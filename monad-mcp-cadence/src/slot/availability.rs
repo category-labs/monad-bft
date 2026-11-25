@@ -103,10 +103,8 @@ impl ProposalAvailability {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::env::stub::{
-        EncodingScheme, MerkleHash, MerkleRoot, NodeId, ProposalHeader, ProposalSignature,
-    };
+    use super::{super::super::test_utils::dummy_signature, *};
+    use crate::env::stub::{EncodingScheme, MerkleHash, MerkleRoot, NodeId, ProposalHeader};
 
     fn root(byte: u8) -> MerkleRoot {
         MerkleRoot(MerkleHash([byte; 20]))
@@ -122,10 +120,7 @@ mod tests {
                 root: root(byte),
                 scheme: EncodingScheme::dummy(crate::stub::types::Slot(1)),
             },
-            sig: ProposalSignature {
-                signer: NodeId::dummy(0),
-                checksum: 0,
-            },
+            sig: dummy_signature(NodeId::dummy(0)),
         }
     }
 

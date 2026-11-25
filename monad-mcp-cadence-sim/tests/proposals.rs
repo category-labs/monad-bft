@@ -29,7 +29,7 @@ use std::{
 
 use cadence::{
     conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
-    slot::chorus::{Chorus, ChorusConfig, ChorusContext, Entry, SlotFinalization},
+    slot::chorus::{Chorus, ChorusConfig, Entry, SlotFinalization},
 };
 use helper::{expect_finalized, expect_finalized_at};
 use monad_mcp_cadence::stub as cadence;
@@ -38,11 +38,11 @@ use monad_mcp_cadence_sim::{
 };
 use monad_mcp_common::{
     Lane, Slot, SlotDeadline, Timestamp, TimestampDelta,
-    spec::ValidatorData as _,
-    stub::{NodeId, ValidatorData},
+    stub::{NodeCredential, NodeId, ValidatorData},
 };
-use monad_mcp_epoch::stub::election::{
-    ProposerConfig, ProposerSchedule, RotatingProposerSchedule, RoundRobinLeaderSchedule,
+use monad_mcp_epoch::stub::{
+    EpochHandle,
+    election::{ProposerScheduleConfig, RotatingProposerSchedule, RoundRobinLeaderSchedule},
 };
 use monad_mcp_proposing::stub::{FixedLeadConfig, FixedLeadPlanner};
 
@@ -62,13 +62,12 @@ const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
 const MIN_LEAD: TimestampDelta = TimestampDelta::from_millis(30);
 
 type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
-type Schedule = RotatingProposerSchedule<RoundRobinLeaderSchedule>;
 
 // Per-node record of the finalized entries: (node, slot) -> entries by
 // lane.
 type EntriesLog = Arc<Mutex<BTreeMap<(NodeId, Slot), Vec<Entry>>>>;
 
-fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
+fn conductor(epoch_handle: &EpochHandle) -> Conductor {
     let config = ConductorConfig::new(
         SLOTS_PER_WINDOW,
         SYNC_BOUNDARY_SLOTS,
@@ -77,7 +76,7 @@ fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    Conductor::genesis(config, val_data.clone(), ()).unwrap()
+    Conductor::genesis(config, epoch_handle.clone(), ()).unwrap()
 }
 
 fn deadline_of_slot(slot: u64) -> Timestamp {
@@ -86,42 +85,39 @@ fn deadline_of_slot(slot: u64) -> Timestamp {
         .unwrap()
 }
 
-// One shared schedule instance for the whole swarm: the schedule is
-// deterministic, so per-node instances would agree anyway, but sharing is
-// what production wiring will do.
-fn round_robin_schedule(config: ProposerConfig, val_data: &Arc<ValidatorData>) -> Arc<Schedule> {
+// One epoch handle for the whole swarm: the round-robin schedule is
+// deterministic, so per-node instances would agree anyway.
+fn epoch_handle(config: ProposerScheduleConfig) -> EpochHandle {
+    let validators = ValidatorData::dummy(NODES);
     let algorithm = RoundRobinLeaderSchedule::new(&config);
-    Arc::new(RotatingProposerSchedule::new(config, algorithm, val_data.clone()).unwrap())
+    let election = RotatingProposerSchedule::new(config, algorithm, &validators).unwrap();
+    EpochHandle::new(validators, election)
 }
 
 fn build_swarm(
-    proposer_config: &ProposerConfig,
-    schedule: &Arc<Schedule>,
-    val_data: &Arc<ValidatorData>,
+    proposer_config: &ProposerScheduleConfig,
+    epoch_handle: &EpochHandle,
 ) -> (CadenceSwarm<Chorus, Conductor>, EntriesLog) {
     let entries: EntriesLog = Arc::default();
 
     let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(LATENCY.as_duration());
-    builder.set_validators(val_data.clone());
 
     for i in 0..NODES {
         let id = NodeId::dummy(i);
-        // One authenticator, derived from the schedule and shared by
-        // consensus and the node's DA layer: they cannot disagree about
-        // who proposes where.
-        let header_auth = Arc::new(header_auth(schedule.clone()));
-        let da = MockDa::new(id, header_auth.clone());
-        let context = ChorusContext {
-            self_index: val_data.index_of(&id).expect("a validator"),
-            key: Arc::new(id.keypair()),
-            validator_data: val_data.clone(),
+        // One header check and one epoch handle, shared by consensus and
+        // the node's DA layer: they cannot disagree about who proposes
+        // where.
+        let header_auth = header_auth();
+        let da = MockDa::new(id, epoch_handle.clone(), header_auth.clone());
+        let slot_config = ChorusConfig {
+            delta: DELTA,
+            credential: NodeCredential::dummy(i),
             header_auth,
-            occupancy: schedule.clone(),
         };
         let planner = FixedLeadPlanner::new(
             id,
-            schedule.clone(),
+            epoch_handle.clone(),
             FixedLeadConfig {
                 lead: LEAD,
                 min_lead: MIN_LEAD,
@@ -145,9 +141,9 @@ fn build_swarm(
 
         builder.add_proposer_node(
             id,
-            conductor(val_data),
-            ChorusConfig { delta: DELTA },
-            context,
+            conductor(epoch_handle),
+            slot_config,
+            epoch_handle.clone(),
             planner,
             da,
             observer,
@@ -159,10 +155,10 @@ fn build_swarm(
 
 // The entry expected at (slot, lane): the pid of the scheduled proposer's
 // header, or Negative for a vacant lane.
-fn expected_entry(schedule: &Schedule, slot: Slot, lane: Lane) -> Entry {
+fn expected_entry(epoch_handle: &EpochHandle, slot: Slot, lane: Lane) -> Entry {
     use monad_mcp_cadence::spec::ProposalHeader as _;
 
-    let Some(proposer) = schedule.proposers_at(slot).unwrap().proposer(lane) else {
+    let Some(proposer) = epoch_handle.proposers_at(slot).unwrap().proposer(lane) else {
         return Entry::Negative;
     };
     let payload = mock_payload(proposer, slot, lane);
@@ -171,7 +167,7 @@ fn expected_entry(schedule: &Schedule, slot: Slot, lane: Lane) -> Entry {
 
 fn expect_entries(
     entries: &EntriesLog,
-    schedule: &Schedule,
+    epoch_handle: &EpochHandle,
     slots: impl IntoIterator<Item = u64> + Clone,
 ) {
     let entries = entries.lock().expect("entries log poisoned");
@@ -179,10 +175,10 @@ fn expect_entries(
         for slot in slots.clone() {
             let slot = Slot(slot);
             let finalized = &entries[&(node, slot)];
-            let set = schedule.proposers_at(slot).unwrap();
+            let set = epoch_handle.proposers_at(slot).unwrap();
             let expected: Vec<Entry> = set
                 .iter()
-                .map(|(lane, _)| expected_entry(schedule, slot, lane))
+                .map(|(lane, _)| expected_entry(epoch_handle, slot, lane))
                 .collect();
             assert_eq!(
                 finalized, &expected,
@@ -198,20 +194,19 @@ fn scheduled_proposals_finalize_positive() {
     // every slot. All entries finalize Positive with the scheduled
     // proposer's header pid, on the same schedule as the proposal-less
     // runs (finalization at deadline + 2 latencies).
-    let proposer_config = ProposerConfig {
+    let proposer_config = ProposerScheduleConfig {
         concurrent_proposers: 1,
         observation_cutoff: 0,
         rotation_slack: 1,
         slots_per_epoch: 1_000, // never crossed in this test
     };
-    let val_data = Arc::new(ValidatorData::dummy(NODES));
-    let schedule = round_robin_schedule(proposer_config.clone(), &val_data);
+    let epoch_handle = epoch_handle(proposer_config.clone());
 
     // round robin, one-slot rotations: slot s is proposed by validator
     // s mod NODES
     for slot in 0..8 {
         assert_eq!(
-            schedule
+            epoch_handle
                 .proposers_at(Slot(slot))
                 .unwrap()
                 .proposer(Lane::new_unchecked(0)),
@@ -219,7 +214,7 @@ fn scheduled_proposals_finalize_positive() {
         );
     }
 
-    let (mut swarm, entries) = build_swarm(&proposer_config, &schedule, &val_data);
+    let (mut swarm, entries) = build_swarm(&proposer_config, &epoch_handle);
     let finalization_latency = LATENCY.checked_mul(2).unwrap();
     swarm.run_until(deadline_of_slot(3) + finalization_latency);
 
@@ -232,12 +227,12 @@ fn scheduled_proposals_finalize_positive() {
             (0..4).map(|slot| deadline_of_slot(slot) + finalization_latency),
         );
     }
-    expect_entries(&entries, &schedule, 0..4);
+    expect_entries(&entries, &epoch_handle, 0..4);
 
     // and they really are Positive, not vacuously equal
     for slot in 0..4 {
         assert!(matches!(
-            expected_entry(&schedule, Slot(slot), Lane::new_unchecked(0)),
+            expected_entry(&epoch_handle, Slot(slot), Lane::new_unchecked(0)),
             Entry::Positive { .. }
         ));
     }
@@ -255,19 +250,18 @@ fn staggered_proposers_with_rotation_vacancy() {
     //  * the planner's chaining gate: sealing slot r at deadline − lead
     //    requires slot r − y chained, which happens 40ms before the seal
     //    alarm — late enough that early sealing would vote Negative.
-    let proposer_config = ProposerConfig {
+    let proposer_config = ProposerScheduleConfig {
         concurrent_proposers: 2,
         observation_cutoff: 2,
         rotation_slack: 2,
         slots_per_epoch: 1_000, // never crossed in this test
     };
-    let val_data = Arc::new(ValidatorData::dummy(NODES));
-    let schedule = round_robin_schedule(proposer_config.clone(), &val_data);
+    let epoch_handle = epoch_handle(proposer_config.clone());
 
     // Spot-check the schedule shape (round robin: rotation r is led by
     // validator r mod NODES, occupying index r mod 2 for 4 slots).
     let proposers_of = |slot: u64| {
-        let set = schedule.proposers_at(Slot(slot)).unwrap();
+        let set = epoch_handle.proposers_at(Slot(slot)).unwrap();
         [
             set.proposer(Lane::new_unchecked(0)),
             set.proposer(Lane::new_unchecked(1)),
@@ -282,7 +276,7 @@ fn staggered_proposers_with_rotation_vacancy() {
     assert_eq!(proposers_of(10), [v(2), v(1)]);
     assert_eq!(proposers_of(11), [v(2), v(1)]);
 
-    let (mut swarm, entries) = build_swarm(&proposer_config, &schedule, &val_data);
+    let (mut swarm, entries) = build_swarm(&proposer_config, &epoch_handle);
     let finalization_latency = LATENCY.checked_mul(2).unwrap();
     swarm.run_until(deadline_of_slot(11) + finalization_latency);
 
@@ -295,5 +289,5 @@ fn staggered_proposers_with_rotation_vacancy() {
             (0..12).map(|slot| deadline_of_slot(slot) + finalization_latency),
         );
     }
-    expect_entries(&entries, &schedule, 0..12);
+    expect_entries(&entries, &epoch_handle, 0..12);
 }

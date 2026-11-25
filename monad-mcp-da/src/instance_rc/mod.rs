@@ -27,7 +27,7 @@ use super::{
     chunk::{ChunkData, ChunkRequest, ChunksSubset, InvalidChunk, WireChunkId},
     egress::ChunkEgress,
     encoding_scheme::{self, ProposalChunks, Resolved},
-    runtime::EpochHandle,
+    runtime::DAContext,
     send_order::shuffle_sends,
     types::{NodeId, ProposalDAEvent, SignedProposalHeader, Timestamp, TimestampDelta},
 };
@@ -54,16 +54,16 @@ pub(crate) struct RaptorcastInstance {
 impl RaptorcastInstance {
     pub(crate) fn new(
         header: SignedProposalHeader,
-        epoch_handle: &EpochHandle,
+        context: &DAContext,
         author: &NodeId,
         serve_window: TimestampDelta,
     ) -> Self {
-        let validator_data = &epoch_handle.validator_data;
+        let validator_data = &context.validator_data;
         let (assignment, chunks) =
             encoding_scheme::instantiate(&header.header, author, validator_data);
-        let self_index = assignment.index_of(&epoch_handle.self_id);
+        let self_index = assignment.index_of(&context.self_id);
         let mut send_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
-        shuffle_sends(&mut send_order, &header.pid(), &epoch_handle.self_id);
+        shuffle_sends(&mut send_order, &header.pid(), &context.self_id);
         let obligation = ObligationTracker::new(&assignment, self_index);
         let serving = ServingTracker::new(&assignment, self_index, serve_window);
         let relay = RelayTracker::new(&assignment, self_index);
@@ -241,20 +241,15 @@ mod tests {
             chunk::{Chunk, ChunkRequestType},
             encoding_scheme::InvalidEncoding,
             test_util::{
-                MESSAGE_LEN, NOW, author, epoch_handle, epoch_handle_for,
-                inconsistent_proposal_chunks, proposal_chunks, timing,
+                MESSAGE_LEN, NOW, author, context, context_for, inconsistent_proposal_chunks,
+                proposal_chunks, timing,
             },
         },
         *,
     };
 
-    fn instance(header: &SignedProposalHeader, epoch_handle: &EpochHandle) -> RaptorcastInstance {
-        RaptorcastInstance::new(
-            header.clone(),
-            epoch_handle,
-            &author(),
-            timing().serve_window,
-        )
+    fn instance(header: &SignedProposalHeader, context: &DAContext) -> RaptorcastInstance {
+        RaptorcastInstance::new(header.clone(), context, &author(), timing().serve_window)
     }
 
     fn released() -> ChunkEgress {
@@ -302,9 +297,9 @@ mod tests {
 
     #[test]
     fn a_peer_may_send_only_its_own_chunks_or_ours() {
-        let epoch_handle = epoch_handle();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let instance = instance(&header, &epoch_handle);
+        let context = context();
+        let (header, chunks) = proposal_chunks(&context, 1);
+        let instance = instance(&header, &context);
         let from = |sender: u64, chunk: &Chunk<'_>| {
             let (_, chunk_id, _) = chunk.clone().into_parts();
             instance.accept(chunk_id, &NodeId::dummy(sender))
@@ -322,9 +317,9 @@ mod tests {
 
     #[test]
     fn malformed_chunks_are_rejected() {
-        let epoch_handle = epoch_handle();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let mut instance = instance(&header, &epoch_handle);
+        let context = context();
+        let (header, chunks) = proposal_chunks(&context, 1);
+        let mut instance = instance(&header, &context);
         let mut egress = released();
         let (_, _, data) = chunks[0].clone().into_parts();
 
@@ -347,9 +342,9 @@ mod tests {
 
     #[test]
     fn a_repeated_chunk_counts_and_forwards_once() {
-        let epoch_handle = epoch_handle();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let mut instance = instance(&header, &epoch_handle);
+        let context = context();
+        let (header, chunks) = proposal_chunks(&context, 1);
+        let mut instance = instance(&header, &context);
         let mut egress = released();
 
         // chunk 2 is ours: forwarded on arrival, not on the repeat
@@ -366,9 +361,9 @@ mod tests {
 
     #[test]
     fn inconsistent_chunks_resolve_invalid() {
-        let epoch_handle = epoch_handle();
-        let (header, chunks) = inconsistent_proposal_chunks(&epoch_handle);
-        let mut instance = instance(&header, &epoch_handle);
+        let context = context();
+        let (header, chunks) = inconsistent_proposal_chunks(&context);
+        let mut instance = instance(&header, &context);
         let mut egress = released();
 
         // chunk 2 is ours
@@ -389,9 +384,9 @@ mod tests {
     fn our_obligation_from_the_author_completes_with_our_last_chunk() {
         // among five validators we own two chunks, no more than decoding
         // needs, so both arrive before the proposal decodes
-        let epoch_handle = epoch_handle_for(NodeId::dummy(1), 5, vec![author()]);
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let mut instance = instance(&header, &epoch_handle);
+        let context = context_for(NodeId::dummy(1), 5);
+        let (header, chunks) = proposal_chunks(&context, 1);
+        let mut instance = instance(&header, &context);
         let mut egress = released();
         let [first, last] = owned(&instance, NodeId::dummy(1))[..] else {
             panic!("we own two chunks");
@@ -416,9 +411,9 @@ mod tests {
     #[test]
     fn outside_the_assignment_decodes_without_owning_anything() {
         // validator 9 is not in the validator set
-        let epoch_handle = epoch_handle_for(NodeId::dummy(9), 4, vec![author()]);
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let mut instance = instance(&header, &epoch_handle);
+        let context = context_for(NodeId::dummy(9), 4);
+        let (header, chunks) = proposal_chunks(&context, 1);
+        let mut instance = instance(&header, &context);
         let mut egress = released();
 
         // owners serve only nodes in the assignment, so nothing is pulled
@@ -445,9 +440,9 @@ mod tests {
 
     #[test]
     fn a_header_only_request_is_answered_for_validators_alone() {
-        let epoch_handle = epoch_handle();
-        let (header, _) = proposal_chunks(&epoch_handle, 1);
-        let mut instance = instance(&header, &epoch_handle);
+        let context = context();
+        let (header, _) = proposal_chunks(&context, 1);
+        let mut instance = instance(&header, &context);
         let mut egress = released();
         let request = ChunkRequest {
             pid: header.pid(),
@@ -471,9 +466,9 @@ mod tests {
 
     #[test]
     fn decoding_needs_the_source_count() {
-        let epoch_handle = epoch_handle();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let mut instance = instance(&header, &epoch_handle);
+        let context = context();
+        let (header, chunks) = proposal_chunks(&context, 1);
+        let mut instance = instance(&header, &context);
         let mut egress = released();
 
         // two source chunks: one received is not enough, any two decode
@@ -484,9 +479,9 @@ mod tests {
 
     #[test]
     fn the_author_is_owed_nothing_by_itself() {
-        let epoch_handle = epoch_handle_for(author(), 4, vec![author()]);
-        let (header, _) = proposal_chunks(&epoch_handle, 1);
-        let mut instance = instance(&header, &epoch_handle);
+        let context = context_for(author(), 4);
+        let (header, _) = proposal_chunks(&context, 1);
+        let mut instance = instance(&header, &context);
 
         assert_eq!(
             instance.take_obligation_event(),

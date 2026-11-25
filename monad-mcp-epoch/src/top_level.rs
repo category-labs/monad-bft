@@ -20,3 +20,8 @@
 use super::env;
 
 pub mod election;
+mod handle;
+mod manager;
+
+pub use handle::{EpochHandle, SlotOutOfBound};
+pub use manager::EpochManager;

@@ -26,21 +26,20 @@ use std::{num::NonZeroU64, sync::Arc, time::Duration};
 use cadence::{
     conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     slot::{
-        chorus::{Chorus, ChorusConfig, ChorusContext},
+        chorus::{Chorus, ChorusConfig},
         dummy::{DummySlotConsensus, DummySlotConsensusConfig},
     },
-    types::HeaderAuth,
 };
 use helper::{expect_finalized, expect_finalized_at};
 use monad_mcp_cadence::stub as cadence;
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
 use monad_mcp_common::{
     SlotDeadline, Timestamp, TimestampDelta,
-    spec::ValidatorData as _,
-    stub::{NodeId, ValidatorData},
+    stub::{NodeCredential, NodeId, ValidatorData},
 };
-use monad_mcp_epoch::stub::election::{
-    CreditLotterySchedule, ProposerConfig, RotatingProposerSchedule,
+use monad_mcp_epoch::stub::{
+    EpochHandle,
+    election::{CreditLotterySchedule, ProposerScheduleConfig, RotatingProposerSchedule},
 };
 use monad_sim::Time;
 use monad_sim_swarm::Network;
@@ -60,7 +59,7 @@ const GENESIS_DEADLINE: Timestamp = Timestamp::from_millis(100);
 // GENESIS_DEADLINE + k * tau = 100 + k * 100.
 type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
-fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
+fn conductor(epoch_handle: &EpochHandle) -> Conductor {
     let config = ConductorConfig::new(
         SLOTS_PER_WINDOW,
         SYNC_BOUNDARY_SLOTS,
@@ -69,7 +68,7 @@ fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    Conductor::genesis(config, val_data.clone(), ()).unwrap()
+    Conductor::genesis(config, epoch_handle.clone(), ()).unwrap()
 }
 
 // Slot k's deadline under the natural genesis-anchored schedule:
@@ -81,17 +80,26 @@ fn slot_deadline(slot: u64) -> Timestamp {
         .unwrap()
 }
 
-fn proposer_schedule(
-    val_data: &Arc<ValidatorData>,
-) -> Arc<RotatingProposerSchedule<CreditLotterySchedule>> {
-    let config = ProposerConfig {
+// NODES dummy validators, with one lane under the credit lottery
+fn epoch_handle() -> EpochHandle {
+    let validators = ValidatorData::dummy(NODES);
+    let config = ProposerScheduleConfig {
         concurrent_proposers: 1,
         observation_cutoff: 0,
         rotation_slack: 1,
         slots_per_epoch: 1_000, // never crossed in this test
     };
     let algorithm = CreditLotterySchedule::recommended(&config, 0xC0FFEE);
-    Arc::new(RotatingProposerSchedule::new(config, algorithm, val_data.clone()).unwrap())
+    let election = RotatingProposerSchedule::new(config, algorithm, &validators).unwrap();
+    EpochHandle::new(validators, election)
+}
+
+fn chorus_config(id: u64) -> ChorusConfig {
+    ChorusConfig {
+        delta: TimestampDelta::from_millis(DELTA),
+        credential: NodeCredential::dummy(id),
+        header_auth: Arc::new(|_, _, _| false),
+    }
 }
 
 #[test]
@@ -106,15 +114,19 @@ fn full_window_rolls_over_with_dummy_slot_consensus() {
     let mut builder = CadenceSwarmBuilder::<DummySlotConsensus, _>::new();
     builder.set_latency(TimestampDelta::from_millis(LATENCY).as_duration());
 
-    let val_data = Arc::new(ValidatorData::dummy(NODES));
-    builder.set_validators(val_data.clone());
+    let epoch_handle = epoch_handle();
     for i in 0..NODES {
         let id = NodeId::dummy(i);
         let slot_config = DummySlotConsensusConfig {
             quorum: NODES as usize,
+            key: Arc::new(id.keypair()),
         };
-        let key = Arc::new(id.keypair());
-        builder.add_node(id, conductor(&val_data), slot_config, key);
+        builder.add_node(
+            id,
+            conductor(&epoch_handle),
+            slot_config,
+            epoch_handle.clone(),
+        );
     }
 
     let mut swarm = builder.build();
@@ -146,21 +158,11 @@ fn full_window_rolls_over_with_chorus() {
     let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(TimestampDelta::from_millis(LATENCY).as_duration());
 
-    let val_data = Arc::new(ValidatorData::dummy(NODES));
-    builder.set_validators(val_data.clone());
+    let epoch_handle = epoch_handle();
     for i in 0..NODES {
         let id = NodeId::dummy(i);
-        let slot_config = ChorusConfig {
-            delta: TimestampDelta::from_millis(DELTA),
-        };
-        let context = ChorusContext {
-            self_index: val_data.index_of(&id).expect("a validator"),
-            key: Arc::new(id.keypair()),
-            validator_data: val_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            occupancy: proposer_schedule(&val_data),
-        };
-        builder.add_node(id, conductor(&val_data), slot_config, context);
+        let conductor = conductor(&epoch_handle);
+        builder.add_node(id, conductor, chorus_config(i), epoch_handle.clone());
     }
 
     let mut swarm = builder.build();
@@ -194,21 +196,11 @@ fn a_partitioned_node_jumps_its_cap_to_the_majority() {
     let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_network(network);
 
-    let val_data = Arc::new(ValidatorData::dummy(NODES));
-    builder.set_validators(val_data.clone());
+    let epoch_handle = epoch_handle();
     for i in 0..NODES {
         let id = NodeId::dummy(i);
-        let slot_config = ChorusConfig {
-            delta: TimestampDelta::from_millis(DELTA),
-        };
-        let context = ChorusContext {
-            self_index: val_data.index_of(&id).expect("a validator"),
-            key: Arc::new(id.keypair()),
-            validator_data: val_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            occupancy: proposer_schedule(&val_data),
-        };
-        builder.add_node(id, conductor(&val_data), slot_config, context);
+        let conductor = conductor(&epoch_handle);
+        builder.add_node(id, conductor, chorus_config(i), epoch_handle.clone());
     }
 
     let mut swarm = builder.build();

@@ -62,12 +62,12 @@
 //! consensus state, and a missed or skipped seal only costs the proposal
 //! (the lane finalizes empty); safety and liveness are unaffected.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 use monad_mcp_common::{Lane, Slot, SlotLifecycle, Timestamp, TimestampDelta};
 use tracing::{info, warn};
 
-use super::super::env::{common::NodeId, epoch::election::ProposerSchedule};
+use super::super::env::{common::NodeId, epoch::EpochHandle};
 
 /// Timing parameters of the proposal planner. Node-local policy, not
 /// protocol: a bad value costs proposals, never consensus.
@@ -100,7 +100,7 @@ struct PendingSeal {
 /// See the module docs.
 pub struct FixedLeadPlanner {
     me: NodeId,
-    schedule: Arc<dyn ProposerSchedule + Send + Sync>,
+    epoch_handle: EpochHandle,
     config: FixedLeadConfig,
 
     /// The chained prefix frontier: every slot strictly below is finalized.
@@ -110,11 +110,7 @@ pub struct FixedLeadPlanner {
 }
 
 impl FixedLeadPlanner {
-    pub fn new(
-        me: NodeId,
-        schedule: Arc<dyn ProposerSchedule + Send + Sync>,
-        config: FixedLeadConfig,
-    ) -> Self {
+    pub fn new(me: NodeId, epoch_handle: EpochHandle, config: FixedLeadConfig) -> Self {
         // a lead at or inside the withhold window means no proposal ever ships
         if config.min_lead >= config.lead {
             warn!(
@@ -125,7 +121,7 @@ impl FixedLeadPlanner {
         }
         Self {
             me,
-            schedule,
+            epoch_handle,
             config,
             chained_cap: Slot::FIRST,
             pending: BTreeMap::new(),
@@ -143,13 +139,12 @@ impl FixedLeadPlanner {
     /// Fact: the conductor opened `slot` with `deadline`. Registers a seal
     /// due at `deadline − lead` if this node's proposer set includes it.
     fn handle_slot_open(&mut self, now: Timestamp, slot: Slot, deadline: Timestamp) {
-        let lane = match self.schedule.lane_at(slot, &self.me) {
-            Ok(Some(lane)) => lane,
-            Ok(None) => return,
-            Err(error) => {
-                warn!(%error, ?slot, "proposer schedule query failed; not proposing");
-                return;
-            }
+        let Ok(proposer_set) = self.epoch_handle.proposers_at(slot) else {
+            warn!(?slot, "no proposer set for the opened slot; not proposing");
+            return;
+        };
+        let Some(lane) = proposer_set.lane_of(&self.me) else {
+            return;
         };
 
         let due = deadline.saturating_sub_delta(self.config.lead).max(now);
@@ -249,7 +244,18 @@ impl FixedLeadPlanner {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::super::env::epoch::election::FixedProposerSchedule, *};
+    use super::{
+        super::super::env::{common::ValidatorData, epoch::election::FixedProposerSchedule},
+        *,
+    };
+
+    // an epoch of four validators, where the listed nodes propose
+    fn epoch_handle(proposers: Vec<NodeId>) -> EpochHandle {
+        EpochHandle::new(
+            ValidatorData::dummy(4),
+            FixedProposerSchedule::new(proposers),
+        )
+    }
 
     const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
     const MIN_LEAD: TimestampDelta = TimestampDelta::from_millis(20);
@@ -258,10 +264,9 @@ mod tests {
     fn planner(observation_cutoff: u64) -> FixedLeadPlanner {
         let me = NodeId::dummy(0);
         let other = NodeId::dummy(1);
-        let schedule = Arc::new(FixedProposerSchedule::new(vec![other, me]));
         FixedLeadPlanner::new(
             me,
-            schedule,
+            epoch_handle(vec![other, me]),
             FixedLeadConfig {
                 lead: LEAD,
                 min_lead: MIN_LEAD,
@@ -349,10 +354,9 @@ mod tests {
     fn non_proposer_slots_are_ignored() {
         let me = NodeId::dummy(0);
         let others = vec![NodeId::dummy(1), NodeId::dummy(2)];
-        let schedule = Arc::new(FixedProposerSchedule::new(others));
         let mut planner = FixedLeadPlanner::new(
             me,
-            schedule,
+            epoch_handle(others),
             FixedLeadConfig {
                 lead: LEAD,
                 min_lead: MIN_LEAD,

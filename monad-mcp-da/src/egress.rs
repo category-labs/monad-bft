@@ -94,7 +94,7 @@ mod tests {
     use super::{
         super::{
             chunk::Chunk,
-            test_util::{epoch_handle, proposal_chunks},
+            test_util::{context, proposal_chunks},
         },
         *,
     };
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn consecutive_chunks_to_the_same_recipients_share_an_envelope() {
-        let (_, chunks) = proposal_chunks(&epoch_handle(), 1);
+        let (_, chunks) = proposal_chunks(&context(), 1);
         let mut egress = released();
 
         enqueue(&mut egress, &chunks[0], to([2, 3]));
@@ -135,9 +135,9 @@ mod tests {
 
     #[test]
     fn a_new_message_starts_on_other_recipients_or_another_header() {
-        let epoch_handle = epoch_handle();
-        let (_, a) = proposal_chunks(&epoch_handle, 1);
-        let (_, b) = proposal_chunks(&epoch_handle, 2);
+        let context = context();
+        let (_, a) = proposal_chunks(&context, 1);
+        let (_, b) = proposal_chunks(&context, 2);
         let mut egress = released();
 
         enqueue(&mut egress, &a[0], to([2, 3]));
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn nothing_drains_before_release() {
-        let (_, chunks) = proposal_chunks(&epoch_handle(), 1);
+        let (_, chunks) = proposal_chunks(&context(), 1);
         let mut egress = ChunkEgress::new();
 
         enqueue(&mut egress, &chunks[0], to([2, 3]));

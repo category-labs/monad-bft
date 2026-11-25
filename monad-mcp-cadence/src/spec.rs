@@ -199,14 +199,6 @@ pub mod proposal {
 
         fn sig(&self) -> &Self::Sig;
     }
-
-    pub trait HeaderAuth {
-        type Signed: SignedProposalHeader;
-
-        // returns true when the legitimate proposer of the header's
-        // slot and lane signed it
-        fn authenticate(&self, signed: &Self::Signed) -> bool;
-    }
 }
 
 // Statically checks a full env against the spec
@@ -224,7 +216,6 @@ pub const fn assert_env<
     ProposalId,
     ProposalHeader,
     SignedProposalHeader,
-    HeaderAuth,
 >()
 where
     NodeId: common_spec::NodeId,
@@ -240,6 +231,5 @@ where
     ProposalId: proposal::ProposalId,
     ProposalHeader: proposal::ProposalHeader<Root = MerkleRoot, Pid = ProposalId>,
     SignedProposalHeader: proposal::SignedProposalHeader,
-    HeaderAuth: proposal::HeaderAuth<Signed = SignedProposalHeader>,
 {
 }

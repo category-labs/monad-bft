@@ -285,20 +285,6 @@ pub const MAX_PROPOSER_SET_SIZE: usize = 5;
 // the most validators an epoch may have
 pub const MAX_VALIDATORS: usize = 300;
 
-// Which lanes of a slot have a proposer. Consensus reads the proposer
-// schedule through this question only.
-pub trait LaneOccupancy {
-    // None if the schedule has no answer for the slot
-    fn occupied_lanes(&self, slot: Slot) -> Option<Lanes<bool>>;
-}
-
-// the same lanes at every slot
-impl LaneOccupancy for Lanes<bool> {
-    fn occupied_lanes(&self, _slot: Slot) -> Option<Lanes<bool>> {
-        Some(self.clone())
-    }
-}
-
 /// The slot and lane authenticated by a per-proposal vote.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct ProposalScope {

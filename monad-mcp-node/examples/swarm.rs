@@ -25,9 +25,8 @@ use std::{
 use monad_mcp_common::{Timestamp, TimestampDelta};
 use monad_mcp_node::{
     RunError,
-    common::{KeyPair, NodeId},
+    common::{KeyPair, NodeId, ProposalKeyPair},
     config::{LedgerConfig, NetworkConfig, NodeConfig, ValidatorConfig},
-    da::ProposalKeyPair,
     init_logging, run_node,
 };
 

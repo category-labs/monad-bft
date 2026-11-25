@@ -74,14 +74,13 @@ use phases::{Decided, Phase, Transition};
 
 use super::{
     super::{
+        context::ChorusContext,
         fast::EnterFallbackCert,
         types::{
-            HeaderAuth, IsVote, KeyPair, RepeatUntil, Slot, TimestampDelta, ValidatorData,
-            ValidatorIndex, VoteMsg,
+            IsVote, RepeatUntil, Slot, TimestampDelta, ValidatorData, ValidatorIndex, VoteMsg,
         },
     },
-    FallbackView, MVBAOutput, Metablock, Mvba, MvbaScope, Outbound, ValidateCert, ValidateInput,
-    Votable,
+    FallbackView, MVBAOutput, Mvba, MvbaScope, Outbound, ValidateCert, ValidateInput, Votable,
 };
 
 /// Caps memory usage of this buffer
@@ -94,24 +93,13 @@ const LOOKBACK_VIEWS: u64 = 1;
 /// View timeout in multiples of Δ: proposal, prepare round, commit round
 const VIEW_TIMEOUT_DELTAS: u64 = 3;
 
-pub struct MvbaContext {
-    pub slot: Slot,
-    pub num_lanes: usize,
-    pub delta: TimestampDelta,
-
-    pub self_index: ValidatorIndex,
-    pub key: Arc<KeyPair>,
-    pub validator_data: Arc<ValidatorData>,
-    pub header_auth: Arc<HeaderAuth>,
-}
-
-impl MvbaContext {
+impl ChorusContext {
     /// Placeholder leader election
     ///
     /// `Leader(slot, view)`: placeholder round-robin, ignoring stake
     /// TODO: replace with prod leader election
     pub(crate) fn leader(&self, view: FallbackView) -> ValidatorIndex {
-        let num_nodes = self.validator_data.len() as u64;
+        let num_nodes = self.validators().len() as u64;
         assert!(num_nodes > 0);
 
         let index = self.slot.get().wrapping_add(view.get()) % num_nodes;
@@ -135,35 +123,9 @@ pub enum TimerEvent<V: Votable> {
     BlockRetransmit(V::Entries),
 }
 
-/// Validation context for MetaBlock and FallbackCert
-pub struct ValidationContext {
-    pub slot: Slot,
-    pub num_lanes: usize,
-    pub validator_data: Arc<ValidatorData>,
-    pub header_auth: Arc<HeaderAuth>,
-}
-
-/// Transforms protocol context to Input/Cert validation context
-pub trait MakesValidationContext<V: ValidateInput> {
-    fn make_validation_context(&self) -> V::Context;
-}
-
-impl MakesValidationContext<Metablock> for MvbaContext {
-    fn make_validation_context(&self) -> ValidationContext {
-        ValidationContext {
-            slot: self.slot,
-            num_lanes: self.num_lanes,
-            validator_data: self.validator_data.clone(),
-            header_auth: self.header_auth.clone(),
-        }
-    }
-}
-
 impl ValidateCert for EnterFallbackCert {
-    type Context = ValidationContext;
-
-    fn validate(&self, context: &Self::Context) -> bool {
-        self.scope == context.slot && self.verify(&context.validator_data)
+    fn validate(&self, context: &ChorusContext) -> bool {
+        self.scope == context.slot && self.verify(context.validators())
     }
 }
 
@@ -176,8 +138,7 @@ struct ProposedInput<V, C> {
 }
 
 pub struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
-    context: MvbaContext,
-    validation_context: V::Context,
+    context: Arc<ChorusContext>,
     input: Option<ProposedInput<V, C>>,
 
     phase: Phase<V>,
@@ -209,23 +170,20 @@ pub struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
 impl<V, C> Mvba<V> for MonadMvba<V, C>
 where
     V: ValidateInput + Votable,
-    C: ValidateCert<Context = V::Context>,
-    MvbaContext: MakesValidationContext<V>,
+    C: ValidateCert,
 {
     type Message = MvbaMessage<V, C>;
-    type Context = MvbaContext;
+    type Context = Arc<ChorusContext>;
     type TimerEvent = TimerEvent<V>;
     type FallbackCert = C;
     type CommitVote = FallbackCommitVote<V::Entries>;
 
-    fn new(context: MvbaContext) -> Self {
+    fn new(context: Arc<ChorusContext>) -> Self {
         let slot = context.slot;
-        let validation_context = context.make_validation_context();
         let delta = context.delta;
 
         Self {
             context,
-            validation_context,
             phase: Phase::new(),
             input: None,
             last_voted_view: FallbackView::GENESIS,
@@ -265,7 +223,7 @@ where
     }
 
     fn validator_data(&self) -> &ValidatorData {
-        &self.context.validator_data
+        self.context.validators()
     }
 
     fn handle_message(&mut self, sender: ValidatorIndex, message: Self::Message) {
@@ -336,8 +294,7 @@ where
 impl<V, C> MonadMvba<V, C>
 where
     V: ValidateInput + Votable,
-    C: ValidateCert<Context = V::Context>,
-    MvbaContext: MakesValidationContext<V>,
+    C: ValidateCert,
 {
     fn handle_pre_prepare(&mut self, sender: ValidatorIndex, msg: PrePrepareMsg<V, C>) {
         // catching up is allowed past the window: only the TC arm below can
@@ -350,13 +307,13 @@ where
         if sender != self.context.leader(view) {
             return;
         }
-        if !msg.verify_signature(self.context.validator_data.vote_key(sender)) {
+        if !msg.verify_signature(self.context.validators().vote_key(sender)) {
             return;
         }
 
         match &msg.justification {
             Justification::FallbackCert(Some(cert)) => {
-                if !cert.validate(self.validation_context()) {
+                if !cert.validate(&self.context) {
                     return;
                 }
             }
@@ -365,7 +322,7 @@ where
                 // harvested ahead of the value check below: a valid
                 // certificate is evidence its view was left, whatever becomes
                 // of the message carrying it
-                if !tc.verify(&self.context.validator_data) {
+                if !tc.verify(self.context.validators()) {
                     return;
                 }
                 if self.in_window_or_catching_up(tc.view) {
@@ -374,7 +331,7 @@ where
             }
         }
 
-        if !msg.value.validate(self.validation_context()) {
+        if !msg.value.validate(&self.context) {
             return;
         }
 
@@ -405,7 +362,7 @@ where
             return;
         }
 
-        if !msg.is_valid(&self.context.validator_data) {
+        if !msg.is_valid(self.context.validators()) {
             return;
         }
 
@@ -421,7 +378,7 @@ where
     }
 
     fn handle_commit_qc(&mut self, qc: FallbackCommitQc<V::Entries>) {
-        if qc.scope.slot != self.context.slot || !qc.verify(&self.context.validator_data) {
+        if qc.scope.slot != self.context.slot || !qc.verify(self.context.validators()) {
             return;
         }
 
@@ -444,8 +401,7 @@ where
     }
 
     fn handle_block_response(&mut self, response: BlockResponseMsg<V>) {
-        self.block_store
-            .handle_response(response, &self.validation_context);
+        self.block_store.handle_response(response, &self.context);
     }
 
     /// Oldest view whose messages are still admitted and buffered
@@ -471,11 +427,10 @@ where
     /// catching-up view reachable only behind a verified TC or leader-signed
     /// pre-prepare, which immediately triggers garbage collection
     fn collectors_mut(&mut self, view: FallbackView) -> &mut ViewCollectors<V, C> {
-        let slot = self.context.slot;
-        let validator_data = &self.context.validator_data;
+        let context = &self.context;
         self.collectors
             .entry(view)
-            .or_insert_with(|| ViewCollectors::new(slot, view, validator_data))
+            .or_insert_with(|| ViewCollectors::new(view, context))
     }
 }
 
@@ -484,15 +439,10 @@ where
 impl<V, C> MonadMvba<V, C>
 where
     V: ValidateInput + Votable,
-    C: ValidateCert<Context = V::Context>,
-    MvbaContext: MakesValidationContext<V>,
+    C: ValidateCert,
 {
     fn is_running(&self) -> bool {
         self.input.is_some() && !self.abandoned && !self.phase.is_decided()
-    }
-
-    fn validation_context(&self) -> &V::Context {
-        &self.validation_context
     }
 
     /// Each iteration takes the phase by value and gets a new one back, so no
@@ -773,12 +723,7 @@ where
         self.last_voted_view = self.last_voted_view.max(view);
 
         // the lock can only have risen since the last retransmission
-        let timeout = TimeoutMsg::new_signed(
-            self.context.slot,
-            view,
-            self.high_prep_qc.clone(),
-            &self.context.key,
-        );
+        let timeout = TimeoutMsg::new_signed(view, self.high_prep_qc.clone(), &self.context);
 
         let phase = phase
             .time_out()
@@ -982,10 +927,7 @@ where
     where
         T: IsVote<Scope = MvbaScope>,
     {
-        VoteMsg::new_signed(
-            MvbaScope::new(self.context.slot, self.view()),
-            vote,
-            &self.context.key,
-        )
+        let scope = MvbaScope::new(self.context.slot, self.view());
+        self.context.sign(scope, vote)
     }
 }

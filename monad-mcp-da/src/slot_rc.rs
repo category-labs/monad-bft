@@ -22,11 +22,11 @@ use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::{ChunkEgress, Dissemination},
     encoding_scheme::Resolved,
-    header::InvalidProposalHeader,
+    header::{InvalidProposalHeader, validate_header},
     proposer_rc::ProposerRaptorcast,
-    runtime::{ChunkPull, EpochHandle, Timing},
+    runtime::{ChunkPull, DAContext, Timing},
     types::{
-        ChorusDACommand, ChorusDAEvent, Lane, Lanes, NodeId, ProposalId, ProposerSchedule,
+        ChorusDACommand, ChorusDAEvent, Lane, Lanes, NodeId, ProposalId, ProposerSet,
         SignedProposalHeader, Slot, Timestamp,
     },
 };
@@ -34,7 +34,7 @@ use super::{
 // per-slot raptorcast tracking. mainly handles proposer-related
 // validation.
 pub struct SlotRaptorcast {
-    epoch_handle: EpochHandle,
+    context: DAContext,
     slot: Slot,
 
     // None if the lane has no proposer
@@ -53,33 +53,22 @@ pub struct SlotRaptorcast {
 }
 
 impl SlotRaptorcast {
-    pub(crate) fn new<S>(
-        epoch_handle: &EpochHandle,
+    pub(crate) fn new(
+        context: DAContext,
         slot: Slot,
         deadline: Timestamp,
-        schedule: &S,
+        proposer_set: &ProposerSet,
         timing: Timing,
-    ) -> Self
-    where
-        S: ProposerSchedule,
-    {
-        // The schedule validated its configuration at construction and
-        // slots only open within its range, so a failure here is a
-        // programming error -- the same expectation consensus makes when
-        // it opens the slot.
-        let proposers = schedule
-            .proposers_at(slot)
-            .expect("proposer schedule unavailable for open slot");
-
-        // K is the schedule's, so DA and consensus index proposals alike
-        let raptorcasts = Lanes::new(proposers.num_lanes(), |j| {
-            let proposer = proposers.proposer(j)?;
-            let self_id = epoch_handle.self_id;
+    ) -> Self {
+        // K is the proposer set's, so DA and consensus index proposals alike
+        let raptorcasts = Lanes::new(proposer_set.num_lanes(), |j| {
+            let proposer = proposer_set.proposer(j)?;
+            let self_id = context.self_id;
             Some(ProposerRaptorcast::new(proposer, self_id, deadline, timing))
         });
 
         Self {
-            epoch_handle: epoch_handle.clone(),
+            context,
             slot,
             raptorcasts,
             authenticated_headers: HashSet::new(),
@@ -114,7 +103,7 @@ impl SlotRaptorcast {
         let raptorcast = self.raptorcasts[j]
             .as_mut()
             .expect("authenticated indices have proposers");
-        raptorcast.ingest(envelope, sender, &self.epoch_handle, &mut self.egress);
+        raptorcast.ingest(envelope, sender, &self.context, &mut self.egress);
         self.collect_events(j);
         Ok(())
     }
@@ -144,13 +133,14 @@ impl SlotRaptorcast {
 
     // the lane of a proposer-signed header for this slot
     fn authenticate(&mut self, header: &SignedProposalHeader) -> Option<Lane> {
-        use monad_mcp_cadence::spec::{ProposalHeader as _, proposal::HeaderAuth as _};
+        use monad_mcp_cadence::spec::ProposalHeader as _;
 
         let lane = header.lane();
         if self.authenticated_headers.contains(header) {
             return Some(lane);
         }
-        if !self.epoch_handle.header_auth.authenticate(header) {
+        let proposer = self.raptorcasts.get(lane)?.as_ref()?.proposer();
+        if !validate_header(header, &self.context.validator_data, proposer) {
             return None;
         }
         self.authenticated_headers.insert(header.clone());
@@ -169,8 +159,7 @@ impl SlotRaptorcast {
                 let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                     return;
                 };
-                let requests =
-                    raptorcast.add_decoded_holders(&holders, &pid, now, &self.epoch_handle);
+                let requests = raptorcast.add_decoded_holders(&holders, &pid, now, &self.context);
                 for (to, request) in requests {
                     let request = ChunkPull {
                         slot: self.slot,
@@ -197,7 +186,7 @@ impl SlotRaptorcast {
                 let Some(raptorcast) = self.raptorcasts[j].as_ref() else {
                     return;
                 };
-                let requests = raptorcast.pull_header(missing, &self.epoch_handle.validator_data);
+                let requests = raptorcast.pull_header(missing, &self.context.validator_data);
 
                 for (to, request) in requests {
                     let request = ChunkPull {
@@ -210,7 +199,7 @@ impl SlotRaptorcast {
             }
             ChorusDACommand::IngestProposalHeader { sender, header } => {
                 let envelope = ProposalEnvelope::from_header(header);
-                let sender = *self.epoch_handle.validator_data.node_id(sender);
+                let sender = *self.context.validator_data.node_id(sender);
                 if let Err(err) = self.ingest(&sender, envelope) {
                     tracing::debug!(?err, "dropping a header from consensus");
                 }
@@ -224,7 +213,7 @@ impl SlotRaptorcast {
             let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                 continue;
             };
-            let requests = raptorcast.poll_chunk_requests(now, &self.epoch_handle);
+            let requests = raptorcast.poll_chunk_requests(now, &self.context);
             for (to, request) in requests {
                 let request = ChunkPull {
                     slot: self.slot,
@@ -256,35 +245,27 @@ impl SlotRaptorcast {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeSet,
-        sync::{
-            Arc,
-            atomic::{AtomicUsize, Ordering},
-        },
-    };
+    use std::collections::BTreeSet;
 
     use bytes::Bytes;
-    use monad_mcp_cadence::spec::SignedProposalHeader as _;
 
     use super::{
         super::{
             chunk::{ChunkRequestType, WireChunkId},
             test_util::{
-                MESSAGE_LEN, NOW, SLOT, author, d33_scheme_at, epoch_handle, epoch_handle_for,
-                group, proposal_chunks, proposal_chunks_from, proposal_chunks_under,
-                proposer_schedule, timing, validator_data,
+                MESSAGE_LEN, NOW, SLOT, author, context, context_for, d33_scheme_at, group,
+                proposal_chunks, proposal_chunks_from, proposal_chunks_under, proposer_set, timing,
             },
-            types::{HeaderAuth, ProposalDAEvent, ProposalKeyPair, ValidatorData},
+            types::{ProposalDAEvent, ValidatorData},
         },
         *,
     };
 
-    fn slot_raptorcast() -> (EpochHandle, SlotRaptorcast) {
-        let epoch_handle = epoch_handle();
-        let schedule = proposer_schedule(vec![author()]);
-        let raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, NOW, &*schedule, timing());
-        (epoch_handle, raptorcast)
+    fn slot_raptorcast() -> (DAContext, SlotRaptorcast) {
+        let context = context();
+        let proposer_set = proposer_set(vec![author()]);
+        let raptorcast = SlotRaptorcast::new(context.clone(), SLOT, NOW, &proposer_set, timing());
+        (context, raptorcast)
     }
 
     fn nodes(ids: impl IntoIterator<Item = u64>) -> BTreeSet<NodeId> {
@@ -327,8 +308,8 @@ mod tests {
 
     #[test]
     fn chunks_are_held_until_released() {
-        let (epoch_handle, mut raptorcast) = slot_raptorcast();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (context, mut raptorcast) = slot_raptorcast();
+        let (header, chunks) = proposal_chunks(&context, 1);
 
         // our chunk 2 arrives and node 3 asks for it: nothing leaves
         assert!(ingest(&mut raptorcast, group(&chunks[2..3])).is_empty());
@@ -350,8 +331,8 @@ mod tests {
 
     #[test]
     fn a_requester_is_cut_off_at_its_quota() {
-        let (epoch_handle, mut raptorcast) = slot_raptorcast();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (context, mut raptorcast) = slot_raptorcast();
+        let (header, chunks) = proposal_chunks(&context, 1);
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
         ingest(&mut raptorcast, group(&chunks[2..3]));
 
@@ -371,8 +352,8 @@ mod tests {
 
     #[test]
     fn own_chunks_are_forwarded_once_on_arrival() {
-        let (epoch_handle, mut raptorcast) = slot_raptorcast();
-        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (context, mut raptorcast) = slot_raptorcast();
+        let (_, chunks) = proposal_chunks(&context, 1);
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
 
         // our chunk 6 is forwarded on arrival, a repeat is not
@@ -390,8 +371,8 @@ mod tests {
 
     #[test]
     fn own_chunks_in_one_envelope_leave_in_one_message() {
-        let (epoch_handle, mut raptorcast) = slot_raptorcast();
-        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (context, mut raptorcast) = slot_raptorcast();
+        let (_, chunks) = proposal_chunks(&context, 1);
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
 
         // chunks 2 and 6 are ours, 1 is not
@@ -403,8 +384,8 @@ mod tests {
 
     #[test]
     fn decoding_forwards_the_derivable_own_chunks() {
-        let (epoch_handle, mut raptorcast) = slot_raptorcast();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (context, mut raptorcast) = slot_raptorcast();
+        let (header, chunks) = proposal_chunks(&context, 1);
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
 
         // chunks 1 and 3 belong to others; the second one decodes
@@ -423,9 +404,9 @@ mod tests {
 
     #[test]
     fn unauthenticated_headers_are_rejected() {
-        let (epoch_handle, mut raptorcast) = slot_raptorcast();
+        let (context, mut raptorcast) = slot_raptorcast();
         // signed by validator 2, who proposes nothing
-        let (_, chunks) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
+        let (_, chunks) = proposal_chunks_from(&context, 2, SLOT, 1);
 
         let rejected = raptorcast.ingest(&author(), group(&chunks[..1]));
         assert_eq!(rejected, Err(InvalidProposalHeader::Unauthenticated));
@@ -435,20 +416,8 @@ mod tests {
 
     #[test]
     fn authentication_is_memoized_per_header() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counted = calls.clone();
-        let epoch_handle = EpochHandle {
-            self_id: NodeId::dummy(1),
-            key_pair: Arc::new(ProposalKeyPair::dummy(NodeId::dummy(1))),
-            header_auth: Arc::new(HeaderAuth::new(move |header: &SignedProposalHeader| {
-                counted.fetch_add(1, Ordering::SeqCst);
-                header.sig().signer == author()
-            })),
-            validator_data: Arc::new(validator_data(4)),
-        };
-        let schedule = proposer_schedule(vec![author()]);
-        let mut raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, NOW, &*schedule, timing());
-        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (context, mut raptorcast) = slot_raptorcast();
+        let (header, chunks) = proposal_chunks(&context, 1);
 
         raptorcast
             .ingest(&author(), group(&chunks[..1]))
@@ -456,18 +425,19 @@ mod tests {
         raptorcast
             .ingest(&author(), group(&chunks[1..2]))
             .expect("valid");
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(raptorcast.authenticated_headers, HashSet::from([header]));
     }
 
     // the (peer, request) pairs among the outputs
     #[test]
     fn a_second_proposers_events_carry_its_index() {
         let proposers = vec![author(), NodeId::dummy(2)];
-        let epoch_handle = epoch_handle_for(NodeId::dummy(1), 4, proposers.clone());
-        let schedule = proposer_schedule(proposers);
-        let mut raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, NOW, &*schedule, timing());
-        let scheme = d33_scheme_at(&epoch_handle, SLOT, Lane::new_unchecked(1));
-        let (header, chunks) = proposal_chunks_under(&epoch_handle, scheme, 2, 1);
+        let context = context_for(NodeId::dummy(1), 4);
+        let proposer_set = proposer_set(proposers);
+        let mut raptorcast =
+            SlotRaptorcast::new(context.clone(), SLOT, NOW, &proposer_set, timing());
+        let scheme = d33_scheme_at(&context, SLOT, Lane::new_unchecked(1));
+        let (header, chunks) = proposal_chunks_under(&context, scheme, 2, 1);
 
         raptorcast
             .ingest(&author(), group(&chunks[..1]))
@@ -482,8 +452,8 @@ mod tests {
 
     #[test]
     fn a_header_from_consensus_pins_its_proposal() {
-        let (epoch_handle, mut raptorcast) = slot_raptorcast();
-        let (header, _) = proposal_chunks(&epoch_handle, 1);
+        let (context, mut raptorcast) = slot_raptorcast();
+        let (header, _) = proposal_chunks(&context, 1);
 
         let command = ChorusDACommand::IngestProposalHeader {
             sender: ValidatorData::dummy_index(2),
@@ -505,7 +475,7 @@ mod tests {
     // deliver messages to their recipients among `nodes`, dropping
     // those `lost` names
     fn deliver(
-        nodes: &mut [(EpochHandle, SlotRaptorcast)],
+        nodes: &mut [(DAContext, SlotRaptorcast)],
         messages: Vec<(NodeId, Dissemination)>,
         lost: &BTreeSet<NodeId>,
     ) {
@@ -525,7 +495,7 @@ mod tests {
     }
 
     // each message with the node that sent it
-    fn drain_all(nodes: &mut [(EpochHandle, SlotRaptorcast)]) -> Vec<(NodeId, Dissemination)> {
+    fn drain_all(nodes: &mut [(DAContext, SlotRaptorcast)]) -> Vec<(NodeId, Dissemination)> {
         let mut messages = Vec::new();
         for (handle, node) in nodes {
             for message in node.drain_messages() {
@@ -557,11 +527,11 @@ mod tests {
         // proposal
         let mut nodes = Vec::new();
         for id in 1..=3 {
-            let epoch_handle = epoch_handle_for(NodeId::dummy(id), 4, vec![author()]);
-            let schedule = proposer_schedule(vec![author()]);
-            let mut node = SlotRaptorcast::new(&epoch_handle, SLOT, NOW, &*schedule, timing());
+            let context = context_for(NodeId::dummy(id), 4);
+            let proposer_set = proposer_set(vec![author()]);
+            let mut node = SlotRaptorcast::new(context.clone(), SLOT, NOW, &proposer_set, timing());
             node.handle_command(ChorusDACommand::ReleaseChunks, NOW);
-            nodes.push((epoch_handle, node));
+            nodes.push((context, node));
         }
         let (header, chunks) = proposal_chunks(&nodes[0].0, 1);
 

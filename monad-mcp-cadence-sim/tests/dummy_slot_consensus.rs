@@ -26,9 +26,9 @@ use monad_mcp_cadence::stub as cadence;
 use monad_mcp_cadence_sim::CadenceSwarmBuilder;
 use monad_mcp_common::{
     SlotDeadline, TimestampDelta,
-    spec::ValidatorData as _,
     stub::{NodeId, ValidatorData},
 };
+use monad_mcp_epoch::stub::{EpochHandle, election::FixedProposerSchedule};
 
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
 const LAG_THRESHOLD: NonZeroU64 = SLOTS_PER_WINDOW; // one window behind triggers a cap jump
@@ -38,11 +38,13 @@ const GENESIS_DEADLINE: SlotDeadline = SlotDeadline::from_millis(100);
 
 type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
-fn validator_data(n: u64) -> Arc<ValidatorData> {
-    Arc::new(ValidatorData::dummy(n))
+// the dummy slot consensus reads no proposer, so any election serves
+fn epoch_handle(num_validators: u64) -> EpochHandle {
+    let election = FixedProposerSchedule::new(vec![NodeId::dummy(0)]);
+    EpochHandle::new(ValidatorData::dummy(num_validators), election)
 }
 
-fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
+fn conductor(epoch_handle: &EpochHandle) -> Conductor {
     let config = ConductorConfig::new(
         SLOTS_PER_WINDOW,
         SYNC_BOUNDARY_SLOTS,
@@ -51,19 +53,20 @@ fn conductor(val_data: &Arc<ValidatorData>) -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    CadenceConductor::genesis(config, val_data.clone(), ()).unwrap()
+    CadenceConductor::genesis(config, epoch_handle.clone(), ()).unwrap()
 }
 
 fn add_dummy_node(
     builder: &mut CadenceSwarmBuilder<DummySlotConsensus, Conductor>,
     id: NodeId,
-    val_data: &Arc<ValidatorData>,
+    quorum: usize,
+    epoch_handle: &EpochHandle,
 ) {
     let config = DummySlotConsensusConfig {
-        quorum: val_data.len(),
+        quorum,
+        key: Arc::new(id.keypair()),
     };
-    let key = Arc::new(id.keypair());
-    builder.add_node(id, conductor(val_data), config, key);
+    builder.add_node(id, conductor(epoch_handle), config, epoch_handle.clone());
 }
 
 #[test]
@@ -74,10 +77,9 @@ fn all_slots_finalize_on_schedule() {
     let mut builder = CadenceSwarmBuilder::new();
     builder.set_latency(LATENCY.as_duration());
 
-    let val_data = validator_data(NODES as u64);
-    builder.set_validators(val_data.clone());
+    let epoch_handle = epoch_handle(NODES as u64);
     for i in 0..NODES {
-        add_dummy_node(&mut builder, NodeId::dummy(i as u64), &val_data);
+        add_dummy_node(&mut builder, NodeId::dummy(i as u64), NODES, &epoch_handle);
     }
 
     let deadline_of_slot = |s: u64| {

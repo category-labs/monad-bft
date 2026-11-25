@@ -35,21 +35,13 @@ pub trait DAProposalHeader: cadence_spec::ProposalHeader {
     fn scheme(&self) -> &Self::Scheme;
 }
 
-pub trait DAProposalSignature: Clone + Eq + std::hash::Hash + std::fmt::Debug {
-    type NodeId: common_spec::NodeId;
-
+// the signature field of a packet, which only DA writes
+pub trait DAProposalSignature:
+    common_spec::ProposalSignature + std::hash::Hash + std::fmt::Debug
+{
     // writes exactly SIGNATURE_LEN bytes
     fn to_bytes(&self, out: &mut impl BufMut);
     fn from_bytes(field: &[u8]) -> Option<Self>;
-
-    // None unless the signature authenticates signed_bytes
-    fn recover_author(&self, signed_bytes: &[u8]) -> Option<Self::NodeId>;
-}
-
-pub trait DAProposalKeyPair {
-    type Signature: DAProposalSignature;
-
-    fn sign(&self, signed_bytes: &[u8]) -> Self::Signature;
 }
 
 // the node id is the compressed public key, as the assignment seed reads it
@@ -77,6 +69,6 @@ where
     SignedProposalHeader: DAProposalHeader<Root = MerkleRoot, Scheme = EncodingScheme>
         + cadence_spec::SignedProposalHeader<Sig = ProposalSignature>,
     ProposalSignature: DAProposalSignature<NodeId = NodeId>,
-    ProposalKeyPair: DAProposalKeyPair<Signature = ProposalSignature>,
+    ProposalKeyPair: common_spec::ProposalKeyPair<Signature = ProposalSignature>,
 {
 }

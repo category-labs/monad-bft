@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, VecDeque, btree_map::Entry},
+    collections::{BTreeMap, VecDeque},
     sync::Arc,
 };
 
@@ -27,24 +27,19 @@ use super::{
     header::InvalidProposalHeader,
     slot_rc::SlotRaptorcast,
     types::{
-        ChorusDACommand, ChorusDAEvent, HeaderAuth, Lane, NodeId, Outbound, Proposal, ProposalId,
-        ProposalKeyPair, ProposalScope, ProposerSchedule, Qos, Slot, SlotLifecycle, Timestamp,
-        TimestampDelta, ValidatorData, WirePriority, unix_seconds,
+        ChorusDACommand, ChorusDAEvent, EpochHandle, Lane, NodeCredential, NodeId, Outbound,
+        Proposal, ProposalId, ProposalKeyPair, ProposalScope, Qos, Slot, SlotLifecycle,
+        SlotOutOfBound, Timestamp, TimestampDelta, ValidatorData, WirePriority, unix_seconds,
     },
     wire::proposal::AuthoredProposal,
 };
 
-// todo: give this type a more proper name. it encodes the concept of
-// slot-scoped config, the identity and validator set. think about if
-// we can further refine this concept to have a clearer boundary. note
-// this is almost the same shape as ChorusContext, so maybe we can
-// just share the type.
+// What this node needs to take part in the DA of one slot: its id, its
+// proposal key and the validators of the slot.
 #[derive(Clone)]
-pub struct EpochHandle {
+pub struct DAContext {
     pub self_id: NodeId,
     pub key_pair: Arc<ProposalKeyPair>,
-    pub header_auth: Arc<HeaderAuth>,
-    // todo: only this field is slot-scoped, should we isolate it out?
     pub validator_data: Arc<ValidatorData>,
 }
 
@@ -91,14 +86,11 @@ pub(crate) struct Timing {
     pub(crate) serve_window: TimestampDelta,
 }
 
-pub struct DARuntime<S> {
+pub struct DARuntime {
     config: DAConfig,
-    // todo: make epoch_handle slot dependent
+    credential: NodeCredential,
     epoch_handle: EpochHandle,
     raptorcast_map: BTreeMap<Slot, SlotRaptorcast>,
-
-    // the proposer schedule consensus holds; DA reads the same one
-    schedule: Arc<S>,
 
     // the next pass over every slot's pulls
     next_tick: Timestamp,
@@ -113,14 +105,11 @@ pub struct ChunkPull {
     pub request: ChunkRequest,
 }
 
-impl<S> DARuntime<S>
-where
-    S: ProposerSchedule,
-{
-    pub fn new(config: DAConfig, epoch_handle: EpochHandle, schedule: Arc<S>) -> Self {
+impl DARuntime {
+    pub fn new(config: DAConfig, credential: &NodeCredential, epoch_handle: EpochHandle) -> Self {
         Self {
             config,
-            schedule,
+            credential: credential.clone(),
             epoch_handle,
             raptorcast_map: Default::default(),
             next_tick: Timestamp::GENESIS,
@@ -153,15 +142,18 @@ where
         send_order: Option<&[NodeId]>,
         now: Timestamp,
     ) {
+        let Ok(context) = self.context_at(proposal.slot) else {
+            tracing::warn!(slot = ?proposal.slot, "no validators for the slot of our proposal");
+            return;
+        };
         let unix_ts = unix_seconds(now);
-        let authored =
-            AuthoredProposal::build(proposal_scheme, &self.epoch_handle, &proposal, unix_ts);
+        let authored = AuthoredProposal::build(proposal_scheme, &context, &proposal, unix_ts);
         let Some(mut authored) = authored else {
             tracing::warn!("proposal does not fit the scheme");
             return;
         };
 
-        let self_id = self.epoch_handle.self_id;
+        let self_id = self.credential.node_id;
         if let Some(own_envelope) = authored.split_off(&self_id) {
             self.ingest_own(own_envelope);
         }
@@ -180,7 +172,7 @@ where
     }
 
     fn ingest_own(&mut self, envelope: ProposalEnvelope) {
-        let self_id = self.epoch_handle.self_id;
+        let self_id = self.credential.node_id;
         if let Err(reason) = self.ingest(&self_id, envelope) {
             tracing::error!(?reason, "rejected our own proposal envelope");
         }
@@ -219,17 +211,30 @@ where
 
     // the first event of a slot. Consensus opens each slot once
     fn open_slot(&mut self, slot: Slot, deadline: Timestamp) {
-        let Entry::Vacant(entry) = self.raptorcast_map.entry(slot) else {
+        if self.raptorcast_map.contains_key(&slot) {
             tracing::warn!(?slot, "ignoring a second opening of a slot");
             return;
-        };
-        entry.insert(SlotRaptorcast::new(
-            &self.epoch_handle,
-            slot,
-            deadline,
-            &*self.schedule,
-            self.config.timing(),
-        ));
+        }
+        // Consensus opens a slot only where its epoch is known.
+        let context = self
+            .context_at(slot)
+            .expect("no validators for an open slot");
+        let proposer_set = self
+            .epoch_handle
+            .proposers_at(slot)
+            .expect("no proposer set for an open slot");
+        let timing = self.config.timing();
+        let slot_raptorcast = SlotRaptorcast::new(context, slot, deadline, &proposer_set, timing);
+        self.raptorcast_map.insert(slot, slot_raptorcast);
+    }
+
+    fn context_at(&self, slot: Slot) -> Result<DAContext, SlotOutOfBound> {
+        let validator_data = self.epoch_handle.validators_at(slot)?;
+        Ok(DAContext {
+            self_id: self.credential.node_id,
+            key_pair: self.credential.proposal_key.clone(),
+            validator_data,
+        })
     }
 
     pub fn handle_chunk_request(&mut self, req: ChunkPull, from: &NodeId, now: Timestamp) {
@@ -323,24 +328,25 @@ mod tests {
         super::{
             chunk::ChunkRequestType,
             test_util::{
-                FixedProposerSchedule, MESSAGE_LEN, NOW, SLOT, author, da_config, epoch_handle,
-                group, proposal_chunks, proposal_chunks_from, proposer_schedule,
+                MESSAGE_LEN, NOW, SLOT, author, context, da_config, epoch_handle, group,
+                proposal_chunks, proposal_chunks_from,
             },
-            types::{ProposalDAEvent, Timestamp},
+            types::{NodeCredential, ProposalDAEvent, Timestamp},
         },
         *,
     };
 
-    fn runtime(retention: u64) -> DARuntime<FixedProposerSchedule> {
+    // the runtime of validator 1 among 4, where validator 0 proposes
+    fn runtime(retention: u64) -> DARuntime {
         let config = DAConfig {
             completed_slot_retention: retention,
             ..da_config()
         };
-        let schedule = proposer_schedule(vec![author()]);
-        DARuntime::new(config, epoch_handle(), schedule)
+        let epoch_handle = epoch_handle(4, vec![author()]);
+        DARuntime::new(config, &NodeCredential::dummy(1), epoch_handle)
     }
 
-    fn open(runtime: &mut DARuntime<FixedProposerSchedule>, slots: impl IntoIterator<Item = u64>) {
+    fn open(runtime: &mut DARuntime, slots: impl IntoIterator<Item = u64>) {
         for slot in slots {
             let opened = SlotLifecycle::Opened {
                 slot: Slot(slot),
@@ -350,7 +356,7 @@ mod tests {
         }
     }
 
-    fn outputs(runtime: &mut DARuntime<FixedProposerSchedule>) -> Vec<DAOutput> {
+    fn outputs(runtime: &mut DARuntime) -> Vec<DAOutput> {
         let mut outputs = Vec::new();
         while let Some(output) = runtime.poll() {
             outputs.push(output);
@@ -361,8 +367,8 @@ mod tests {
     #[test]
     fn ingestion_is_bounded_by_the_opened_slots() {
         let mut runtime = runtime(1);
-        let epoch_handle = epoch_handle();
-        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+        let context = context();
+        let (_, chunks) = proposal_chunks(&context, 1);
 
         let closed = runtime.ingest(&author(), group(&chunks[..1]));
         assert_eq!(closed, Err(InvalidProposalHeader::SlotOutOfRange));
@@ -370,7 +376,7 @@ mod tests {
         open(&mut runtime, [0, 1]);
         assert_eq!(runtime.ingest(&author(), group(&chunks[..1])), Ok(()));
 
-        let (_, later) = proposal_chunks_from(&epoch_handle, 0, Slot(5), 1);
+        let (_, later) = proposal_chunks_from(&context, 0, Slot(5), 1);
         let beyond = runtime.ingest(&author(), group(&later[..1]));
         assert_eq!(beyond, Err(InvalidProposalHeader::SlotOutOfRange));
     }
@@ -378,10 +384,10 @@ mod tests {
     #[test]
     fn slots_below_the_cap_are_kept_for_the_retention_then_dropped() {
         let mut runtime = runtime(1);
-        let epoch_handle = epoch_handle();
+        let context = context();
         open(&mut runtime, [0, 1, 2]);
-        let (_, slot0) = proposal_chunks_from(&epoch_handle, 0, Slot(0), 1);
-        let (_, slot1) = proposal_chunks_from(&epoch_handle, 0, Slot(1), 1);
+        let (_, slot0) = proposal_chunks_from(&context, 0, Slot(0), 1);
+        let (_, slot1) = proposal_chunks_from(&context, 0, Slot(1), 1);
         assert_eq!(runtime.ingest(&author(), group(&slot0[..1])), Ok(()));
         assert_eq!(runtime.ingest(&author(), group(&slot1[..1])), Ok(()));
 
@@ -399,10 +405,10 @@ mod tests {
     #[test]
     fn a_decode_reaches_execution_then_consensus_then_the_wire() {
         let mut runtime = runtime(1);
-        let epoch_handle = epoch_handle();
+        let context = context();
         open(&mut runtime, [0, 1]);
         runtime.handle_command(ChorusDACommand::ReleaseChunks, SLOT, NOW);
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (header, chunks) = proposal_chunks(&context, 1);
         runtime
             .ingest(&author(), group(&chunks[..3]))
             .expect("valid");
@@ -452,9 +458,9 @@ mod tests {
     #[test]
     fn chunk_requests_for_unknown_slots_are_ignored() {
         let mut runtime = runtime(1);
-        let epoch_handle = epoch_handle();
+        let context = context();
         open(&mut runtime, [0, 1]);
-        let (header, _) = proposal_chunks(&epoch_handle, 1);
+        let (header, _) = proposal_chunks(&context, 1);
 
         let unknown_slot = ChunkPull {
             slot: Slot(7),
@@ -468,8 +474,8 @@ mod tests {
     #[test]
     fn pulls_leave_as_recovery_requests_once_due() {
         let mut runtime = runtime(1);
-        let epoch_handle = epoch_handle();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let context = context();
+        let (header, chunks) = proposal_chunks(&context, 1);
         let at = |millis| NOW + TimestampDelta::from_millis(millis);
         for slot in [0, 1] {
             let opened = SlotLifecycle::Opened {

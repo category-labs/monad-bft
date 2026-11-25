@@ -17,7 +17,6 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
     num::NonZeroU64,
-    sync::Arc,
 };
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
@@ -29,7 +28,7 @@ use super::{
     Conductor, ConductorOutput,
     acs::Acs,
     deadline_agreement::{DeadlineAgreementManager, DeadlineAgreementMessage},
-    types::{NodeId, Slot, Timestamp, TimestampDelta, ValidatorData, ValidatorIndex, ValidatorSet},
+    types::{EpochHandle, NodeId, Slot, Timestamp, TimestampDelta, ValidatorIndex, ValidatorSet},
 };
 
 // Identifies a window of contiguous slots, starting from 0.
@@ -355,8 +354,7 @@ where
     A: Acs<Timestamp>,
 {
     config: ConductorConfig,
-    // todo: one table for each epoch
-    validator_data: Arc<ValidatorData>,
+    epoch_handle: EpochHandle,
     deadline_agreement_manager: DeadlineAgreementManager<A>,
     // Exclusive: every window strictly below the cap is open.
     open_window_cap: WindowId,
@@ -385,13 +383,13 @@ where
 {
     pub fn genesis(
         config: ConductorConfig,
-        validator_data: Arc<ValidatorData>,
+        epoch_handle: EpochHandle,
         context: A::Context,
     ) -> Result<Self, ConductorError> {
         let genesis_deadline = config.genesis_deadline();
         let mut conductor = Self {
             config,
-            validator_data,
+            epoch_handle,
             deadline_agreement_manager: DeadlineAgreementManager::<A>::new(context),
             open_window_cap: WindowId::FIRST,
             completion_tracker: CompletionTracker::new(),
@@ -452,7 +450,10 @@ where
     fn broadcast(&mut self, slot: Slot, message: ConductorMessage<A::Message>) {
         use monad_mcp_common::spec::ValidatorData as _;
 
-        let everyone = ValidatorSet::full(self.validator_data.len());
+        let Ok(validators) = self.epoch_handle.validators_at(slot) else {
+            return;
+        };
+        let everyone = ValidatorSet::full(validators.len());
         let outbound = Outbound {
             to: Recipients::Validators(slot, everyone),
             message,
@@ -461,11 +462,11 @@ where
         self.outputs.push_back(ConductorOutput::Send(outbound));
     }
 
-    // todo: look the validator up in the table of the slot, once epochs exist
-    fn validator_at(&self, _slot: Slot, node_id: &NodeId) -> Option<ValidatorIndex> {
+    fn validator_at(&self, slot: Slot, node_id: &NodeId) -> Option<ValidatorIndex> {
         use monad_mcp_common::spec::ValidatorData as _;
 
-        self.validator_data.index_of(node_id)
+        let validators = self.epoch_handle.validators_at(slot).ok()?;
+        validators.index_of(node_id)
     }
 
     // A peer cap at least `lag_threshold` ahead is trusted as a certificate:
@@ -670,7 +671,10 @@ mod tests {
     use rand::{SeedableRng, rngs::StdRng, seq::SliceRandom};
 
     use super::{
-        super::acs::{AcsOutput, nop::NopAcs},
+        super::{
+            super::test_utils::epoch_handle,
+            acs::{AcsOutput, nop::NopAcs},
+        },
         *,
     };
 
@@ -691,10 +695,6 @@ mod tests {
             LAG_THRESHOLD,
         )
         .unwrap()
-    }
-
-    fn validator_data() -> Arc<ValidatorData> {
-        Arc::new(ValidatorData::dummy(4))
     }
 
     fn genesis_plus(nanos: u64) -> Timestamp {
@@ -732,7 +732,7 @@ mod tests {
     }
 
     fn genesis<A: Acs<Timestamp, Context = ()>>(config: ConductorConfig) -> CadenceConductor<A> {
-        CadenceConductor::genesis(config, validator_data(), ()).unwrap()
+        CadenceConductor::genesis(config, epoch_handle(4, 1), ()).unwrap()
     }
 
     fn conductor() -> CadenceConductor<NopAcs<Timestamp>> {

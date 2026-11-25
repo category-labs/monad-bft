@@ -24,15 +24,16 @@ use monad_mcp_common::spec::{Stake as _, ValidatorData as _};
 use super::{
     availability::ProposalAvailability,
     chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders},
+    context::ChorusContext,
     fallback::Metablock,
     types::{
-        EquivCert, Gate, HeaderAuth, IsVote, KeyPair, Lane, Lanes, ProposalId, ProposalScope,
-        Signature, SignedProposalHeader, Slot, StrongQc, ValidatorData, ValidatorIndex,
-        ValidatorSet, VoteMsg, VotePool, WeakQc,
+        EquivCert, Gate, IsVote, Lane, Lanes, ProposalId, ProposalScope, Signature,
+        SignedProposalHeader, Slot, StrongQc, ValidatorData, ValidatorIndex, ValidatorSet, VoteMsg,
+        VotePool, WeakQc,
     },
 };
 use crate::spec::{
-    proposal::{HeaderAuth as _, ProposalHeader as _},
+    proposal::ProposalHeader as _,
     vote::{SignatureCollection as _, SigningDomain, assert_signing_prefix},
 };
 
@@ -52,7 +53,7 @@ pub enum FallbackTransitionOutcome {
 
 #[derive(Clone)]
 pub struct FastPath {
-    slot: Slot,
+    context: Arc<ChorusContext>,
 
     certs: Lanes<LocalCertifiedEntry>,
     phase: Phase,
@@ -71,33 +72,22 @@ pub struct FastPath {
 
     // effects for the DA layer, drained by the slot consensus wrapper
     commands: VecDeque<ChorusDACommand>,
-
-    // using Arc to avoid lifetime issues.
-    key: Arc<KeyPair>,
-    validator_data: Arc<ValidatorData>,
-    header_auth: Arc<HeaderAuth>,
 }
 
 impl FastPath {
-    pub(crate) fn new(
-        s: Slot,
-        num_lanes: usize,
-        key: Arc<KeyPair>,
-        validator_data: Arc<ValidatorData>,
-        header_auth: Arc<HeaderAuth>,
-    ) -> Self {
+    pub(crate) fn new(context: Arc<ChorusContext>) -> Self {
+        let slot = context.slot;
+        let num_lanes = context.num_lanes();
+        let lane_pool = |lane| context.vote_pool(ProposalScope::new(slot, lane));
+
         Self {
-            slot: s,
-
-            votes: Lanes::new(num_lanes, |j| {
-                VotePool::new(ProposalScope::new(s, j), validator_data.clone())
-            }),
+            votes: Lanes::new(num_lanes, lane_pool),
             certs: Lanes::new_default(num_lanes),
-            commit_votes: VotePool::new(s, validator_data.clone()),
+            commit_votes: context.vote_pool(slot),
 
-            enter_fallback_votes: VotePool::new(s, validator_data.clone()),
-            fallback_entry_votes: Lanes::new(num_lanes, |j| {
-                VotePool::new(ProposalScope::new(s, j), validator_data.clone())
+            enter_fallback_votes: context.vote_pool(slot),
+            fallback_entry_votes: Lanes::new(num_lanes, |lane| {
+                context.vote_pool(ProposalScope::new(slot, lane))
             }),
 
             phase: Phase::Initial,
@@ -105,9 +95,7 @@ impl FastPath {
             availability: Lanes::new_default(num_lanes),
             commands: VecDeque::new(),
 
-            key,
-            validator_data,
-            header_auth,
+            context,
         }
     }
 
@@ -137,7 +125,7 @@ impl FastPath {
     /// verify. Checked here because the certificate no longer rides inside the
     /// MVBA input, where admission used to be re-checked on every proposal.
     pub(crate) fn enter_fallback_cert_is_valid(&self, cert: &EnterFallbackCert) -> bool {
-        cert.verify(&self.validator_data)
+        cert.verify(self.context.validators())
     }
 
     pub(crate) fn handle_batch_vote(
@@ -171,7 +159,8 @@ impl FastPath {
     ) -> Option<FastCommitQc> {
         // no phase guard on purpose
         self.commit_votes.add_vote(voter, vote_msg);
-        let supermajority = self.validator_data.total_stake().supermajority_threshold();
+        let total_stake = self.context.validators().total_stake();
+        let supermajority = total_stake.supermajority_threshold();
         let tally = self.commit_votes.tally_at_least(supermajority)?;
         tally.strong_qc()
     }
@@ -190,11 +179,11 @@ impl FastPath {
 
     fn fast_block_is_valid(&self, fast_block: &FastBlock) -> bool {
         let mut qcs = fast_block.0.as_ref().into_iter();
-        qcs.all(|qc| qc.verify(&self.validator_data))
+        qcs.all(|qc| qc.verify(self.context.validators()))
     }
 
     pub(crate) fn fast_commit_qc_is_valid(&self, qc: &FastCommitQc) -> bool {
-        qc.verify(&self.validator_data)
+        qc.verify(self.context.validators())
     }
 
     pub(crate) fn handle_fallback_vote(
@@ -245,7 +234,7 @@ impl FastPath {
         }
 
         // 2. count the vote
-        let vote = entry.into_vote_msg(self.slot, j);
+        let vote = entry.into_vote_msg(self.context.slot, j);
         self.fallback_entry_votes[j].add_vote(voter, vote);
 
         // 3. form fallback qc from f+1 votes
@@ -255,12 +244,10 @@ impl FastPath {
     fn evidence_valid(&self, evidence: &ProposalEvidence) -> bool {
         match evidence {
             ProposalEvidence::FallbackSignedEntry(entry) => match entry.header() {
-                Some(header) => self.header_auth.authenticate(header),
+                Some(header) => self.context.header_valid(header),
                 None => true,
             },
-            ProposalEvidence::Certified(cert) => {
-                cert.verify(&self.header_auth, &self.validator_data)
-            }
+            ProposalEvidence::Certified(cert) => cert.verify(&self.context),
         }
     }
 
@@ -284,8 +271,8 @@ impl FastPath {
                 None => Entry::Negative,
             };
 
-            let vote_msg =
-                VoteMsg::new_signed(ProposalScope::new(self.slot, *j), entry.clone(), &self.key);
+            let scope = ProposalScope::new(self.context.slot, *j);
+            let vote_msg = self.context.sign(scope, entry.clone());
             SignedEntry {
                 entry,
                 signature: vote_msg.signature,
@@ -293,7 +280,7 @@ impl FastPath {
         });
 
         Some(BatchVoteMsg {
-            slot: self.slot,
+            slot: self.context.slot,
             votes,
         })
     }
@@ -330,11 +317,11 @@ impl FastPath {
         self.phase = Phase::FallbackVote;
 
         let evidences = states.map_indexed(|j, state| {
-            let scope = ProposalScope::new(self.slot, j);
-            state.into_evidence(scope, &self.key)
+            let scope = ProposalScope::new(self.context.slot, j);
+            state.into_evidence(scope, &self.context)
         });
 
-        let enter_fallback_vote = VoteMsg::new_signed(self.slot, EnterFallbackVote, &self.key);
+        let enter_fallback_vote = self.context.sign(self.context.slot, EnterFallbackVote);
         let fallback_vote = FallbackVoteMsg {
             enter_fallback_vote,
             evidences,
@@ -416,7 +403,8 @@ impl FastPath {
     // ------- internal helper methods ---------
     fn proposal_state(&self, j: Lane) -> Option<ProposalState> {
         let tally = self.votes[j].tally();
-        let supermajority = self.validator_data.total_stake().supermajority_threshold();
+        let total_stake = self.context.validators().total_stake();
+        let supermajority = total_stake.supermajority_threshold();
 
         if tally.stake() <= supermajority {
             // case 1: lacking 2f+1 votes yet
@@ -487,12 +475,13 @@ impl FastPath {
                 continue;
             }
             let signers = sigcol
-                .signers(&self.validator_data)
+                .signers(self.context.validators())
                 .expect("a tally's collections match the validator set");
             missing.push((*pid, signers));
         }
         // heuristic: the best-backed proposal first
-        missing.sort_by_cached_key(|(_, voters)| Reverse(self.validator_data.sum_stake(voters)));
+        missing
+            .sort_by_cached_key(|(_, voters)| Reverse(self.context.validators().sum_stake(voters)));
         missing
     }
 
@@ -503,7 +492,7 @@ impl FastPath {
         }
 
         let votes = &self.fallback_entry_votes[j];
-        let honest = self.validator_data.total_stake().honest_threshold();
+        let honest = self.context.validators().total_stake().honest_threshold();
         let Some(tally) = votes.tally_at_least(honest) else {
             return;
         };
@@ -549,7 +538,8 @@ impl FastPath {
         }
 
         let votes = &self.votes[j];
-        let supermajority = self.validator_data.total_stake().supermajority_threshold();
+        let total_stake = self.context.validators().total_stake();
+        let supermajority = total_stake.supermajority_threshold();
         let Some(tally) = votes.tally_at_least(supermajority) else {
             return;
         };
@@ -573,15 +563,15 @@ enum ProposalState {
 }
 
 impl ProposalState {
-    fn into_evidence(self, scope: ProposalScope, key: &KeyPair) -> ProposalEvidence {
+    fn into_evidence(self, scope: ProposalScope, context: &ChorusContext) -> ProposalEvidence {
         match self {
             ProposalState::Certified(cert) => ProposalEvidence::Certified(*cert),
             ProposalState::FallbackNegative => {
-                let fse = FallbackSignedEntry::new_signed_negative(scope, key);
+                let fse = FallbackSignedEntry::new_signed_negative(scope, context);
                 ProposalEvidence::FallbackSignedEntry(fse)
             }
             ProposalState::FallbackPositive(header) => {
-                let fse = FallbackSignedEntry::new_signed_positive(scope, header, key);
+                let fse = FallbackSignedEntry::new_signed_positive(scope, header, context);
                 ProposalEvidence::FallbackSignedEntry(fse)
             }
         }
@@ -623,18 +613,6 @@ impl Gate<Entry> for HeaderSeen<'_> {
 
 pub type FastQc = StrongQc<Entry>;
 
-// one entry per lane, and a positive entry only on a lane with a proposer
-fn check_entry_lanes(entries: Lanes<&Entry>, occupied: &Lanes<bool>) -> bool {
-    if entries.size() != occupied.size() {
-        return false;
-    }
-    let mut entries = entries.into_indexed_iter();
-    entries.all(|(j, entry)| match entry {
-        Entry::Positive(_) => occupied[j],
-        Entry::Negative => true,
-    })
-}
-
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct BatchVoteMsg {
     slot: Slot,
@@ -648,9 +626,9 @@ impl BatchVoteMsg {
         self.slot
     }
 
-    pub(crate) fn check_lanes(&self, occupied: &Lanes<bool>) -> bool {
+    pub(crate) fn validate_lanes(&self, context: &ChorusContext) -> bool {
         let entries = self.votes.as_ref().map(|signed| &signed.entry);
-        check_entry_lanes(entries, occupied)
+        context.validate_lanes(entries)
     }
 
     /// The voter's entry for each lane. Read off the message as sent, its
@@ -697,8 +675,8 @@ pub struct FastCommitVote {
 }
 
 impl FastCommitVote {
-    pub(crate) fn check_lanes(&self, occupied: &Lanes<bool>) -> bool {
-        check_entry_lanes(self.entries.as_ref(), occupied)
+    pub(crate) fn validate_lanes(&self, context: &ChorusContext) -> bool {
+        context.validate_lanes(self.entries.as_ref())
     }
 }
 
@@ -723,9 +701,9 @@ impl FastBlock {
         self.0[Lane::new_unchecked(0)].scope.slot
     }
 
-    pub(crate) fn check_lanes(&self, occupied: &Lanes<bool>) -> bool {
+    pub(crate) fn validate_lanes(&self, context: &ChorusContext) -> bool {
         let entries = self.0.as_ref().map(|qc| &qc.verdict);
-        check_entry_lanes(entries, occupied)
+        context.validate_lanes(entries)
     }
 
     // every qc names the block's slot and its own lane
@@ -735,9 +713,8 @@ impl FastBlock {
         qcs.all(|(j, qc)| qc.scope == ProposalScope::new(slot, j))
     }
 
-    pub(crate) fn commit_vote(&self, slot: Slot, key: &KeyPair) -> FastCommitVoteMsg {
-        let vote = FastCommitVote::from(self);
-        VoteMsg::new_signed(slot, vote, key)
+    pub(crate) fn commit_vote(&self, context: &ChorusContext) -> FastCommitVoteMsg {
+        context.sign(context.slot, FastCommitVote::from(self))
     }
 }
 
@@ -855,12 +832,12 @@ impl CertifiedEntry {
     /// carries valid signatures. Authenticity is enforced at message ingress
     /// (see the crate header); we restate it at adoption points to make the
     /// trust boundary explicit and catch protocol-logic bugs.
-    pub(crate) fn verify(&self, header_auth: &HeaderAuth, validator_data: &ValidatorData) -> bool {
+    pub(crate) fn verify(&self, context: &ChorusContext) -> bool {
         match self {
-            CertifiedEntry::FastQc(qc) => qc.verify(validator_data),
-            CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
+            CertifiedEntry::FastQc(qc) => qc.verify(context.validators()),
+            CertifiedEntry::FallbackQc(qc) => qc.verify(context.validators()),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
-                header_auth.authenticate(a) && header_auth.authenticate(b)
+                context.header_valid(a) && context.header_valid(b)
             }
         }
     }
@@ -907,10 +884,10 @@ impl FallbackSignedEntry {
     fn new_signed_positive(
         scope: ProposalScope,
         header: SignedProposalHeader,
-        key: &KeyPair,
+        context: &ChorusContext,
     ) -> Self {
         let entry = FallbackEntry(Entry::Positive(header.pid()));
-        let signature = VoteMsg::new_signed(scope, entry.clone(), key).signature;
+        let signature = context.sign(scope, entry.clone()).signature;
         Self {
             entry,
             signature,
@@ -918,9 +895,9 @@ impl FallbackSignedEntry {
         }
     }
 
-    fn new_signed_negative(scope: ProposalScope, key: &KeyPair) -> Self {
+    fn new_signed_negative(scope: ProposalScope, context: &ChorusContext) -> Self {
         let entry = FallbackEntry(Entry::Negative);
-        let signature = VoteMsg::new_signed(scope, entry.clone(), key).signature;
+        let signature = context.sign(scope, entry.clone()).signature;
         Self {
             entry,
             signature,
@@ -1057,9 +1034,9 @@ impl FallbackVoteMsg {
         self.enter_fallback_vote.scope
     }
 
-    pub(crate) fn check_lanes(&self, occupied: &Lanes<bool>) -> bool {
+    pub(crate) fn validate_lanes(&self, context: &ChorusContext) -> bool {
         let entries = self.evidences.as_ref().map(|evidence| evidence.entry());
-        check_entry_lanes(entries, occupied)
+        context.validate_lanes(entries)
     }
 
     fn is_consistent(&self) -> bool {
@@ -1238,15 +1215,16 @@ mod tests {
 
     use super::{
         super::{
-            super::test_utils::dummy_index,
+            super::test_utils::{
+                accept_dummy_signature, chorus_context, chorus_context_with, dummy_index,
+                dummy_signature,
+            },
             chorus::ProposalDAEvent,
             types::{NodeId, ValidatorData},
         },
         *,
     };
-    use crate::env::stub::{
-        EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
-    };
+    use crate::env::stub::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader};
 
     const SLOT: Slot = Slot(1);
 
@@ -1265,38 +1243,15 @@ mod tests {
                 root: root(byte),
                 scheme: EncodingScheme::dummy(crate::stub::types::Slot(SLOT.get())),
             },
-            sig: ProposalSignature {
-                signer: NodeId::dummy(0),
-                checksum: 0,
-            },
+            sig: dummy_signature(NodeId::dummy(0)),
         }
     }
 
-    // the local node is validator 1 among 4, one proposal per slot
+    // the local node is validator 1 among 4, and validator 0 proposes at the
+    // only lane
     fn fast_path() -> FastPath {
-        fast_path_of(vec![NodeId::dummy(0)])
-    }
-
-    // the local node is validator 1 among 4, one lane per proposer
-    fn fast_path_of(proposers: Vec<NodeId>) -> FastPath {
-        let num_lanes = proposers.len();
-        // a header authenticates when its signer is the proposer of its lane
-        let header_auth = HeaderAuth::new(move |header: &SignedProposalHeader| {
-            let lane = usize::from(header.lane());
-            proposers.get(lane) == Some(&header.sig.signer)
-        });
-        FastPath::new(
-            SLOT,
-            num_lanes,
-            Arc::new(NodeId::dummy(1).keypair()),
-            Arc::new(ValidatorData::dummy(4)),
-            Arc::new(header_auth),
-        )
-    }
-
-    // validator 0 proposes at the only lane
-    fn occupied() -> Lanes<bool> {
-        Lanes::new(1, |_| true)
+        let context = chorus_context_with(1, SLOT, 1, accept_dummy_signature());
+        FastPath::new(Arc::new(context))
     }
 
     // the pins among the drained commands, for proposal 0
@@ -1346,8 +1301,9 @@ mod tests {
             fast_qc(ProposalScope::new(SLOT, j), 1)
         }));
 
-        assert!(fast_block(1).check_lanes(&occupied()));
-        assert!(!padded.check_lanes(&occupied()));
+        let context = chorus_context(1, SLOT, 1);
+        assert!(fast_block(1).validate_lanes(&context));
+        assert!(!padded.validate_lanes(&context));
     }
 
     #[test]
@@ -1375,16 +1331,17 @@ mod tests {
         let exact = fast_commit_qc(Lanes::new(1, |_| Entry::Negative));
         let padded = fast_commit_qc(Lanes::new(2, |_| Entry::Negative));
 
-        assert!(exact.verdict.check_lanes(&occupied()));
-        assert!(!padded.verdict.check_lanes(&occupied()));
+        let context = chorus_context(1, SLOT, 1);
+        assert!(exact.verdict.validate_lanes(&context));
+        assert!(!padded.verdict.validate_lanes(&context));
     }
 
     #[test]
     fn a_fallback_entry_decodes_only_if_it_agrees_with_its_header() {
-        let key = NodeId::dummy(0).keypair();
+        let context = chorus_context(0, SLOT, 1);
         let scope = ProposalScope::new(SLOT, Lane::new_unchecked(0));
-        let positive = FallbackSignedEntry::new_signed_positive(scope, header(1), &key);
-        let negative = FallbackSignedEntry::new_signed_negative(scope, &key);
+        let positive = FallbackSignedEntry::new_signed_positive(scope, header(1), &context);
+        let negative = FallbackSignedEntry::new_signed_negative(scope, &context);
         let decode = |signed: &FallbackSignedEntry| {
             alloy_rlp::decode_exact::<FallbackSignedEntry>(alloy_rlp::encode(signed)).ok()
         };
@@ -1630,12 +1587,12 @@ mod tests {
 
     // a fallback vote whose entry is positive on `header`
     fn fallback_vote(voter: u64, header: SignedProposalHeader) -> (NodeId, FallbackVoteMsg) {
+        let context = chorus_context(voter, SLOT, 1);
         let voter = NodeId::dummy(voter);
-        let key = voter.keypair();
         let scope = ProposalScope::new(SLOT, Lane::new_unchecked(0));
-        let entry = FallbackSignedEntry::new_signed_positive(scope, header, &key);
+        let entry = FallbackSignedEntry::new_signed_positive(scope, header, &context);
         let msg = FallbackVoteMsg {
-            enter_fallback_vote: VoteMsg::new_signed(SLOT, EnterFallbackVote, &key),
+            enter_fallback_vote: context.sign(SLOT, EnterFallbackVote),
             evidences: Lanes::new(1, |_| ProposalEvidence::FallbackSignedEntry(entry.clone())),
         };
         (voter, msg)
@@ -1804,15 +1761,13 @@ mod rlp_tests {
             super::{
                 conductor::{CadenceConductor, acs::median::MedianAcs},
                 message::CadenceWireMsg,
-                test_utils::assert_roundtrip,
+                test_utils::{assert_roundtrip, chorus_context, dummy_signature},
             },
             chorus::{Chorus, ChorusMessage},
         },
         *,
     };
-    use crate::env::stub::{
-        EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
-    };
+    use crate::env::stub::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader};
 
     #[test]
     fn chorus_variants_and_nested_evidence_roundtrip() {
@@ -1820,6 +1775,7 @@ mod rlp_tests {
 
         let slot = Slot(9);
         let key = NodeId::dummy(1).keypair();
+        let context = chorus_context(1, slot, 5);
         let root = MerkleRoot(MerkleHash([7; 20]));
         let scheme = EncodingScheme::dummy(slot);
         let positive = Entry::Positive(ProposalHeader { root, scheme }.pid());
@@ -1850,10 +1806,7 @@ mod rlp_tests {
                     Lane::new_unchecked(lane),
                 )),
             },
-            sig: ProposalSignature {
-                signer: NodeId::dummy(1),
-                checksum: 12,
-            },
+            sig: dummy_signature(NodeId::dummy(1)),
         };
         // Cover every certificate variant and signed fallback entries with/without a header.
         let evidence = vec![
@@ -1866,11 +1819,11 @@ mod rlp_tests {
             ProposalEvidence::FallbackSignedEntry(FallbackSignedEntry::new_signed_positive(
                 ProposalScope::new(slot, Lane::new_unchecked(3)),
                 header_at(3, 7),
-                &key,
+                &context,
             )),
             ProposalEvidence::FallbackSignedEntry(FallbackSignedEntry::new_signed_negative(
                 ProposalScope::new(slot, Lane::new_unchecked(4)),
-                &key,
+                &context,
             )),
         ];
         for value in &evidence {

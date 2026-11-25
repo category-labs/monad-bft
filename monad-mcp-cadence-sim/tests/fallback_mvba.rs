@@ -39,19 +39,23 @@ mod fixtures {
 
     use cadence::{
         env::{D33, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader as Header},
-        slot::fallback::{
-            CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, Metablock,
-            Mvba as _, monad_mvba::MvbaContext,
+        slot::{
+            context::ChorusConfig,
+            fallback::{
+                CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry,
+                Metablock, Mvba as _,
+            },
         },
-        types::{HeaderAuth, IsVote, ProposalId, StrongQc, VoteMsg, VotePool, WeakQc},
+        types::{IsVote, ProposalId, StrongQc, VoteMsg, VotePool, WeakQc},
     };
     use monad_mcp_cadence::{spec::ProposalHeader as _, stub as cadence};
     use monad_mcp_cadence_sim::MonadMvba;
     use monad_mcp_common::{
         Lane, Lanes, ProposalScope, Slot, TimestampDelta,
         spec::ValidatorData as _,
-        stub::{NodeId, ValidatorData},
+        stub::{NodeCredential, NodeId, ValidatorData},
     };
+    use monad_mcp_epoch::stub::{EpochHandle, election::FixedProposerSchedule};
 
     const NUM_NODES: u64 = 4;
 
@@ -96,16 +100,18 @@ mod fixtures {
         nodes()[index as usize]
     }
 
-    pub fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMvba {
-        MonadMvba::new(MvbaContext {
-            slot: SLOT,
-            num_lanes: NUM_LANES,
-            self_index: validator_data.index_of(&node).expect("a validator"),
-            key: Arc::new(node.keypair()),
-            validator_data: validator_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_| false)),
+    // validator j proposes at lane j
+    pub fn mvba(node: NodeId) -> MonadMvba {
+        let proposers = (0..NUM_LANES as u64).map(NodeId::dummy).collect();
+        let election = FixedProposerSchedule::new(proposers);
+        let epoch_handle = EpochHandle::new(ValidatorData::dummy(NUM_NODES), election);
+        let config = ChorusConfig {
             delta: DELTA,
-        })
+            credential: NodeCredential::dummy(u64::from(node)),
+            header_auth: Arc::new(|_, _, _| false),
+        };
+        let context = config.at_slot(SLOT, &epoch_handle).expect("in bound");
+        MonadMvba::new(Arc::new(context))
     }
 
     /// A valid metablock whose entries are determined by `seed`, so two seeds
@@ -232,7 +238,7 @@ fn swarm(
     builder.set_seed(seed).set_network(network);
 
     for node in fixtures::nodes() {
-        let mvba = fixtures::mvba(node, &validator_data);
+        let mvba = fixtures::mvba(node);
         let cert = fixtures::enter_fallback_cert(&validator_data);
         builder.add_node(node, mvba, block_of(node), Some(cert), Time(0));
     }
@@ -541,7 +547,7 @@ fn agreement_holds_under_randomized_latency() {
                 .set_network(Network::with_latency(latency));
 
             for node in fixtures::nodes() {
-                let mvba = fixtures::mvba(node, &validator_data);
+                let mvba = fixtures::mvba(node);
                 let cert = fixtures::enter_fallback_cert(&validator_data);
                 let block = if divergent_inputs {
                     divergent[&node].clone()
@@ -627,7 +633,7 @@ fn a_validator_without_an_input_listens_without_deciding() {
     builder.set_validators(validator_data.clone());
     builder.set_seed(0).set_network(Network::reliable(LATENCY));
     for node in &nodes {
-        let mvba = fixtures::mvba(*node, &validator_data);
+        let mvba = fixtures::mvba(*node);
         if *node == listener {
             builder.add_listener(*node, mvba);
         } else {
@@ -689,7 +695,7 @@ fn staggered_starts_wait_on_the_leader_s_own_start() {
     builder.set_validators(validator_data.clone());
     builder.set_network(Network::reliable(LINK));
     for node in fixtures::nodes() {
-        let mvba = fixtures::mvba(node, &validator_data);
+        let mvba = fixtures::mvba(node);
         let cert = fixtures::enter_fallback_cert(&validator_data);
         builder.add_node(node, mvba, block.clone(), Some(cert), starts[&node]);
     }

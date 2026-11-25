@@ -31,7 +31,7 @@ use monad_mcp_node::{
     NodeProposerSchedule,
     common::NodeId,
     config::NodeConfig,
-    election::{FixedProposerSchedule, ProposerSchedule, ProposerSet, ScheduleError},
+    election::{Election, FixedProposerSchedule, ProposerSet, ScheduleError},
 };
 use monad_mcp_rpc::schedule::{
     Latency, Planner, Route, SlotClock, choose_leader, choose_nearest, lead, tenure_horizon,
@@ -252,7 +252,7 @@ fn ties_go_to_the_lower_lane() {
 // every slot's proposer set is the given one
 struct Constant(ProposerSet);
 
-impl ProposerSchedule for Constant {
+impl Election for Constant {
     fn num_lanes(&self) -> usize {
         self.0.num_lanes()
     }

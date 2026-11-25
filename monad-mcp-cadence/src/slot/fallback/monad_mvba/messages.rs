@@ -24,7 +24,10 @@ use monad_mcp_common::spec::KeyPair as _;
 
 use super::{
     super::{
-        super::types::{IsVote, KeyPair, PubKey, Signature, Slot, ValidatorData, VoteMsg},
+        super::{
+            context::ChorusContext,
+            types::{IsVote, KeyPair, PubKey, Signature, Slot, ValidatorData, VoteMsg},
+        },
         FallbackView, FromEntries, MvbaScope, ValidateCert, ValidateInput, Votable,
     },
     block_store::{BlockRequestMsg, BlockResponseMsg},
@@ -144,10 +147,9 @@ pub(crate) struct TimeoutMsg<E: Clone + Eq + Hash + Debug + Encodable> {
 
 impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutMsg<E> {
     pub(crate) fn new_signed(
-        slot: Slot,
         view: FallbackView,
         high_prep_qc: Option<PrepareQc<E>>,
-        key: &KeyPair,
+        context: &ChorusContext,
     ) -> Self {
         let vote = TimeoutVote {
             high_prep_view: high_prep_qc
@@ -156,7 +158,7 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutMsg<E> {
         };
 
         Self {
-            vote: VoteMsg::new_signed(MvbaScope::new(slot, view), vote, key),
+            vote: context.sign(MvbaScope::new(context.slot, view), vote),
             high_prep_qc,
         }
     }
@@ -571,8 +573,8 @@ mod signing_tests {
         let validators = h::validator_data();
         let block = h::metablock(1, &validators);
         let lock = h::prepare_qc(h::view(1), &block.entries(), &validators);
-        let locked = h::timeout_certificate(h::view(1), Some(lock), &validators);
-        let unlocked = h::timeout_certificate(h::view(1), None, &validators);
+        let locked = h::timeout_certificate(h::view(1), Some(lock));
+        let unlocked = h::timeout_certificate(h::view(1), None);
         let leader = h::leader_of(h::view(2));
 
         let msg = h::PrePrepareMsg::new_signed(
@@ -660,15 +662,12 @@ mod rlp_tests {
         ];
         // Exercise absent/present prepare QCs in timeouts and timeout certificates.
         for lock in [None, Some(qc)] {
-            let tc = h::timeout_certificate(h::view(1), lock.clone(), &validators);
+            let tc = h::timeout_certificate(h::view(1), lock.clone());
             assert!(assert_roundtrip(&tc).verify(&validators));
             messages.push(h::pre_prepare(h::view(2), &block, Some(tc)).1);
-            messages.push(M::Timeout(TimeoutMsg::new_signed(
-                h::SLOT,
-                h::view(1),
-                lock,
-                &key,
-            )));
+            let context = h::context(h::nodes()[0]);
+            let timeout = TimeoutMsg::new_signed(h::view(1), lock, &context);
+            messages.push(M::Timeout(timeout));
         }
         // Check every variant's round trip and that signed evidence still verifies.
         for message in messages {

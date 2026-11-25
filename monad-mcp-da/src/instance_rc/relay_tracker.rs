@@ -52,7 +52,7 @@ mod tests {
     use super::{
         super::super::{
             encoding_scheme::DAEncodingScheme as _,
-            test_util::{author, epoch_handle, scheme},
+            test_util::{author, context, scheme},
         },
         *,
     };
@@ -64,10 +64,10 @@ mod tests {
     // the default fixture's assignment, and our index in it: we own 2, 6
     // and 10
     fn assignment() -> (ChunkAssignment, Option<NodeIndex>) {
-        let epoch_handle = epoch_handle();
-        let scheme = scheme(&epoch_handle);
-        let assignment = scheme.chunk_assignment(&author(), &epoch_handle.validator_data);
-        let self_index = assignment.index_of(&epoch_handle.self_id);
+        let context = context();
+        let scheme = scheme(&context);
+        let assignment = scheme.chunk_assignment(&author(), &context.validator_data);
+        let self_index = assignment.index_of(&context.self_id);
         (assignment, self_index)
     }
 

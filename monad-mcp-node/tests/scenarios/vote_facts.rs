@@ -30,7 +30,6 @@ use monad_mcp_node::{
     Component, Node,
     common::NodeId,
     component::{Proposing, ProposingInput, ProposingOutput},
-    election::ProposerSchedule as _,
 };
 use monad_sim_swarm::Network;
 
@@ -117,15 +116,16 @@ fn run(record: bool) -> (u64, Arc<Mutex<Seen>>) {
 fn proposing_sees_each_vote_for_each_lane_once() {
     let (digest, seen) = run(true);
     let seen = seen.lock().expect("not poisoned");
-    let epoch = node_config(SEED, 0, VALIDATORS).epoch_handle();
-    let epoch = epoch.expect("config builds");
-    let validators: Vec<ValidatorIndex> = epoch.validator_data.indices().collect();
+    let epoch_manager = node_config(SEED, 0, VALIDATORS).epoch_manager();
+    let epoch = epoch_manager.expect("config builds").genesis();
+    let table = epoch.validators_at(Slot::FIRST).expect("in bound");
+    let validators: Vec<ValidatorIndex> = table.indices().collect();
 
     let finalized: Vec<Slot> = seen.paths.keys().copied().collect();
     assert!(finalized.len() as u64 >= SLOTS / 2, "{finalized:?}");
     for slot in &finalized {
         let lanes = seen.votes.get(slot).expect("votes for a finalized slot");
-        let set = epoch.proposers.proposers_at(*slot).expect("a schedule");
+        let set = epoch.proposers_at(*slot).expect("a schedule");
         assert_eq!(lanes.len(), set.num_lanes(), "slot {slot:?}");
 
         // every validator once, our own vote included, after the deadline

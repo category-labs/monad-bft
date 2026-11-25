@@ -13,10 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use super::{
-    env,
-    env::{cadence, common, epoch},
-};
+use super::env::{cadence, common, epoch};
 
 mod assignment;
 pub(crate) mod chunk;
@@ -37,9 +34,8 @@ pub(crate) mod test_util;
 pub use chunk::{Chunk, ChunkRequest, ProposalEnvelope};
 pub use egress::Dissemination;
 pub use encoding_scheme::{InvalidEncoding, Resolved};
-pub use env::ProposalKeyPair;
-pub use header::{InvalidProposalHeader, header_auth};
-pub use runtime::{ChunkPull, DAConfig, DAOutput, DARuntime, EpochHandle, ProposalScheme};
+pub use header::{InvalidProposalHeader, validate_header};
+pub use runtime::{ChunkPull, DAConfig, DAContext, DAOutput, DARuntime, ProposalScheme};
 #[cfg(feature = "enable_hollow")]
 pub use wire::nominal_len;
 pub use wire::{

@@ -20,11 +20,11 @@
 //! `j ∈ 0..K`. This module assigns each lane a proposer by laying the
 //! per-epoch leader sequence of a [`LeaderSchedule`] onto the slot timeline:
 //!
-//! * one leader per *rotation* of [`ProposerConfig::slots_per_rotation`]
+//! * one leader per *rotation* of [`ProposerScheduleConfig::slots_per_rotation`]
 //!   slots; the leader of (global) rotation `r` occupies lane
 //!   `r mod K` for the rotation's whole lifetime;
 //! * the leader sequence restarts from a fresh stake snapshot at every
-//!   *epoch* of [`ProposerConfig::slots_per_epoch`] slots (epoch boundaries
+//!   *epoch* of [`ProposerScheduleConfig::slots_per_epoch`] slots (epoch boundaries
 //!   are where stakes update), with the no-repeat window carried across the
 //!   seam.
 //!
@@ -33,7 +33,7 @@
 //!
 //! * **Rotation vacancy.** A handed-over lane stays vacant for the `y`
 //!   slots between the outgoing and the incoming proposer, where `y` =
-//!   [`ProposerConfig::observation_cutoff`] is the duration of one *blind
+//!   [`ProposerScheduleConfig::observation_cutoff`] is the duration of one *blind
 //!   window* — the sliding window of the last `y` slots, whose proposals a
 //!   party may not know yet (MCP spec, `main.tex`). The vacancy guarantees
 //!   the incoming proposer knows every in-flight proposal at its lane:
@@ -79,7 +79,7 @@
 //!
 //! Two seams are abstracted for tests: the per-epoch scheduling algorithm
 //! ([`LeaderSchedule`], stub: [`RoundRobinLeaderSchedule`]) and the
-//! slot-level API itself ([`ProposerSchedule`], stub:
+//! slot-level API itself ([`Election`], stub:
 //! [`FixedProposerSchedule`]).
 //!
 //! Not to be confused with `monad-validator`'s `ElectedProposerSchedule`,
@@ -91,17 +91,18 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use monad_mcp_common::{Lane, LaneOccupancy, Lanes, MAX_PROPOSER_SET_SIZE, ProposalScope, Slot};
+use monad_mcp_common::{MAX_PROPOSER_SET_SIZE, ProposalScope, Slot};
 
 use super::{
     super::env::{NodeId, ValidatorData},
+    Election, ProposerSet,
     proposer_schedule::{EpochSchedule, ScheduleConfig, ScheduleError},
 };
 
 /// Slot-timeline parameters of proposer selection. Protocol-wide constants;
 /// changing any of them is a consensus-breaking change.
 #[derive(Debug, Clone)]
-pub struct ProposerConfig {
+pub struct ProposerScheduleConfig {
     /// `K`: number of concurrently active (staggered) proposer phases, and
     /// thereby the number of lanes per slot.
     pub concurrent_proposers: usize,
@@ -128,7 +129,7 @@ pub struct ProposerConfig {
     pub slots_per_epoch: u64,
 }
 
-impl ProposerConfig {
+impl ProposerScheduleConfig {
     /// Saturating so that a nonsensical configuration cannot panic before
     /// [`Self::validate`] rejects it.
     pub const fn slots_per_rotation(&self) -> u64 {
@@ -213,8 +214,13 @@ pub struct CreditLotterySchedule {
 
 impl CreditLotterySchedule {
     /// Lottery-specific knobs stay here; the shared slot-timeline parameters
-    /// come from the [`ProposerConfig`].
-    pub fn new(cfg: &ProposerConfig, lookahead: u64, guard_threshold: u64, seed: u64) -> Self {
+    /// come from the [`ProposerScheduleConfig`].
+    pub fn new(
+        cfg: &ProposerScheduleConfig,
+        lookahead: u64,
+        guard_threshold: u64,
+        seed: u64,
+    ) -> Self {
         Self {
             cfg: ScheduleConfig {
                 concurrent_proposers: cfg.concurrent_proposers,
@@ -227,7 +233,7 @@ impl CreditLotterySchedule {
         }
     }
 
-    pub fn recommended(cfg: &ProposerConfig, seed: u64) -> Self {
+    pub fn recommended(cfg: &ProposerScheduleConfig, seed: u64) -> Self {
         Self::new(
             cfg,
             ScheduleConfig::RECOMMENDED_LOOKAHEAD,
@@ -266,7 +272,7 @@ pub struct RoundRobinLeaderSchedule {
 }
 
 impl RoundRobinLeaderSchedule {
-    pub fn new(cfg: &ProposerConfig) -> Self {
+    pub fn new(cfg: &ProposerScheduleConfig) -> Self {
         Self {
             rotations_per_epoch: cfg.rotations_per_epoch(),
         }
@@ -335,72 +341,6 @@ impl LeaderSchedule for RoundRobinLeaderSchedule {
     }
 }
 
-/// The proposers of one slot: one `Option<NodeId>` per lane
-/// `j ∈ 0..K`. A `None` lane is vacant — no proposer may propose for it and
-/// its proposals are empty (see the module docs for the vacancy causes).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct ProposerSet {
-    slot: Slot,
-    /// Global rotation containing `slot`.
-    rotation: u64,
-    proposers: Box<[Option<NodeId>]>,
-}
-
-impl ProposerSet {
-    pub fn slot(&self) -> Slot {
-        self.slot
-    }
-
-    pub fn rotation(&self) -> u64 {
-        self.rotation
-    }
-
-    /// `K`: the number of lanes per slot.
-    pub fn num_lanes(&self) -> usize {
-        self.proposers.len()
-    }
-
-    /// The proposer at `lane`; `None` when the lane is vacant or out of
-    /// range.
-    pub fn proposer(&self, lane: Lane) -> Option<NodeId> {
-        self.proposers.get(usize::from(lane)).copied().flatten()
-    }
-
-    /// The lane `proposer` occupies, if it is a proposer of this slot.
-    pub fn lane_of(&self, proposer: &NodeId) -> Option<Lane> {
-        self.iter()
-            .find(|(_, held)| *held == Some(*proposer))
-            .map(|(lane, _)| lane)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (Lane, Option<NodeId>)> + '_ {
-        let lanes = (0..self.num_lanes()).map(|j| Lane::new_unchecked(j as u8));
-        lanes.zip(self.proposers.iter().copied())
-    }
-
-    pub fn occupancy(&self) -> Lanes<bool> {
-        Lanes::new(self.num_lanes(), |lane| self.proposer(lane).is_some())
-    }
-}
-
-/// Who may propose at which lane for a given slot.
-///
-/// Both directions are supported: slot to proposer set, and membership of a
-/// node in a slot's proposer set. Dyn-compatible on purpose — this is the
-/// mock seam for consensus tests.
-pub trait ProposerSchedule {
-    /// `K`: the number of lanes per slot.
-    fn num_lanes(&self) -> usize;
-
-    /// The proposer occupying each lane at `slot`.
-    fn proposers_at(&self, slot: Slot) -> Result<ProposerSet, ScheduleError>;
-
-    /// The lane `node` holds at `slot`, if any.
-    fn lane_at(&self, slot: Slot, node: &NodeId) -> Result<Option<Lane>, ScheduleError> {
-        Ok(self.proposers_at(slot)?.lane_of(node))
-    }
-}
-
 /// The cross-seam state of a [`RotatingProposerSchedule`]: the last
 /// `window − 1` leaders before `epoch` (fewer at genesis, or wherever the
 /// protocol drains all proposer phases across a boundary). Together with the
@@ -446,7 +386,7 @@ impl EpochAnchor {
     }
 }
 
-/// The production [`ProposerSchedule`]: rotates the leader sequence of a
+/// The production [`Election`]: rotates the leader sequence of a
 /// [`LeaderSchedule`] through the lanes, one epoch at a time.
 ///
 /// Epochs are fixed slot spans (`epoch = slot / slots_per_epoch`). Schedules
@@ -465,7 +405,7 @@ impl EpochAnchor {
 /// per-epoch stake source exists.
 #[derive(Debug)]
 pub struct RotatingProposerSchedule<A> {
-    cfg: ProposerConfig,
+    cfg: ProposerScheduleConfig,
     algorithm: A,
     stakes: Vec<(NodeId, u64)>,
     /// Effective concurrency: `min(K, positively staked validators)`.
@@ -489,9 +429,9 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
     /// long-running production nodes prefer [`Self::anchored`] with a
     /// persisted anchor.
     pub fn new(
-        cfg: ProposerConfig,
+        cfg: ProposerScheduleConfig,
         algorithm: A,
-        validator_data: Arc<ValidatorData>,
+        validator_data: &ValidatorData,
     ) -> Result<Self, ScheduleError> {
         Self::anchored(cfg, algorithm, validator_data, EpochAnchor::genesis())
     }
@@ -502,9 +442,9 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
     /// configuration and validator-set errors surface at construction
     /// rather than mid-run.
     pub fn anchored(
-        cfg: ProposerConfig,
+        cfg: ProposerScheduleConfig,
         algorithm: A,
-        validator_data: Arc<ValidatorData>,
+        validator_data: &ValidatorData,
         anchor: EpochAnchor,
     ) -> Result<Self, ScheduleError> {
         use monad_mcp_common::spec::{Stake as _, ValidatorData as _};
@@ -524,7 +464,7 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
         }
         // boundary_tail() takes the last window − 1 leaders; an epoch with
         // fewer rotations cannot seed the next epoch's window. Checked here
-        // rather than in ProposerConfig::validate because the effective
+        // rather than in ProposerScheduleConfig::validate because the effective
         // window depends on the stake snapshot: with fewer staked validators
         // than K, an epoch needs only the shorter window's rotations.
         let window = cfg.concurrent_proposers.min(staked);
@@ -545,7 +485,7 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
         Ok(schedule)
     }
 
-    pub fn config(&self) -> &ProposerConfig {
+    pub fn config(&self) -> &ProposerScheduleConfig {
         &self.cfg
     }
 
@@ -665,14 +605,7 @@ fn boundary_tail(leaders: &[NodeId], tail_len: usize) -> Vec<NodeId> {
     leaders[leaders.len().saturating_sub(tail_len)..].to_vec()
 }
 
-impl<A: LeaderSchedule> LaneOccupancy for RotatingProposerSchedule<A> {
-    fn occupied_lanes(&self, slot: Slot) -> Option<Lanes<bool>> {
-        let proposers = self.proposers_at(slot).ok()?;
-        Some(proposers.occupancy())
-    }
-}
-
-impl<A: LeaderSchedule> ProposerSchedule for RotatingProposerSchedule<A> {
+impl<A: LeaderSchedule> Election for RotatingProposerSchedule<A> {
     fn num_lanes(&self) -> usize {
         self.cfg.concurrent_proposers
     }
@@ -763,14 +696,7 @@ impl FixedProposerSchedule {
     }
 }
 
-impl LaneOccupancy for FixedProposerSchedule {
-    fn occupied_lanes(&self, slot: Slot) -> Option<Lanes<bool>> {
-        let proposers = self.proposers_at(slot).ok()?;
-        Some(proposers.occupancy())
-    }
-}
-
-impl ProposerSchedule for FixedProposerSchedule {
+impl Election for FixedProposerSchedule {
     fn num_lanes(&self) -> usize {
         self.proposers.len()
     }
@@ -793,7 +719,7 @@ impl ProposerSchedule for FixedProposerSchedule {
 pub fn is_proposer(
     node: &NodeId,
     scope: ProposalScope,
-    schedule: &(impl ProposerSchedule + ?Sized),
+    schedule: &(impl Election + ?Sized),
 ) -> bool {
     let Ok(proposers) = schedule.proposers_at(scope.slot) else {
         return false;
@@ -803,11 +729,11 @@ pub fn is_proposer(
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_common::spec::KeyPair as _;
+    use monad_mcp_common::{Lane, spec::KeyPair as _};
 
     use super::{super::super::env::Stake, *};
 
-    fn validator_data(stakes: &[(u64, u64)]) -> Arc<ValidatorData> {
+    fn validator_data(stakes: &[(u64, u64)]) -> ValidatorData {
         let valset = stakes
             .iter()
             .map(|&(id, weight)| (NodeId::dummy(id), Stake::from(weight)))
@@ -816,25 +742,25 @@ mod tests {
             .iter()
             .map(|&(id, _)| (NodeId::dummy(id), NodeId::dummy(id).keypair().pubkey()))
             .collect();
-        Arc::new(ValidatorData::new(valset, mapping))
+        ValidatorData::new(valset, mapping)
     }
 
-    fn uniform(n: u64) -> Arc<ValidatorData> {
+    fn uniform(n: u64) -> ValidatorData {
         let stakes: Vec<(u64, u64)> = (0..n).map(|id| (id, 1)).collect();
         validator_data(&stakes)
     }
 
     fn round_robin(
-        cfg: ProposerConfig,
+        cfg: ProposerScheduleConfig,
         validators: u64,
     ) -> RotatingProposerSchedule<RoundRobinLeaderSchedule> {
         let algorithm = RoundRobinLeaderSchedule::new(&cfg);
-        RotatingProposerSchedule::new(cfg, algorithm, uniform(validators)).unwrap()
+        RotatingProposerSchedule::new(cfg, algorithm, &uniform(validators)).unwrap()
     }
 
     fn lottery(
-        cfg: ProposerConfig,
-        data: Arc<ValidatorData>,
+        cfg: ProposerScheduleConfig,
+        data: &ValidatorData,
     ) -> RotatingProposerSchedule<CreditLotterySchedule> {
         let algorithm = CreditLotterySchedule::recommended(&cfg, 0xC0FFEE);
         RotatingProposerSchedule::new(cfg, algorithm, data).unwrap()
@@ -848,7 +774,7 @@ mod tests {
 
     #[test]
     fn slot_and_rotation_math() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 2,
             observation_cutoff: 0,
             rotation_slack: 2,
@@ -868,7 +794,7 @@ mod tests {
 
     #[test]
     fn genesis_ramp_up() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 1,
@@ -886,7 +812,7 @@ mod tests {
 
     #[test]
     fn phase_is_stable_for_the_whole_rotation() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 3,
@@ -907,7 +833,7 @@ mod tests {
 
     #[test]
     fn rotation_handover_vacates_the_incoming_index() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 2,
             rotation_slack: 1,
@@ -947,7 +873,7 @@ mod tests {
 
     #[test]
     fn zero_slack_keeps_k_minus_one_indices_occupied() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 2,
             rotation_slack: 0,
@@ -973,7 +899,7 @@ mod tests {
         // vacant at every rotation start (except the chain's first), which
         // is why at least two concurrent proposers are needed to guarantee
         // a proposer in every slot.
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 1,
             observation_cutoff: 1,
             rotation_slack: 1,
@@ -1000,7 +926,7 @@ mod tests {
 
     #[test]
     fn membership_inverts_the_proposer_set() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 1,
@@ -1028,14 +954,14 @@ mod tests {
 
     #[test]
     fn no_repeat_window_holds_across_epoch_seams() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
         let stakes: Vec<(u64, u64)> = (0..8).map(|id| (id, 10 + id)).collect();
-        let schedule = lottery(cfg, validator_data(&stakes));
+        let schedule = lottery(cfg, &validator_data(&stakes));
 
         // Five epochs of leaders, checked over every seam.
         let leaders: Vec<NodeId> = (0..30)
@@ -1053,7 +979,7 @@ mod tests {
     fn round_robin_honors_the_previous_tail() {
         // A seam where continuing the canonical cycle blindly would repeat:
         // the previous epoch ended ... 1, 2 and the cycle restarts at 1.
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 1,
@@ -1077,15 +1003,15 @@ mod tests {
 
     #[test]
     fn epoch_cache_is_bounded_and_evicted_epochs_rebuild_identically() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
         let stakes: Vec<(u64, u64)> = (0..8).map(|id| (id, 10 + id)).collect();
-        let in_order = lottery(cfg.clone(), validator_data(&stakes));
-        let jumped = lottery(cfg, validator_data(&stakes));
+        let in_order = lottery(cfg.clone(), &validator_data(&stakes));
+        let jumped = lottery(cfg, &validator_data(&stakes));
 
         // Jump far past the retention bound, evicting the early epochs.
         jumped.proposers_at(Slot(30 * 6)).unwrap();
@@ -1105,7 +1031,7 @@ mod tests {
         // Without the duplicate check this input hangs the selection loop:
         // three entries pass the length check, but the two distinct ids can
         // both be recent at once, leaving no eligible candidate.
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 1,
@@ -1125,21 +1051,21 @@ mod tests {
 
     #[test]
     fn anchored_schedule_matches_the_genesis_chain() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
         let stakes: Vec<(u64, u64)> = (0..8).map(|id| (id, 10 + id)).collect();
-        let genesis = lottery(cfg.clone(), validator_data(&stakes));
+        let genesis = lottery(cfg.clone(), &validator_data(&stakes));
 
         // Persist the anchor at the epoch-2 boundary, as a node would, and
         // bring up a fresh schedule from it.
         let anchor = genesis.anchor_for_epoch(2).unwrap();
         let algorithm = CreditLotterySchedule::recommended(&cfg, 0xC0FFEE);
         let anchored =
-            RotatingProposerSchedule::anchored(cfg, algorithm, validator_data(&stakes), anchor)
+            RotatingProposerSchedule::anchored(cfg, algorithm, &validator_data(&stakes), anchor)
                 .unwrap();
 
         // Identical assignments from the anchor onward, including the seam
@@ -1178,7 +1104,7 @@ mod tests {
 
     #[test]
     fn anchored_schedule_matches_under_a_rotation_vacancy() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 2,
             rotation_slack: 1,
@@ -1189,7 +1115,7 @@ mod tests {
         let anchor = genesis.anchor_for_epoch(1).unwrap();
         let algorithm = RoundRobinLeaderSchedule::new(&cfg);
         let anchored =
-            RotatingProposerSchedule::anchored(cfg, algorithm, uniform(5), anchor).unwrap();
+            RotatingProposerSchedule::anchored(cfg, algorithm, &uniform(5), anchor).unwrap();
 
         // Blind-window vacancies and the seam lookback come out the same as
         // on the genesis-anchored chain; the first-rotation exemption does
@@ -1208,13 +1134,13 @@ mod tests {
         // Two staked validators under K = 4 need only two rotations per
         // epoch — one per effective phase — even though K itself would not
         // fit. Lanes 2 and 3 stay vacant.
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 4,
             observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 2,
         };
-        let schedule = lottery(cfg, validator_data(&[(0, 10), (1, 20)]));
+        let schedule = lottery(cfg, &validator_data(&[(0, 10), (1, 20)]));
 
         for slot in 1..8u64 {
             let set = schedule.proposers_at(Slot(slot)).unwrap();
@@ -1226,15 +1152,15 @@ mod tests {
 
     #[test]
     fn query_order_does_not_change_the_schedule() {
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
         let stakes: Vec<(u64, u64)> = (0..8).map(|id| (id, 10 + id)).collect();
-        let in_order = lottery(cfg.clone(), validator_data(&stakes));
-        let out_of_order = lottery(cfg, validator_data(&stakes));
+        let in_order = lottery(cfg.clone(), &validator_data(&stakes));
+        let out_of_order = lottery(cfg, &validator_data(&stakes));
 
         // Force the second scheduler to build epochs 0..=3 in one jump.
         out_of_order.proposers_at(Slot(20)).unwrap();
@@ -1252,13 +1178,13 @@ mod tests {
         // Two staked validators under K = 4: lanes 0 and 1 rotate between
         // them (effective window 2), lanes 2 and 3 stay vacant for the
         // whole epoch.
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 4,
             observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 4,
         };
-        let schedule = lottery(cfg, validator_data(&[(0, 10), (1, 20)]));
+        let schedule = lottery(cfg, &validator_data(&[(0, 10), (1, 20)]));
 
         for slot in 0..12u64 {
             let set = schedule.proposers_at(Slot(slot)).unwrap();
@@ -1278,12 +1204,12 @@ mod tests {
 
     #[test]
     fn invalid_configs_are_rejected() {
-        let build = |cfg: ProposerConfig| {
+        let build = |cfg: ProposerScheduleConfig| {
             let algorithm = CreditLotterySchedule::recommended(&cfg, 0);
-            RotatingProposerSchedule::new(cfg, algorithm, uniform(8)).unwrap_err()
+            RotatingProposerSchedule::new(cfg, algorithm, &uniform(8)).unwrap_err()
         };
 
-        let empty_rotation = build(ProposerConfig {
+        let empty_rotation = build(ProposerScheduleConfig {
             concurrent_proposers: 2,
             observation_cutoff: 0,
             rotation_slack: 0,
@@ -1293,17 +1219,17 @@ mod tests {
 
         // The round-robin stub reads rotations_per_epoch before validation
         // can run: a zero rotation length must reject, not divide by zero.
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 2,
             observation_cutoff: 0,
             rotation_slack: 0,
             slots_per_epoch: 4,
         };
         let algorithm = RoundRobinLeaderSchedule::new(&cfg);
-        let err = RotatingProposerSchedule::new(cfg, algorithm, uniform(8)).unwrap_err();
+        let err = RotatingProposerSchedule::new(cfg, algorithm, &uniform(8)).unwrap_err();
         assert!(matches!(err, ScheduleError::InvalidConfig(_)));
 
-        let ragged_epoch = build(ProposerConfig {
+        let ragged_epoch = build(ProposerScheduleConfig {
             concurrent_proposers: 2,
             observation_cutoff: 0,
             rotation_slack: 2,
@@ -1313,7 +1239,7 @@ mod tests {
 
         // Eight staked validators leave the effective window at K = 3: two
         // rotations per epoch cannot seed the next epoch's window.
-        let short_epoch = build(ProposerConfig {
+        let short_epoch = build(ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 1,
@@ -1321,7 +1247,7 @@ mod tests {
         });
         assert!(matches!(short_epoch, ScheduleError::InvalidConfig(_)));
 
-        let overflowing_rotation = build(ProposerConfig {
+        let overflowing_rotation = build(ProposerScheduleConfig {
             concurrent_proposers: 2,
             observation_cutoff: u64::MAX,
             rotation_slack: 1,
@@ -1338,7 +1264,7 @@ mod tests {
         // ValidatorData cannot hold zero-stake entries, but a LeaderSchedule
         // can still be handed all-zero weights (e.g. by a stake quantization
         // that rounds everything down): both algorithms reject.
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 3,
             observation_cutoff: 0,
             rotation_slack: 1,
@@ -1375,13 +1301,13 @@ mod tests {
             }
         }
 
-        let cfg = ProposerConfig {
+        let cfg = ProposerScheduleConfig {
             concurrent_proposers: 1,
             observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 4,
         };
-        let err = RotatingProposerSchedule::new(cfg, OneLeader, uniform(2)).unwrap_err();
+        let err = RotatingProposerSchedule::new(cfg, OneLeader, &uniform(2)).unwrap_err();
         assert!(matches!(err, ScheduleError::InvalidConfig(_)));
     }
 

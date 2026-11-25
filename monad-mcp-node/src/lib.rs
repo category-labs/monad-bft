@@ -19,7 +19,6 @@ mod async_node;
 mod clock;
 pub mod component;
 pub mod config;
-mod epoch;
 mod finalization;
 pub mod ledger;
 mod logging;
@@ -33,7 +32,7 @@ use std::error::Error;
 pub use monad_mcp_cadence::stub as cadence;
 pub use monad_mcp_common::stub as common;
 pub use monad_mcp_da::stub as da;
-pub use monad_mcp_epoch::stub::election;
+pub use monad_mcp_epoch::stub as epoch;
 pub use monad_mcp_proposing::stub as proposing;
 use tokio::task::JoinSet;
 use tracing::Instrument as _;
@@ -47,7 +46,8 @@ use self::{
 };
 pub use self::{
     component::Component,
-    epoch::{EpochHandle, Epochs, NodeProposerSchedule},
+    config::NodeProposerSchedule,
+    epoch::{EpochHandle, EpochManager, election},
     finalization::FinalizedSlot,
     logging::init_logging,
     node::{Node, NodeOutput},
@@ -66,19 +66,18 @@ pub async fn run_node(config: NodeConfig) -> Result<(), RunError> {
 
 async fn run(config: NodeConfig) -> Result<(), RunError> {
     let node = Node::new(&config)?;
-    let proposers = node.epoch_handle().proposers.clone();
-    let epochs = Epochs::new(node.epoch_handle().clone());
+    let epoch_handle = node.epoch_handle().clone();
     let sink = LedgerSink::spawn(&config.ledger.dir)?;
 
     let mut node = AsyncNode::spawn(node, Clock::start());
     let (handle, transport) = TransportHandle::pair();
     node.set_transport(handle);
-    let mut recorder = Recorder::new(proposers, sink);
+    let mut recorder = Recorder::new(epoch_handle.clone(), sink);
     node.on_finalization(move |finalized| recorder.record(finalized));
 
     let mut tasks = JoinSet::new();
     let (port, peers) = (config.network.port, config.peers());
-    let udp = UdpTransport::bind(config.node_id, port, peers, epochs).await?;
+    let udp = UdpTransport::bind(config.node_id, port, peers, epoch_handle).await?;
     tasks.spawn(udp.run(transport).in_current_span());
 
     node.run().await;

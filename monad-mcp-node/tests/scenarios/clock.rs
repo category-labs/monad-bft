@@ -22,7 +22,7 @@ use std::{
 };
 
 use monad_mcp_common::{Slot, Timestamp};
-use monad_mcp_node::{Component, Epochs, Node, common::NodeId};
+use monad_mcp_node::{Component, Node, common::NodeId};
 use monad_sim::{ClockDiff, Time};
 use monad_sim_swarm::Network;
 
@@ -78,8 +78,8 @@ fn probe(offset: ClockDiff, step: Option<(Time, ClockDiff)>) -> (Time, Vec<Times
     };
     let id = NodeId::dummy(0);
     // the probe sends nothing, so any epoch serves
-    let epoch = node_config(0, 0, 1).epoch_handle().expect("config builds");
-    let sim_node = SimNode::with_epochs(id, node, Epochs::new(epoch));
+    let epoch_manager = node_config(0, 0, 1).epoch_manager().expect("config builds");
+    let sim_node = SimNode::with_epoch_handle(id, node, epoch_manager.genesis());
     let sim_node = sim_node.with_clock_offset(offset);
     let network = Network::reliable(Duration::from_millis(1));
     let mut swarm = start_swarm(0, network, vec![(id, sim_node)], None);

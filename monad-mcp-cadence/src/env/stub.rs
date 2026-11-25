@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub(crate) use monad_mcp_common::stub::{KeyPair, NodeId, PubKey, Signature, Stake, ValidatorData};
+pub(crate) use monad_mcp_common::stub::{
+    KeyPair, NodeCredential, NodeId, PubKey, Signature, Stake, ValidatorData,
+};
+pub(crate) use monad_mcp_epoch::stub as epoch;
 
 pub use self::{proposal::*, vote::*};
 
@@ -23,9 +26,9 @@ mod proposal {
     use alloy_rlp::{
         Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
     };
+    pub use monad_mcp_common::stub::ProposalSignature;
     use monad_mcp_common::{Lane, ProposalScope, Slot};
 
-    use super::NodeId;
     use crate::spec;
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, RlpEncodableWrapper, RlpDecodableWrapper)]
@@ -71,13 +74,6 @@ mod proposal {
         }
     }
     impl spec::ProposalId for ProposalId {}
-
-    // stub proposal signature, opaque to consensus
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
-    pub struct ProposalSignature {
-        pub signer: NodeId,
-        pub checksum: u64,
-    }
 
     // the encoding scheme descriptor used by DA. opaque to consensus.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -256,34 +252,6 @@ mod proposal {
 
         fn sig(&self) -> &ProposalSignature {
             &self.sig
-        }
-    }
-
-    // whether the legitimate proposer of the header's slot and lane
-    // signed it. Supplied by the DA env, which owns the signature
-    // and scheme checks.
-    type Authenticator = dyn Fn(&SignedProposalHeader) -> bool + Send + Sync;
-
-    pub struct HeaderAuth {
-        authenticator: Box<Authenticator>,
-    }
-
-    impl HeaderAuth {
-        pub fn new<F>(authenticator: F) -> Self
-        where
-            F: Fn(&SignedProposalHeader) -> bool + Send + Sync + 'static,
-        {
-            Self {
-                authenticator: Box::new(authenticator),
-            }
-        }
-    }
-
-    impl spec::proposal::HeaderAuth for HeaderAuth {
-        type Signed = SignedProposalHeader;
-
-        fn authenticate(&self, signed: &SignedProposalHeader) -> bool {
-            (self.authenticator)(signed)
         }
     }
 }
@@ -606,7 +574,6 @@ const _: () = crate::spec::assert_env::<
     ProposalId,
     ProposalHeader,
     SignedProposalHeader,
-    HeaderAuth,
 >();
 
 #[cfg(test)]
@@ -678,7 +645,9 @@ mod rlp_tests {
 
 #[cfg(test)]
 mod proposal_id_tests {
-    use monad_mcp_common::{Lane, ProposalScope, Slot};
+    use monad_mcp_common::{
+        Lane, ProposalScope, Slot, spec::ProposalKeyPair as _, stub::ProposalKeyPair,
+    };
 
     use super::*;
     use crate::spec::ProposalHeader as _;
@@ -697,12 +666,10 @@ mod proposal_id_tests {
         assert_ne!(header.pid(), self::header(1, 1).pid());
         assert_ne!(header.pid(), self::header(2, 0).pid());
 
-        let signed = |checksum| SignedProposalHeader {
+        let key = ProposalKeyPair::dummy(NodeId::dummy(0));
+        let signed = |data: u8| SignedProposalHeader {
             header: header.clone(),
-            sig: ProposalSignature {
-                signer: NodeId::dummy(0),
-                checksum,
-            },
+            sig: key.sign(&[data]),
         };
         assert_eq!(signed(0).pid(), header.pid());
         assert_eq!(signed(0).pid(), signed(1).pid());

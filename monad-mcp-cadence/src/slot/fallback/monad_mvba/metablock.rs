@@ -15,33 +15,25 @@
 
 use alloy_rlp::Decodable;
 
-use super::{
+use super::super::{
     super::{
-        super::{
-            fast::{CertifiedEntry, Entry},
-            types::{HeaderAuth, Lane, Lanes, ProposalScope, Slot, ValidatorData},
-        },
-        Metablock, ValidateInput, Votable,
+        context::ChorusContext,
+        fast::{CertifiedEntry, Entry},
+        types::{Lane, Lanes, ProposalScope, Slot},
     },
-    ValidationContext,
+    Metablock, ValidateInput, Votable,
 };
 
 impl Metablock {
     /// One entry per proposer, each bound to this slot and its own lane with
     /// valid signatures. Availability behind a positive root is not checked
-    pub(crate) fn is_valid(
-        &self,
-        slot: Slot,
-        num_lanes: usize,
-        header_auth: &HeaderAuth,
-        validator_data: &ValidatorData,
-    ) -> bool {
-        if self.0.size() != num_lanes || self.slot() != slot {
+    pub(crate) fn is_valid(&self, context: &ChorusContext) -> bool {
+        if self.0.size() != context.num_lanes() || self.slot() != context.slot {
             return false;
         }
 
         let mut certs = self.0.as_ref().into_iter();
-        certs.all(|cert| cert.verify(header_auth, validator_data))
+        certs.all(|cert| cert.verify(context))
     }
 
     /// The paper's *fast metablock*: every entry a `FastQc`
@@ -87,15 +79,8 @@ impl Metablock {
 }
 
 impl ValidateInput for Metablock {
-    type Context = ValidationContext;
-
-    fn validate(&self, context: &Self::Context) -> bool {
-        self.is_valid(
-            context.slot,
-            context.num_lanes,
-            &context.header_auth,
-            &context.validator_data,
-        )
+    fn validate(&self, context: &ChorusContext) -> bool {
+        self.is_valid(context)
     }
 
     fn fbcert_optional(&self) -> bool {

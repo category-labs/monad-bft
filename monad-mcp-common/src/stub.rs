@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use self::{validator::*, vote::*};
+pub use self::{credential::*, proposal::*, validator::*, vote::*};
 
 /// A fast, non-cryptographic 64-bit digest for the stub env: rapidhash v3,
 /// whose output is fixed by its reference algorithm, so it is the same on
@@ -376,6 +376,76 @@ mod vote {
 
         fn verify(&self, data: &[u8], pubkey: &Self::PubKey) -> bool {
             self.verify_digest(super::noncrypto_digest(data), pubkey)
+        }
+    }
+}
+
+mod proposal {
+    use alloy_rlp::{RlpDecodable, RlpEncodable};
+
+    use super::validator::NodeId;
+    use crate::spec;
+
+    #[derive(Clone)]
+    pub struct ProposalKeyPair(NodeId);
+
+    impl ProposalKeyPair {
+        pub fn dummy(node_id: NodeId) -> Self {
+            Self(node_id)
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+    pub struct ProposalSignature {
+        signer: NodeId,
+        checksum: u64,
+    }
+
+    impl spec::ProposalKeyPair for ProposalKeyPair {
+        type Signature = ProposalSignature;
+
+        fn sign(&self, data: &[u8]) -> ProposalSignature {
+            ProposalSignature {
+                signer: self.0,
+                checksum: super::noncrypto_digest(data),
+            }
+        }
+    }
+
+    impl spec::ProposalSignature for ProposalSignature {
+        type NodeId = NodeId;
+
+        fn recover_author(&self, data: &[u8]) -> Option<NodeId> {
+            if super::noncrypto_digest(data) != self.checksum {
+                return None;
+            }
+            Some(self.signer)
+        }
+    }
+}
+
+mod credential {
+    use std::sync::Arc;
+
+    use super::{proposal::ProposalKeyPair, validator::NodeId, vote::KeyPair};
+
+    // What this node proves itself with: its id and its two secret keys.
+    #[derive(Clone)]
+    pub struct NodeCredential {
+        pub node_id: NodeId,
+        pub vote_key: Arc<KeyPair>,
+        pub proposal_key: Arc<ProposalKeyPair>,
+    }
+
+    impl NodeCredential {
+        // the credential that the dummy validator `id` holds
+        pub fn dummy(id: u64) -> Self {
+            let node_id = NodeId::dummy(id);
+            Self {
+                node_id,
+                vote_key: Arc::new(KeyPair::dummy(id)),
+                proposal_key: Arc::new(ProposalKeyPair::dummy(node_id)),
+            }
         }
     }
 }

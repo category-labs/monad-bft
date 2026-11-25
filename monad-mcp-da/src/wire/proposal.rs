@@ -26,7 +26,7 @@ use super::{
         chunk::ProposalEnvelope,
         egress::Dissemination,
         encoding_scheme::{DAEncodingScheme, Decoder, Encoded, d33},
-        runtime::{EpochHandle, ProposalScheme},
+        runtime::{DAContext, ProposalScheme},
         types::{
             EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair,
             SignedProposalHeader, WirePriority,
@@ -51,49 +51,49 @@ impl AuthoredProposal {
     // None unless the message is of a length the scheme encodes
     pub fn build(
         kind: ProposalScheme,
-        epoch_handle: &EpochHandle,
+        context: &DAContext,
         proposal: &Proposal,
         timestamp: u64,
     ) -> Option<Self> {
-        let num_validators = epoch_handle.validator_data.len();
+        let num_validators = context.validator_data.len();
         let msg_len = proposal.payload.len();
         let lane = proposal.lane;
         let d33 = d33::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
         match kind {
-            ProposalScheme::D33 => Self::build_under(d33, epoch_handle, &proposal.payload),
+            ProposalScheme::D33 => Self::build_under(d33, context, &proposal.payload),
             #[cfg(feature = "enable_hollow")]
             ProposalScheme::D33Hollow => {
                 let hollow = Hollow::new(d33);
-                Self::build_under(hollow, epoch_handle, &proposal.payload)
+                Self::build_under(hollow, context, &proposal.payload)
             }
             #[cfg(feature = "enable_hollow")]
             ProposalScheme::D33HollowInconsistent => {
                 let hollow = Hollow::new(d33);
                 let encoded = hollow.encode_inconsistent(&proposal.payload)?;
-                Some(Self::build_with(hollow, epoch_handle, encoded))
+                Some(Self::build_with(hollow, context, encoded))
             }
         }
     }
 
-    fn build_under<S>(scheme: S, epoch_handle: &EpochHandle, message: &Bytes) -> Option<Self>
+    fn build_under<S>(scheme: S, context: &DAContext, message: &Bytes) -> Option<Self>
     where
         S: DAEncodingScheme + Into<EncodingScheme>,
         <S::Decoder as Decoder>::Encoded: 'static,
     {
-        let author = &epoch_handle.self_id;
-        let valset = &epoch_handle.validator_data;
+        let author = &context.self_id;
+        let valset = &context.validator_data;
         let num_chunks = scheme.chunk_assignment(author, valset).num_chunks();
         let encoded = scheme.encode(message, num_chunks)?;
-        Some(Self::build_with(scheme, epoch_handle, encoded))
+        Some(Self::build_with(scheme, context, encoded))
     }
 
     // the proposal of an encoding built under the scheme
-    fn build_with<S>(scheme: S, epoch_handle: &EpochHandle, encoded: impl Encoded + 'static) -> Self
+    fn build_with<S>(scheme: S, context: &DAContext, encoded: impl Encoded + 'static) -> Self
     where
         S: DAEncodingScheme + Into<EncodingScheme>,
     {
-        let author = &epoch_handle.self_id;
-        let valset = &epoch_handle.validator_data;
+        let author = &context.self_id;
+        let valset = &context.validator_data;
 
         let assignment = scheme.chunk_assignment(author, valset);
         let header = ProposalHeader {
@@ -102,7 +102,7 @@ impl AuthoredProposal {
         };
 
         let encoded = Box::new(encoded);
-        Self::new(&epoch_handle.key_pair, header, encoded, assignment)
+        Self::new(&context.key_pair, header, encoded, assignment)
     }
 
     // signs the header over the encoding
@@ -112,7 +112,7 @@ impl AuthoredProposal {
         encoded: Box<dyn Encoded>,
         assignment: ChunkAssignment,
     ) -> Self {
-        use crate::spec::DAProposalKeyPair as _;
+        use monad_mcp_common::spec::ProposalKeyPair as _;
 
         let preimage = signed_bytes(&header);
         let sig = key_pair.sign(&preimage);
@@ -222,7 +222,7 @@ mod tests {
                 chunk::ProposalEnvelope,
                 encoding_scheme::DAEncodingScheme as _,
                 test_util::{
-                    MESSAGE_LEN, PACKET_LOSS_RESISTANCE, SLOT, author, epoch_handle_for, group,
+                    MESSAGE_LEN, PACKET_LOSS_RESISTANCE, SLOT, author, context_for, group,
                     proposal_chunks, scheme,
                 },
                 types::{Lane, Stake},
@@ -232,8 +232,8 @@ mod tests {
         *,
     };
     // the author's view of the default fixture
-    fn authoring_handle() -> EpochHandle {
-        epoch_handle_for(author(), 4, vec![author()])
+    fn authoring_handle() -> DAContext {
+        context_for(author(), 4)
     }
 
     // the first hop as the runtime puts it on the wire
@@ -265,21 +265,21 @@ mod tests {
         }
     }
 
-    fn build_d33(epoch_handle: &EpochHandle, proposal: &Proposal) -> Option<AuthoredProposal> {
-        AuthoredProposal::build(ProposalScheme::D33, epoch_handle, proposal, 0)
+    fn build_d33(context: &DAContext, proposal: &Proposal) -> Option<AuthoredProposal> {
+        AuthoredProposal::build(ProposalScheme::D33, context, proposal, 0)
     }
 
     #[test]
     fn the_author_sends_each_chunk_to_its_owner_as_that_chunks_packet() {
-        let epoch_handle = authoring_handle();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let context = authoring_handle();
+        let (header, chunks) = proposal_chunks(&context, 1);
         let message = vec![1u8; MESSAGE_LEN];
 
-        let proposal = build_d33(&epoch_handle, &proposal_of(message));
+        let proposal = build_d33(&context, &proposal_of(message));
         let proposal = proposal.expect("the fixture's message fits");
         assert_eq!(proposal.header(), &header);
         let empty = proposal_of(vec![]);
-        assert!(build_d33(&epoch_handle, &empty).is_none());
+        assert!(build_d33(&context, &empty).is_none());
 
         assert_eq!(proposal.envelope(), group(&chunks));
         let mut owners = Vec::new();
@@ -312,10 +312,10 @@ mod tests {
 
     #[test]
     fn a_send_order_sends_each_share_as_a_block() {
-        let epoch_handle = authoring_handle();
+        let context = authoring_handle();
         let message = vec![1u8; MESSAGE_LEN];
         let proposal = || {
-            let proposal = build_d33(&epoch_handle, &proposal_of(message.clone()));
+            let proposal = build_d33(&context, &proposal_of(message.clone()));
             proposal.expect("the fixture's message fits")
         };
         let default = sends(proposal().into_disseminations());
@@ -347,10 +347,10 @@ mod tests {
 
     #[test]
     fn splitting_off_a_node_takes_its_envelope_out_of_the_first_hop() {
-        let epoch_handle = authoring_handle();
-        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+        let context = authoring_handle();
+        let (_, chunks) = proposal_chunks(&context, 1);
         let message = vec![1u8; MESSAGE_LEN];
-        let proposal = build_d33(&epoch_handle, &proposal_of(message));
+        let proposal = build_d33(&context, &proposal_of(message));
         let mut proposal = proposal.expect("the fixture's message fits");
 
         // the fixture's chunks a node owns; the chunks are in wire id order
@@ -392,8 +392,8 @@ mod tests {
     fn a_node_owning_no_chunk_gets_the_header_alone() {
         use monad_mcp_common::spec::Stake as _;
 
-        let epoch_handle = authoring_handle();
-        let (header, _) = proposal_chunks(&epoch_handle, 1);
+        let context = authoring_handle();
+        let (header, _) = proposal_chunks(&context, 1);
         let whole = |whole| Obligation {
             whole,
             partial: Stake::ZERO,
@@ -407,10 +407,10 @@ mod tests {
         let obligations = Obligations::new(Stake::from(4), holders);
         let assignment = ChunkAssignment::deal(&author(), obligations, PACKET_LOSS_RESISTANCE);
         let message = Bytes::from(vec![1u8; MESSAGE_LEN]);
-        let encoded = scheme(&epoch_handle).encode(&message, assignment.num_chunks());
+        let encoded = scheme(&context).encode(&message, assignment.num_chunks());
         let encoded = encoded.expect("the fixture's message fits");
         let proposal = AuthoredProposal::new(
-            &epoch_handle.key_pair,
+            &context.key_pair,
             header.header.clone(),
             Box::new(encoded),
             assignment,
@@ -434,15 +434,14 @@ mod tests {
     fn an_authored_hollow_proposal_keeps_its_message_decodable() {
         use super::super::super::encoding_scheme::instantiate;
 
-        let epoch_handle = authoring_handle();
+        let context = authoring_handle();
         // a payload no other test publishes
         let message = vec![0x51u8; MESSAGE_LEN];
         let proposal = proposal_of(message.clone());
-        let proposal =
-            AuthoredProposal::build(ProposalScheme::D33Hollow, &epoch_handle, &proposal, 0);
+        let proposal = AuthoredProposal::build(ProposalScheme::D33Hollow, &context, &proposal, 0);
         let proposal = proposal.expect("the fixture's message fits");
 
-        let validator_data = &epoch_handle.validator_data;
+        let validator_data = &context.validator_data;
         let header = &proposal.header().header;
         let (assignment, mut chunks) = instantiate(header, &author(), validator_data);
         let (_, envelope) = proposal.envelope().into_parts();
@@ -461,14 +460,14 @@ mod tests {
     fn an_inconsistent_hollow_proposal_resolves_invalid() {
         use super::super::super::encoding_scheme::{InvalidEncoding, instantiate};
 
-        let epoch_handle = authoring_handle();
+        let context = authoring_handle();
         // a payload no other test publishes
         let proposal = proposal_of(vec![0x52u8; MESSAGE_LEN]);
         let scheme = ProposalScheme::D33HollowInconsistent;
-        let proposal = AuthoredProposal::build(scheme, &epoch_handle, &proposal, 0);
+        let proposal = AuthoredProposal::build(scheme, &context, &proposal, 0);
         let proposal = proposal.expect("the fixture's message fits");
 
-        let validator_data = &epoch_handle.validator_data;
+        let validator_data = &context.validator_data;
         let header = &proposal.header().header;
         let (assignment, mut chunks) = instantiate(header, &author(), validator_data);
         let (_, envelope) = proposal.envelope().into_parts();

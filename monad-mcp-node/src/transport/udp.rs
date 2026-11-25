@@ -28,7 +28,7 @@ use tracing::Span;
 use crate::{
     common::NodeId,
     component::Link,
-    epoch::Epochs,
+    epoch::EpochHandle,
     network::{AppMessage, WireAppMessage, WireInbound, WireOutbound, node_ids},
 };
 
@@ -51,7 +51,7 @@ pub struct UdpTransport {
     self_id: NodeId,
     peers: HashMap<NodeId, SocketAddr>,
     // the table of a slot names the recipients of a wire message
-    epochs: Epochs,
+    epoch_handle: EpochHandle,
 }
 
 impl UdpTransport {
@@ -59,7 +59,7 @@ impl UdpTransport {
         self_id: NodeId,
         port: u16,
         peers: HashMap<NodeId, SocketAddr>,
-        epochs: Epochs,
+        epoch_handle: EpochHandle,
     ) -> io::Result<Self> {
         let socket = UdpSocket::bind(("0.0.0.0", port)).await?;
         tracing::info!(address = %socket.local_addr()?, "udp bound");
@@ -67,7 +67,7 @@ impl UdpTransport {
             socket,
             self_id,
             peers,
-            epochs,
+            epoch_handle,
         })
     }
 
@@ -112,8 +112,8 @@ impl UdpTransport {
         let Some(frame) = self.frame(&outbound.message) else {
             return;
         };
-        for to in node_ids(&outbound.to, &self.epochs) {
-            let Some(address) = self.peers.get(to) else {
+        for to in node_ids(&outbound.to, &self.epoch_handle) {
+            let Some(address) = self.peers.get(&to) else {
                 tracing::debug!(?to, "unknown recipient");
                 continue;
             };
@@ -231,8 +231,8 @@ mod tests {
             (NodeId::dummy(1), SocketAddr::from(([127, 0, 0, 1], 2))),
         ]);
         let config = NodeConfig::single_node(0, Timestamp::from_millis(0), "unused-ledger");
-        let epochs = Epochs::new(config.epoch_handle().expect("config builds"));
-        let udp = UdpTransport::bind(NodeId::dummy(0), 0, peers, epochs)
+        let epoch_handle = config.epoch_manager().expect("config builds").genesis();
+        let udp = UdpTransport::bind(NodeId::dummy(0), 0, peers, epoch_handle)
             .await
             .unwrap();
         let port = udp.socket.local_addr().unwrap().port();

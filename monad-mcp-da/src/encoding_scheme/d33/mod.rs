@@ -330,7 +330,7 @@ pub(super) mod header {
             super::{
                 super::super::{
                     chunk::Chunk,
-                    test_util::{SLOT, epoch_handle},
+                    test_util::{SLOT, context},
                     types::EncodingScheme,
                     wire::{v1, write_chunk},
                 },
@@ -351,8 +351,8 @@ pub(super) mod header {
 
         #[test]
         fn a_packet_is_one_segment_at_the_d33_offsets() {
-            let epoch_handle = epoch_handle();
-            let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+            let context = context();
+            let (header, chunks) = proposal_chunks(&context, 1);
             let EncodingScheme::D33(d33) = header.scheme() else {
                 panic!("the fixture's scheme is d33");
             };
@@ -381,8 +381,8 @@ pub(super) mod header {
 
         #[test]
         fn headers_round_trip() {
-            let epoch_handle = epoch_handle();
-            let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+            let context = context();
+            let (_, chunks) = proposal_chunks(&context, 1);
             for chunk in &chunks {
                 let packet = write_chunk(chunk);
                 assert_eq!(D33Layout::read_chunk(packet), Ok(chunk.clone()));
@@ -391,8 +391,8 @@ pub(super) mod header {
 
         #[test]
         fn malformed_header_fields_are_rejected() {
-            let epoch_handle = epoch_handle();
-            let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+            let context = context();
+            let (_, chunks) = proposal_chunks(&context, 1);
             let chunk = &chunks[0];
 
             let shallow = corrupted(chunk, |b| b[67] = 2);
@@ -417,10 +417,9 @@ mod tests {
     use super::{
         super::super::{
             chunk::Chunk,
-            runtime::EpochHandle,
+            runtime::DAContext,
             test_util::{
-                MESSAGE_LEN, SLOT, author, epoch_handle, proposal_chunks_under,
-                staked_validator_data,
+                MESSAGE_LEN, SLOT, author, context, proposal_chunks_under, staked_validator_data,
             },
             types::SignedProposalHeader,
         },
@@ -439,10 +438,10 @@ mod tests {
 
     // the default fixture's proposal under d33
     pub(super) fn proposal_chunks(
-        epoch_handle: &EpochHandle,
+        context: &DAContext,
         payload: u8,
     ) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
-        proposal_chunks_under(epoch_handle, scheme(), 0, payload)
+        proposal_chunks_under(context, scheme(), 0, payload)
     }
 
     #[test]
@@ -513,8 +512,8 @@ mod tests {
 
     #[test]
     fn every_validator_owns_its_share_including_the_author() {
-        let epoch_handle = epoch_handle();
-        let assignment = scheme().chunk_assignment(&author(), &epoch_handle.validator_data);
+        let context = context();
+        let assignment = scheme().chunk_assignment(&author(), &context.validator_data);
 
         // target 3 scaled to 9 over 4 equal validators: 2 each, plus
         // a rounding chunk each
@@ -530,8 +529,8 @@ mod tests {
 
     #[test]
     fn the_assignment_is_seeded_by_slot_time_and_author() {
-        let epoch_handle = epoch_handle();
-        let validator_data = &epoch_handle.validator_data;
+        let context = context();
+        let validator_data = &context.validator_data;
         let scheme = scheme();
 
         let same = scheme.chunk_assignment(&author(), validator_data);

@@ -125,8 +125,6 @@ impl<R: Router<NodeAppMessage>> Harness<R> {
 
 #[test]
 fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
-    use monad_mcp_node::election::ProposerSchedule as _;
-
     let config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
     let mut harness = Harness::new(&config);
 
@@ -151,7 +149,7 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
     let dir = tempfile::tempdir().unwrap();
     let writer = LedgerWriter::open(dir.path()).unwrap();
     let epoch = harness.node.epoch_handle();
-    let proposers = epoch.proposers.proposers_at(finalized.slot).unwrap();
+    let proposers = epoch.proposers_at(finalized.slot).unwrap();
     let written = writer
         .write(&new_block(finalized, Some(&proposers)))
         .unwrap();

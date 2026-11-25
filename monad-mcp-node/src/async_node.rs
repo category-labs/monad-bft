@@ -21,12 +21,14 @@ use std::future::pending;
 use tokio::task::JoinSet;
 
 use crate::{
+    cadence::SlotLifecycle,
     clock::Clock,
     component::{
         CadenceInput, CadenceOutput, DAInput, FinalizationInput, Link, ProposingInput,
         ProposingOutput, spawn,
     },
     da::DAOutput,
+    epoch::EpochHandle,
     finalization::FinalizedSlot,
     network::{NetworkInput, NetworkOutput, NodeAppMessage, Wire, WireAppMessage},
     node::{Node, Parts},
@@ -46,6 +48,7 @@ pub struct AsyncNode<R = NodeRouter, W = WireAppMessage> {
 
 // the far ends of the component tasks, the transport and the ledger
 struct Tasks<W> {
+    epoch_manager: Link<SlotLifecycle, EpochHandle>,
     cadence: Link<CadenceInput, CadenceOutput>,
     da: Link<DAInput, DAOutput>,
     collector: Link<FinalizationInput, FinalizedSlot>,
@@ -87,6 +90,7 @@ where
         let router = &mut self.router;
         loop {
             let effect = tokio::select! {
+                Some(epoch_handle) = tasks.epoch_manager.recv() => Effect::Epoch(epoch_handle),
                 Some(inbound) = recv(&mut tasks.transport) => Effect::Transport(inbound),
                 Some(output) = tasks.network.recv() => Effect::Network(output),
                 Some(output) = tasks.cadence.recv() => Effect::Cadence(output),
@@ -107,6 +111,7 @@ where
     // lifts each component of a node into its own task
     fn spawn(parts: Parts<W>, clock: Clock) -> Self {
         let Parts {
+            epoch_manager,
             cadence,
             da,
             collector,
@@ -116,6 +121,7 @@ where
 
         let mut join_set = JoinSet::new();
         Self {
+            epoch_manager: spawn(epoch_manager, clock, &mut join_set),
             cadence: spawn(cadence, clock, &mut join_set),
             da: spawn(da, clock, &mut join_set),
             collector: spawn(collector, clock, &mut join_set),
@@ -131,6 +137,7 @@ where
 impl<W> Sink<Routed<W>> for Tasks<W> {
     fn send(&mut self, routed: Routed<W>) {
         match routed {
+            Routed::Epoch(event) => self.epoch_manager.send(event),
             Routed::Cadence(input) => self.cadence.send(input),
             Routed::DA(input) => self.da.send(input),
             Routed::Finalization(input) => self.collector.send(input),

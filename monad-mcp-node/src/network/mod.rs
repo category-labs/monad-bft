@@ -31,7 +31,7 @@ use crate::{
     common::NodeId,
     component::{CadenceWireMsg, Component},
     da::{ChunkPull, MalformedPacket, ProposalEnvelope, read_envelope, write_envelope},
-    epoch::Epochs,
+    epoch::EpochHandle,
 };
 
 // a message between nodes, by kind
@@ -149,16 +149,19 @@ pub enum NetworkOutput<M, W> {
 // loops a message to this node back, converts to and from the wire form W,
 // and repeats a message as its qos asks.
 pub struct Network<M, W> {
-    epochs: Epochs,
+    // this node, which no epoch scopes
+    node_id: NodeId,
+    epoch_handle: EpochHandle,
     // absent: nothing is repeated
     repeater: Option<Repeater<W>>,
     outbox: VecDeque<NetworkOutput<M, W>>,
 }
 
 impl<M, W> Network<M, W> {
-    pub fn new(epochs: Epochs) -> Self {
+    pub fn new(node_id: NodeId, epoch_handle: EpochHandle) -> Self {
         Self {
-            epochs,
+            node_id,
+            epoch_handle,
             repeater: None,
             outbox: VecDeque::new(),
         }
@@ -174,7 +177,7 @@ impl<M, W> Network<M, W> {
         W: Wire<M>,
     {
         let Outbound { to, message, qos } = outbound;
-        let sender = self.epochs.self_id();
+        let sender = self.node_id;
         // A slot of an unknown epoch has no validator table, so no recipients.
         let Some((mut to, loopback)) = self.resolve(to) else {
             return;
@@ -213,10 +216,11 @@ impl<M, W> Network<M, W> {
 
     // the recipients without this node, and whether the message loops back
     fn resolve(&self, to: Recipients) -> Option<(Recipients, bool)> {
-        let me = self.epochs.self_id();
+        let me = self.node_id;
         let resolved = match to {
             Recipients::Validators(slot, mut validators) => {
-                let me = self.epochs.at(slot)?.self_index;
+                let table = self.epoch_handle.validators_at(slot).ok()?;
+                let me = table.index_of(&me);
                 let loopback = me.is_some_and(|me| validators.remove(me));
                 (Recipients::Validators(slot, validators), loopback)
             }
@@ -291,26 +295,29 @@ impl<M, W> Network<M, W> {
 // the node id of each recipient, read from the table of the slot
 pub fn node_ids<'a>(
     to: &'a Recipients,
-    epochs: &'a Epochs,
-) -> impl Iterator<Item = &'a NodeId> + 'a {
+    epoch_handle: &EpochHandle,
+) -> impl Iterator<Item = NodeId> + 'a {
     let (validators, nodes) = match to {
         Recipients::Validators(slot, validators) => {
-            (validator_ids(validators, *slot, epochs), &[][..])
+            (validator_ids(validators, *slot, epoch_handle), &[][..])
         }
         Recipients::Node(node) => (None, std::slice::from_ref(node)),
         Recipients::Nodes(nodes) => (None, nodes.as_slice()),
     };
-    validators.into_iter().flatten().chain(nodes)
+    validators
+        .into_iter()
+        .flatten()
+        .chain(nodes.iter().copied())
 }
 
-// None for a slot of an unknown epoch
+// None for a slot out of the bound of the handle
 fn validator_ids<'a>(
     validators: &'a ValidatorSet,
     slot: Slot,
-    epochs: &'a Epochs,
-) -> Option<impl Iterator<Item = &'a NodeId> + 'a> {
-    let table = &epochs.at(slot)?.validator_data;
-    Some(validators.iter().map(move |index| table.node_id(index)))
+    epoch_handle: &EpochHandle,
+) -> Option<impl Iterator<Item = NodeId> + 'a> {
+    let table = epoch_handle.validators_at(slot).ok()?;
+    Some(validators.iter().map(move |index| *table.node_id(index)))
 }
 
 impl<M, W: Wire<M>> Component for Network<M, W> {
@@ -383,7 +390,7 @@ mod tests {
                 address: SocketAddr::from(([127, 0, 0, 1], id as u16)),
             });
         }
-        config.epoch_handle().expect("config builds")
+        config.epoch_manager().expect("config builds").genesis()
     }
 
     // node 0, with a repeater
@@ -392,17 +399,17 @@ mod tests {
             interval: INTERVAL,
             certificate_retention: 2,
         };
-        Network::new(Epochs::new(epoch.clone())).with_repeater(repeater)
+        Network::new(node(0), epoch.clone()).with_repeater(repeater)
     }
 
     fn index(epoch: &EpochHandle, id: u64) -> ValidatorIndex {
-        let index = epoch.validator_data.index_of(&node(id));
-        index.expect("a validator")
+        let validators = epoch.validators_at(SLOT).expect("in bound");
+        validators.index_of(&node(id)).expect("a validator")
     }
 
     // the ids of the other validators
     fn others(epoch: &EpochHandle) -> Vec<u64> {
-        let validators = &epoch.validator_data;
+        let validators = epoch.validators_at(SLOT).expect("in bound");
         let nodes = validators.indices().map(|index| *validators.node_id(index));
         nodes.map(u64::from).filter(|id| *id != 0).collect()
     }

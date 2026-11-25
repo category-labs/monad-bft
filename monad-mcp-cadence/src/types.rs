@@ -20,18 +20,25 @@ use arrayvec::ArrayVec;
 use bytes::Bytes;
 use monad_mcp_common::spec::{KeyPair as _, Stake as _, ValidatorData as _};
 pub(crate) use monad_mcp_common::{
-    FinalizationPath, Lane, LaneOccupancy, Lanes, ProposalScope, RepeatUntil, Slot, SlotLifecycle,
-    SlotScoped, Timestamp, TimestampDelta,
+    FinalizationPath, Lane, Lanes, ProposalScope, RepeatUntil, Slot, SlotLifecycle, SlotScoped,
+    Timestamp, TimestampDelta,
 };
 pub use monad_mcp_common::{ValidatorIndex, ValidatorMap, ValidatorSet};
 
-pub use super::env::{
-    HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignatureCollection, SignedProposalHeader,
-    VoteAggregation,
-};
 // the environment this module subtree is instantiated.
-pub(crate) use super::env::{KeyPair, NodeId, PubKey, Signature, Stake, ValidatorData};
+pub(crate) use super::env::{
+    KeyPair, NodeCredential, NodeId, PubKey, Signature, Stake, ValidatorData,
+};
+pub use super::env::{
+    MerkleRoot, ProposalHeader, ProposalId, SignatureCollection, SignedProposalHeader,
+    VoteAggregation,
+    epoch::{EpochHandle, SlotOutOfBound, election::ProposerSet},
+};
 use crate::spec::vote::{SignatureCollection as _, SigningDomain, signing_bytes};
+
+// Whether a proposal header is well formed for the validators of its slot,
+// and signed by the proposer of its lane. The DA layer supplies the check.
+pub type HeaderAuth = dyn Fn(&SignedProposalHeader, &ValidatorData, &NodeId) -> bool + Send + Sync;
 
 pub trait IsVote: Clone + Hash + Eq + Encodable {
     type Scope: Clone + Hash + Eq + std::fmt::Debug + Encodable + Decodable;

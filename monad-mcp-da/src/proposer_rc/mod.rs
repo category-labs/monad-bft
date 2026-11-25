@@ -26,7 +26,7 @@ use super::{
     egress::ChunkEgress,
     encoding_scheme::{InvalidEncoding, Resolved},
     instance_rc::{MissingChunks, RaptorcastInstance},
-    runtime::{EpochHandle, Timing},
+    runtime::{DAContext, Timing},
     send_order::shuffle_sends,
     types::{
         EquivCert, MissingHeaders, NodeId, ProposalDAEvent, ProposalId, SignedProposalHeader,
@@ -123,6 +123,10 @@ impl ProposerRaptorcast {
         }
     }
 
+    pub(crate) fn proposer(&self) -> &NodeId {
+        &self.proposer
+    }
+
     pub(crate) fn drain_events(&mut self) -> Vec<ProposalDAEvent> {
         std::mem::take(&mut self.out_events)
     }
@@ -136,7 +140,7 @@ impl ProposerRaptorcast {
         &mut self,
         envelope: ProposalEnvelope,
         sender: &NodeId,
-        epoch_handle: &EpochHandle,
+        context: &DAContext,
         egress: &mut ChunkEgress,
     ) {
         let (header, chunks) = envelope.into_parts();
@@ -152,7 +156,7 @@ impl ProposerRaptorcast {
         let instance = self
             .tracked
             .entry(pid)
-            .or_insert_with(|| RaptorcastInstance::new(header, epoch_handle, author, serve_window));
+            .or_insert_with(|| RaptorcastInstance::new(header, context, author, serve_window));
 
         for (wire_chunk_id, data) in chunks {
             if let Err(err) = instance.ingest(wire_chunk_id, data, sender, egress) {
@@ -223,7 +227,7 @@ impl ProposerRaptorcast {
         holders: &ValidatorSet,
         pid: &ProposalId,
         now: Timestamp,
-        epoch_handle: &EpochHandle,
+        context: &DAContext,
     ) -> Vec<(NodeId, ChunkRequest)> {
         if self.pin.pid() != Some(*pid) {
             return vec![];
@@ -232,7 +236,7 @@ impl ProposerRaptorcast {
             return vec![];
         };
         recovery.add_decoded_holders(holders, now);
-        self.poll_chunk_requests(now, epoch_handle)
+        self.poll_chunk_requests(now, context)
     }
 
     pub(crate) fn pin_final(&mut self, pid: Option<ProposalId>) {
@@ -256,32 +260,28 @@ impl ProposerRaptorcast {
     pub(crate) fn poll_chunk_requests(
         &mut self,
         now: Timestamp,
-        epoch_handle: &EpochHandle,
+        context: &DAContext,
     ) -> Vec<(NodeId, ChunkRequest)> {
         let Some(pid) = self.pin.pid() else {
             return vec![];
         };
-        let Some(missing) = self.missing_chunks(&pid, epoch_handle) else {
+        let Some(missing) = self.missing_chunks(&pid, context) else {
             return vec![];
         };
         let Some(recovery) = self.pin.recovery_mut() else {
             return vec![];
         };
-        recovery.pull(missing, now, &epoch_handle.validator_data)
+        recovery.pull(missing, now, &context.validator_data)
     }
 
-    fn missing_chunks(
-        &self,
-        pid: &ProposalId,
-        epoch_handle: &EpochHandle,
-    ) -> Option<MissingChunks> {
+    fn missing_chunks(&self, pid: &ProposalId, context: &DAContext) -> Option<MissingChunks> {
         use monad_mcp_common::spec::ValidatorData as _;
 
         match self.tracked.get(pid) {
             Some(instance) => instance.missing_chunks(),
             // no header yet, so no assignment: any validator may own chunks we lack
             None => {
-                let validator_data = &epoch_handle.validator_data;
+                let validator_data = &context.validator_data;
                 let nodes = validator_data
                     .indices()
                     .map(|index| validator_data.node_id(index));
@@ -350,7 +350,7 @@ mod tests {
             chunk::{ChunkRequestType, ChunksSubset, WireChunkId},
             egress::Dissemination,
             test_util::{
-                NOW, author, chunk_id, epoch_handle, group, inconsistent_proposal_chunks,
+                NOW, author, chunk_id, context, group, inconsistent_proposal_chunks,
                 proposal_chunks, timing,
             },
             types::TimestampDelta,
@@ -359,12 +359,12 @@ mod tests {
     };
 
     // the validators of the epoch with these dummy ids
-    fn validators<const N: usize>(epoch_handle: &EpochHandle, ids: [u64; N]) -> ValidatorSet {
+    fn validators<const N: usize>(context: &DAContext, ids: [u64; N]) -> ValidatorSet {
         use monad_mcp_common::spec::ValidatorData as _;
 
         ids.into_iter()
             .map(|id| {
-                epoch_handle
+                context
                     .validator_data
                     .index_of(&NodeId::dummy(id))
                     .expect("a validator")
@@ -390,16 +390,16 @@ mod tests {
 
     #[test]
     fn first_unpinned_root_is_admitted() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header, _) = proposal_chunks(&epoch_handle, 1);
+        let (header, _) = proposal_chunks(&context, 1);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
         instance.ingest(
             ProposalEnvelope::from_header(header.clone()),
             &author(),
-            &epoch_handle,
+            &context,
             &mut egress,
         );
         let events = instance.drain_events();
@@ -409,37 +409,37 @@ mod tests {
 
     #[test]
     fn header_alone_creates_the_instance() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (header, chunks) = proposal_chunks(&context, 1);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
         instance.ingest(
             ProposalEnvelope::from_header(header.clone()),
             &author(),
-            &epoch_handle,
+            &context,
             &mut egress,
         );
         let events = instance.drain_events();
         assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header.clone())]);
 
         // the instance exists: later chunks decode it
-        instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(group(&chunks[..3]), &author(), &context, &mut egress);
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::Decoded(header.pid())));
     }
 
     #[test]
     fn an_invalid_root_resolves_with_its_encoding_error() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header, chunks) = inconsistent_proposal_chunks(&epoch_handle);
+        let (header, chunks) = inconsistent_proposal_chunks(&context);
         let pid = header.pid();
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        instance.ingest(group(&chunks[..3]), &author(), &context, &mut egress);
 
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::DecodingFailed(pid)));
@@ -449,17 +449,17 @@ mod tests {
 
     #[test]
     fn second_unpinned_root_announces_its_header_once() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header_a, _) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, chunks_b) = proposal_chunks(&epoch_handle, 2);
+        let (header_a, _) = proposal_chunks(&context, 1);
+        let (header_b, chunks_b) = proposal_chunks(&context, 2);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
         instance.ingest(
             ProposalEnvelope::from_header(header_a),
             &author(),
-            &epoch_handle,
+            &context,
             &mut egress,
         );
         instance.drain_events();
@@ -467,7 +467,7 @@ mod tests {
         instance.ingest(
             ProposalEnvelope::from_header(header_b.clone()),
             &author(),
-            &epoch_handle,
+            &context,
             &mut egress,
         );
         let events = instance.drain_events();
@@ -475,14 +475,14 @@ mod tests {
         instance.ingest(
             ProposalEnvelope::from_header(header_b.clone()),
             &author(),
-            &epoch_handle,
+            &context,
             &mut egress,
         );
         let events = instance.drain_events();
         assert!(events.is_empty());
 
         // announced once; the rival's chunks decode it like any tracked root
-        instance.ingest(group(&chunks_b), &author(), &epoch_handle, &mut egress);
+        instance.ingest(group(&chunks_b), &author(), &context, &mut egress);
         let events = instance.drain_events();
         assert!(!events.contains(&ProposalDAEvent::HeaderSeen(header_b.clone())));
         assert_eq!(decoded_pids(&mut instance), vec![header_b.pid()]);
@@ -490,31 +490,21 @@ mod tests {
 
     #[test]
     fn a_third_root_is_not_tracked() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header_a, _) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, _) = proposal_chunks(&epoch_handle, 2);
-        let (_, chunks_c) = proposal_chunks(&epoch_handle, 3);
+        let (header_a, _) = proposal_chunks(&context, 1);
+        let (header_b, _) = proposal_chunks(&context, 2);
+        let (_, chunks_c) = proposal_chunks(&context, 3);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(
-            header_only(&header_a),
-            &author(),
-            &epoch_handle,
-            &mut egress,
-        );
-        instance.ingest(
-            header_only(&header_b),
-            &author(),
-            &epoch_handle,
-            &mut egress,
-        );
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        instance.ingest(header_only(&header_a), &author(), &context, &mut egress);
+        instance.ingest(header_only(&header_b), &author(), &context, &mut egress);
         instance.drain_events();
         egress.drain();
 
         // every chunk of the third root: no event, no decode, nothing relayed
-        instance.ingest(group(&chunks_c), &author(), &epoch_handle, &mut egress);
+        instance.ingest(group(&chunks_c), &author(), &context, &mut egress);
         assert!(instance.drain_events().is_empty());
         assert!(decoded_pids(&mut instance).is_empty());
         assert!(egress.drain().is_empty());
@@ -522,15 +512,15 @@ mod tests {
 
     #[test]
     fn your_chunk_recovery_serves_what_we_hold_before_decoding() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (header, chunks) = proposal_chunks(&context, 1);
 
         // chunk ids 2, 6 and 10 are ours (validator 1); ingesting id 2
         // alone is short of the two chunks decoding needs
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks[2..3]), &author(), &epoch_handle, &mut egress);
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        instance.ingest(group(&chunks[2..3]), &author(), &context, &mut egress);
         assert!(decoded_pids(&mut instance).is_empty());
         // discard the relay of our own chunk
         egress.drain();
@@ -577,20 +567,15 @@ mod tests {
 
     #[test]
     fn a_recorded_rival_root_is_decoded_and_served_like_the_first() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header_a, _) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, chunks_b) = proposal_chunks(&epoch_handle, 2);
+        let (header_a, _) = proposal_chunks(&context, 1);
+        let (header_b, chunks_b) = proposal_chunks(&context, 2);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(
-            header_only(&header_a),
-            &author(),
-            &epoch_handle,
-            &mut egress,
-        );
-        instance.ingest(group(&chunks_b), &author(), &epoch_handle, &mut egress);
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        instance.ingest(header_only(&header_a), &author(), &context, &mut egress);
+        instance.ingest(group(&chunks_b), &author(), &context, &mut egress);
 
         assert_eq!(decoded_pids(&mut instance), vec![header_b.pid()]);
         egress.drain();
@@ -601,20 +586,15 @@ mod tests {
 
     #[test]
     fn a_final_pin_keeps_the_committed_rival_and_frees_the_rest() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header_a, _) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, chunks_b) = proposal_chunks(&epoch_handle, 2);
+        let (header_a, _) = proposal_chunks(&context, 1);
+        let (header_b, chunks_b) = proposal_chunks(&context, 2);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(
-            header_only(&header_a),
-            &author(),
-            &epoch_handle,
-            &mut egress,
-        );
-        instance.ingest(group(&chunks_b[..3]), &author(), &epoch_handle, &mut egress);
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        instance.ingest(header_only(&header_a), &author(), &context, &mut egress);
+        instance.ingest(group(&chunks_b[..3]), &author(), &context, &mut egress);
         assert_eq!(decoded_pids(&mut instance), vec![header_b.pid()]);
 
         instance.pin_final(Some(header_b.pid()));
@@ -627,48 +607,41 @@ mod tests {
 
     #[test]
     fn a_negative_final_pin_frees_every_root() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header_a, chunks_a) = proposal_chunks(&epoch_handle, 1);
+        let (header_a, chunks_a) = proposal_chunks(&context, 1);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks_a[..1]), &author(), &epoch_handle, &mut egress);
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        instance.ingest(group(&chunks_a[..1]), &author(), &context, &mut egress);
         instance.pin_final(None);
 
         assert!(instance.tracked.is_empty());
-        instance.ingest(
-            group(&chunks_a[1..2]),
-            &author(),
-            &epoch_handle,
-            &mut egress,
-        );
+        instance.ingest(group(&chunks_a[1..2]), &author(), &context, &mut egress);
         assert!(!instance.tracked.contains_key(&header_a.pid()));
     }
 
     #[test]
     fn pulls_start_a_delta_after_the_deadline_and_repeat_after_the_interval() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (header, chunks) = proposal_chunks(&context, 1);
 
         // we are 1 and own 2, 6 and 10; the author owns 0, 4 and 8; node 2
         // owns 3, 7 and 11; node 3 owns 1, 5 and 9
         let deadline = after(300);
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, deadline, timing());
-        instance.ingest(group(&chunks[2..3]), &author(), &epoch_handle, &mut egress);
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, deadline, timing());
+        instance.ingest(group(&chunks[2..3]), &author(), &context, &mut egress);
 
-        let pulled = instance.poll_chunk_requests(after(350), &epoch_handle);
+        let pulled = instance.poll_chunk_requests(after(350), &context);
         assert!(requests(pulled).is_empty());
 
         // Delta after the deadline: the author for ours, every owner for theirs
         let narrowed = |kind, ids: &[WireChunkId]| ChunkRequest {
             pid: header.pid(),
             kind,
-            subset: ChunksSubset::narrowed(
-                ids.iter().map(|id| chunk_id(&epoch_handle, &header, *id)),
-            ),
+            subset: ChunksSubset::narrowed(ids.iter().map(|id| chunk_id(&context, &header, *id))),
         };
         let expected = vec![
             (
@@ -688,61 +661,57 @@ mod tests {
                 narrowed(ChunkRequestType::YourChunks, &[1, 5, 9]),
             ),
         ];
-        let pulled = instance.poll_chunk_requests(after(400), &epoch_handle);
+        let pulled = instance.poll_chunk_requests(after(400), &context);
         assert_eq!(requests(pulled), expected);
 
         // asked within the interval: not again
-        let pulled = instance.poll_chunk_requests(after(500), &epoch_handle);
+        let pulled = instance.poll_chunk_requests(after(500), &context);
         assert!(requests(pulled).is_empty());
-        let pulled = instance.poll_chunk_requests(after(600), &epoch_handle);
+        let pulled = instance.poll_chunk_requests(after(600), &context);
         assert_eq!(requests(pulled), expected);
 
         // decoded: nothing more to pull
-        instance.ingest(group(&chunks[3..4]), &author(), &epoch_handle, &mut egress);
-        let pulled = instance.poll_chunk_requests(after(1000), &epoch_handle);
+        instance.ingest(group(&chunks[3..4]), &author(), &context, &mut egress);
+        let pulled = instance.poll_chunk_requests(after(1000), &context);
         assert!(requests(pulled).is_empty());
     }
 
     #[test]
     fn decoded_holders_are_asked_for_our_own_chunks() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (header, chunks) = proposal_chunks(&context, 1);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks[1..2]), &author(), &epoch_handle, &mut egress);
-        let holders = validators(&epoch_handle, [2]);
-        instance.add_decoded_holders(&holders, &header.pid(), NOW, &epoch_handle);
-        let pulled = instance.poll_chunk_requests(after(200), &epoch_handle);
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        instance.ingest(group(&chunks[1..2]), &author(), &context, &mut egress);
+        let holders = validators(&context, [2]);
+        instance.add_decoded_holders(&holders, &header.pid(), NOW, &context);
+        let pulled = instance.poll_chunk_requests(after(200), &context);
 
         let my_chunks = ChunkRequest {
             pid: header.pid(),
             kind: ChunkRequestType::MyChunks,
-            subset: ChunksSubset::narrowed(
-                [2, 6, 10].map(|id| chunk_id(&epoch_handle, &header, id)),
-            ),
+            subset: ChunksSubset::narrowed([2, 6, 10].map(|id| chunk_id(&context, &header, id))),
         };
         assert!(requests(pulled).contains(&(NodeId::dummy(2), my_chunks)));
     }
 
     #[test]
     fn a_decoded_hint_asks_for_our_chunks_at_once() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (header, chunks) = proposal_chunks(&context, 1);
 
         // we own 2, 6 and 10; node 2 owns 3, 7 and 11
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks[1..2]), &author(), &epoch_handle, &mut egress);
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        instance.ingest(group(&chunks[1..2]), &author(), &context, &mut egress);
 
         let request = |kind, ids: &[WireChunkId]| ChunkRequest {
             pid: header.pid(),
             kind,
-            subset: ChunksSubset::narrowed(
-                ids.iter().map(|id| chunk_id(&epoch_handle, &header, *id)),
-            ),
+            subset: ChunksSubset::narrowed(ids.iter().map(|id| chunk_id(&context, &header, *id))),
         };
         let my_chunks = (
             NodeId::dummy(2),
@@ -759,34 +728,32 @@ mod tests {
         };
 
         // before the hint, node 2 is asked as an owner only
-        let pulled = instance.poll_chunk_requests(after(100), &epoch_handle);
+        let pulled = instance.poll_chunk_requests(after(100), &context);
         assert_eq!(asked_holder(pulled), vec![your_chunks.clone()]);
 
         // the hint asks for our chunks at once, the owner pull waits
-        let holders = validators(&epoch_handle, [2]);
-        let hinted =
-            instance.add_decoded_holders(&holders, &header.pid(), after(150), &epoch_handle);
+        let holders = validators(&context, [2]);
+        let hinted = instance.add_decoded_holders(&holders, &header.pid(), after(150), &context);
         assert_eq!(asked_holder(hinted), vec![my_chunks.clone()]);
-        assert!(asked_holder(instance.poll_chunk_requests(after(200), &epoch_handle)).is_empty());
+        assert!(asked_holder(instance.poll_chunk_requests(after(200), &context)).is_empty());
 
         // each kind repeats on its own timer
-        let pulled = instance.poll_chunk_requests(after(300), &epoch_handle);
+        let pulled = instance.poll_chunk_requests(after(300), &context);
         assert_eq!(asked_holder(pulled), vec![your_chunks]);
-        let pulled = instance.poll_chunk_requests(after(350), &epoch_handle);
+        let pulled = instance.poll_chunk_requests(after(350), &context);
         assert_eq!(asked_holder(pulled), vec![my_chunks]);
     }
 
     #[test]
     fn with_no_root_seen_a_header_pull_also_fetches_the_first_roots_chunks() {
-        let epoch_handle = epoch_handle();
-        let (header_a, _) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, _) = proposal_chunks(&epoch_handle, 2);
+        let context = context();
+        let (header_a, _) = proposal_chunks(&context, 1);
+        let (header_b, _) = proposal_chunks(&context, 2);
 
-        let instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        let voters = validators(&epoch_handle, [2, 3]);
+        let instance = ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        let voters = validators(&context, [2, 3]);
         let missing = MissingHeaders::from([(header_a.pid(), voters), (header_b.pid(), voters)]);
-        let pulled = instance.pull_header(missing, &epoch_handle.validator_data);
+        let pulled = instance.pull_header(missing, &context.validator_data);
 
         let all_of_a = ChunkRequest::all(header_a.pid(), ChunkRequestType::YourChunks);
         let header_of_b = ChunkRequest {
@@ -805,23 +772,18 @@ mod tests {
 
     #[test]
     fn a_header_pull_asks_each_voter_of_an_unknown_root_for_the_header_alone() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header_a, _) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, _) = proposal_chunks(&epoch_handle, 2);
+        let (header_a, _) = proposal_chunks(&context, 1);
+        let (header_b, _) = proposal_chunks(&context, 2);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(
-            header_only(&header_a),
-            &author(),
-            &epoch_handle,
-            &mut egress,
-        );
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        instance.ingest(header_only(&header_a), &author(), &context, &mut egress);
 
-        let voters = validators(&epoch_handle, [2, 3]);
+        let voters = validators(&context, [2, 3]);
         let missing = MissingHeaders::from([(header_a.pid(), voters), (header_b.pid(), voters)]);
-        let pulled = instance.pull_header(missing, &epoch_handle.validator_data);
+        let pulled = instance.pull_header(missing, &context.validator_data);
 
         // a is known, so only b is asked for
         let header_alone = ChunkRequest {
@@ -838,28 +800,23 @@ mod tests {
 
     #[test]
     fn a_final_pin_on_the_rival_pulls_it_without_waiting_out_the_open_roots_cooldown() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (_, chunks_a) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, _) = proposal_chunks(&epoch_handle, 2);
+        let (_, chunks_a) = proposal_chunks(&context, 1);
+        let (header_b, _) = proposal_chunks(&context, 2);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks_a[..1]), &author(), &epoch_handle, &mut egress);
-        instance.ingest(
-            header_only(&header_b),
-            &author(),
-            &epoch_handle,
-            &mut egress,
-        );
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
+        instance.ingest(group(&chunks_a[..1]), &author(), &context, &mut egress);
+        instance.ingest(header_only(&header_b), &author(), &context, &mut egress);
         assert!(
             !instance
-                .poll_chunk_requests(after(100), &epoch_handle)
+                .poll_chunk_requests(after(100), &context)
                 .is_empty()
         );
 
         instance.pin_final(Some(header_b.pid()));
-        let pulled = instance.poll_chunk_requests(after(150), &epoch_handle);
+        let pulled = instance.poll_chunk_requests(after(150), &context);
         assert!(!pulled.is_empty());
         for (_, request) in &pulled {
             assert_eq!(&request.pid, &header_b.pid());
@@ -868,19 +825,19 @@ mod tests {
 
     #[test]
     fn a_final_pin_without_a_header_pulls_everyone_until_a_reply_brings_it() {
-        let epoch_handle = epoch_handle();
+        let context = context();
         let mut egress = released_egress();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (header, chunks) = proposal_chunks(&context, 1);
 
         let mut instance =
-            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
+            ProposerRaptorcast::new(NodeId::dummy(0), context.self_id, NOW, timing());
         instance.pin_final(Some(header.pid()));
-        let holders = validators(&epoch_handle, [2]);
-        let mut asked = instance.add_decoded_holders(&holders, &header.pid(), NOW, &epoch_handle);
+        let holders = validators(&context, [2]);
+        let mut asked = instance.add_decoded_holders(&holders, &header.pid(), NOW, &context);
 
         // owners are pulled from Delta after the deadline, even once committed
-        assert!(instance.poll_chunk_requests(NOW, &epoch_handle).is_empty());
-        asked.extend(instance.poll_chunk_requests(after(100), &epoch_handle));
+        assert!(instance.poll_chunk_requests(NOW, &context).is_empty());
+        asked.extend(instance.poll_chunk_requests(after(100), &context));
 
         let your_chunks = ChunkRequest::all(header.pid(), ChunkRequestType::YourChunks);
         let my_chunks = ChunkRequest::all(header.pid(), ChunkRequestType::MyChunks);
@@ -897,10 +854,10 @@ mod tests {
         instance.ingest(
             group(&chunks[1..2]),
             &NodeId::dummy(2),
-            &epoch_handle,
+            &context,
             &mut egress,
         );
-        instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(group(&chunks[..3]), &author(), &context, &mut egress);
         assert_eq!(decoded_pids(&mut instance), vec![header.pid()]);
     }
 }

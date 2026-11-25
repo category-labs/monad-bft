@@ -15,18 +15,21 @@
 
 mod availability;
 pub mod chorus;
+pub mod context;
 pub mod dummy;
 pub mod fallback;
 mod fast;
 
 use super::{
     message::{Outbound, SlotRecipients},
-    types::{self, NodeId, Slot, SlotScoped, TimestampDelta},
+    types::{self, EpochHandle, NodeId, Slot, SlotOutOfBound, SlotScoped, TimestampDelta},
 };
 
 /// A single-slot consensus algorithm
 pub trait SlotConsensus: Sized {
-    type Config: Clone;
+    // the same for each slot
+    type Config;
+    // what an instance knows about its one slot
     type Context;
 
     type Message: Clone + SlotScoped;
@@ -37,7 +40,13 @@ pub trait SlotConsensus: Sized {
     type LocalIn;
     type LocalOut: Clone;
 
-    fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self;
+    fn context_at(
+        config: &Self::Config,
+        slot: Slot,
+        epoch_handle: &EpochHandle,
+    ) -> Result<Self::Context, SlotOutOfBound>;
+
+    fn new(context: Self::Context) -> Self;
 
     /// Called on the deadline of the slot
     fn handle_deadline(&mut self);

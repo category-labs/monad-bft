@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+pub use proposal::{ProposalKeyPair, ProposalSignature};
 pub use validator::{NodeId, Stake, ValidatorData};
 pub use vote::{KeyPair, PubKey, Signature};
 
@@ -116,5 +117,23 @@ pub mod vote {
         fn is_well_formed(&self) -> bool;
 
         fn verify(&self, data: &[u8], pubkey: &Self::PubKey) -> bool;
+    }
+}
+
+pub mod proposal {
+    // Signs a proposal header. Its signatures are never aggregated.
+    pub trait ProposalKeyPair {
+        type Signature: ProposalSignature;
+
+        fn sign(&self, data: &[u8]) -> Self::Signature;
+    }
+
+    // A signature on a proposal header by a ProposalKeyPair. The signer is
+    // recovered from it, so it needs no public key type.
+    pub trait ProposalSignature: Clone + Eq {
+        type NodeId: super::validator::NodeId;
+
+        // None unless the signature authenticates data
+        fn recover_author(&self, data: &[u8]) -> Option<Self::NodeId>;
     }
 }

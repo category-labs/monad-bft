@@ -19,9 +19,7 @@
 //! network exports as JSON.
 
 use monad_mcp_common::{Slot, TimestampDelta};
-use monad_mcp_node::{
-    Node, common::NodeId, config::SourceKind, da::ProposalScheme, election::ProposerSchedule as _,
-};
+use monad_mcp_node::{Node, common::NodeId, config::SourceKind, da::ProposalScheme};
 use monad_sim_swarm::{RegionTable, Swarm};
 
 use crate::harness::{
@@ -67,12 +65,11 @@ fn run(scheme: ProposalScheme, recording: bool) -> Swarm<SimNode> {
 // chunks from it
 fn check_records(swarm: &Swarm<SimNode>) {
     let ids = swarm.node_ids();
-    let epoch = node_config(SEED, 0, VALIDATORS)
-        .epoch_handle()
-        .expect("config builds");
+    let epoch_manager = node_config(SEED, 0, VALIDATORS).epoch_manager();
+    let epoch = epoch_manager.expect("config builds").genesis();
     let mut proposals = 0;
     for slot in (0..SLOTS).map(Slot) {
-        let proposers = epoch.proposers.proposers_at(slot).expect("a schedule");
+        let proposers = epoch.proposers_at(slot).expect("a schedule");
         for (lane, proposer) in proposers.iter() {
             let Some(proposer) = proposer else {
                 continue;

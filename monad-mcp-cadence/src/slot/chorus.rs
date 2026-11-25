@@ -18,22 +18,25 @@ use std::{collections::VecDeque, sync::Arc};
 
 use alloy_rlp::{Decodable, Encodable};
 
-pub use super::fast::{BatchVoteMsg, Entry};
 use super::{
     Outbound, SlotConsensus, SlotOutput, SlotRecipients,
+    context::ChorusContext,
     fallback::{
-        FallbackCommitQc, MVBAOutput, Metablock, Mvba as _, monad_mvba,
-        monad_mvba::{MonadMvba, MvbaContext},
+        FallbackCommitQc, MVBAOutput, Metablock, Mvba as _, monad_mvba, monad_mvba::MonadMvba,
     },
     fast::{
         EnterFallbackCert, FallbackTransitionOutcome, FallbackVoteMsg, FastBlock, FastCommitQc,
         FastCommitVoteMsg, FastPath,
     },
     types::{
-        FinalizationPath, HeaderAuth, KeyPair, Lane, LaneOccupancy, Lanes, NodeId, ProposalId,
-        RepeatUntil, SignatureCollection, SignedProposalHeader, Slot, SlotScoped, TimestampDelta,
-        ValidatorData, ValidatorIndex, ValidatorSet,
+        EpochHandle, FinalizationPath, Lane, Lanes, NodeId, ProposalId, RepeatUntil,
+        SignatureCollection, SignedProposalHeader, Slot, SlotOutOfBound, SlotScoped,
+        TimestampDelta, ValidatorIndex, ValidatorSet,
     },
+};
+pub use super::{
+    context::ChorusConfig,
+    fast::{BatchVoteMsg, Entry},
 };
 
 /// The fallback path's agreement protocol, at the instantiation Chorus runs it
@@ -86,13 +89,13 @@ impl SlotScoped for ChorusMessage {
 }
 
 impl ChorusMessage {
-    fn check_lanes(&self, occupied: &Lanes<bool>) -> bool {
+    fn validate_lanes(&self, context: &ChorusContext) -> bool {
         match self {
-            Self::BatchVote(vote) => vote.check_lanes(occupied),
-            Self::FastCommitVote(vote) => vote.vote.check_lanes(occupied),
-            Self::FastBlock(block) => block.check_lanes(occupied),
-            Self::FallbackVote(vote) => vote.check_lanes(occupied),
-            Self::FastCommitQc(qc) => qc.verdict.check_lanes(occupied),
+            Self::BatchVote(vote) => vote.validate_lanes(context),
+            Self::FastCommitVote(vote) => vote.vote.validate_lanes(context),
+            Self::FastBlock(block) => block.validate_lanes(context),
+            Self::FallbackVote(vote) => vote.validate_lanes(context),
+            Self::FastCommitQc(qc) => qc.verdict.validate_lanes(context),
             Self::EnterFallbackCert(_) => true,
             // the MVBA validates its values against its own context
             Self::Fallback(_) => true,
@@ -108,24 +111,6 @@ pub enum TimerEvent {
     FallbackDecision,
     // armed by the MVBA, fed straight back to it
     Fallback(FallbackTimer),
-}
-
-/// Static per-slot configuration.
-#[derive(Clone)]
-pub struct ChorusConfig {
-    pub delta: TimestampDelta,
-}
-
-/// Shared resources needed to spawn a slot instance.
-pub struct ChorusContext {
-    // a slot instance exists only at a validator of the slot
-    pub self_index: ValidatorIndex,
-    pub key: Arc<KeyPair>,
-    pub validator_data: Arc<ValidatorData>,
-    pub header_auth: Arc<HeaderAuth>,
-    /// Single source of truth for the number of proposals per slot (`K`) and
-    /// for which lanes have a proposer.
-    pub occupancy: Arc<dyn LaneOccupancy + Send + Sync>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -248,11 +233,7 @@ pub enum ChorusLocalOut {
 
 /// The single-slot MCP consensus algorithm from the paper.
 pub struct Chorus {
-    slot: Slot,
-    key: Arc<KeyPair>,
-    validator_data: Arc<ValidatorData>,
-    // which lanes have a proposer in this slot
-    occupied: Lanes<bool>,
+    context: Arc<ChorusContext>,
 
     fast: FastPath,
     /// memory is unbounded until this validator proposes into it: the MVBA
@@ -260,9 +241,6 @@ pub struct Chorus {
     /// have a proposal to conditionally start fallback without self propose
     fallback: FallbackState,
     outputs: VecDeque<SlotOutput<Chorus>>,
-
-    // capital Delta from the paper
-    delta: TimestampDelta,
 
     // Decided but slot not yet closed, ignore all subsequent messages
     // and timer events.
@@ -283,56 +261,21 @@ impl SlotConsensus for Chorus {
     type LocalIn = ChorusDAEvent;
     type LocalOut = ChorusLocalOut;
 
-    fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self {
-        let ChorusConfig { delta } = config;
-        let ChorusContext {
-            self_index,
-            key,
-            validator_data,
-            header_auth,
-            occupancy,
-        } = context;
+    fn context_at(
+        config: &ChorusConfig,
+        slot: Slot,
+        epoch_handle: &EpochHandle,
+    ) -> Result<ChorusContext, SlotOutOfBound> {
+        config.at_slot(slot, epoch_handle)
+    }
 
-        // The schedule validated its configuration and its anchor epoch's
-        // stake snapshot at construction, and stakes are static per epoch
-        // for now, so a failure here is a wiring error — in particular the
-        // conductor must not open slots before the schedule's anchor (a
-        // mid-chain conductor start does not exist yet; align the two when
-        // it does).
-        // TODO(dynamic stakes / mid-chain start): construct a decided-dead
-        // instance emitting a fault instead of panicking.
-        let occupied = occupancy
-            .occupied_lanes(slot)
-            .expect("proposer schedule unavailable for open slot");
-
-        // K comes from the schedule, so the fallback path agrees with the
-        // fast path on the number of lanes.
-        let num_lanes = occupied.size();
-
-        let fast = FastPath::new(
-            slot,
-            num_lanes,
-            key.clone(),
-            validator_data.clone(),
-            header_auth.clone(),
-        );
-
-        let fallback = FallbackState::new(MvbaContext {
-            slot,
-            num_lanes,
-            delta: *delta,
-            self_index: *self_index,
-            key: key.clone(),
-            validator_data: validator_data.clone(),
-            header_auth: header_auth.clone(),
-        });
+    fn new(context: ChorusContext) -> Self {
+        let context = Arc::new(context);
+        let fast = FastPath::new(context.clone());
+        let fallback = FallbackState::new(context.clone());
 
         Self {
-            slot,
-            delta: *delta,
-            key: key.clone(),
-            validator_data: validator_data.clone(),
-            occupied,
+            context,
             fast,
             fallback,
             outputs: Default::default(),
@@ -350,10 +293,6 @@ impl SlotConsensus for Chorus {
         if self.decided {
             return;
         }
-        if self.occupied.get(event.j) != Some(&true) {
-            tracing::warn!(slot = ?self.slot, lane = ?event.j, "unexpected da event for a vacant lane");
-        }
-
         if let Some(fast_block) = self.fast.handle_da_event(event) {
             self.commit_fast_block(fast_block);
         }
@@ -364,14 +303,14 @@ impl SlotConsensus for Chorus {
     fn handle_message(&mut self, author: NodeId, message: Self::Message) {
         use monad_mcp_common::spec::ValidatorData as _;
 
-        debug_assert_eq!(message.slot(), self.slot);
+        debug_assert_eq!(message.slot(), self.context.slot);
 
         // the one place a sender becomes a validator index: everything below
         // addresses validators by index
-        let Some(author) = self.validator_data.index_of(&author) else {
+        let Some(author) = self.context.validators().index_of(&author) else {
             return;
         };
-        if self.decided || !message.check_lanes(&self.occupied) {
+        if self.decided || !message.validate_lanes(&self.context) {
             return;
         }
 
@@ -422,7 +361,7 @@ impl SlotConsensus for Chorus {
                         }
                         None => {
                             let (_, uncertified) = self.fast.fallback_wait_state();
-                            tracing::debug!(slot = ?self.slot, ?uncertified, "peer enter-fallback cert held, evidence incomplete");
+                            tracing::debug!(slot = ?self.context.slot, ?uncertified, "peer enter-fallback cert held, evidence incomplete");
                         }
                     }
                 }
@@ -442,10 +381,10 @@ impl SlotConsensus for Chorus {
             return;
         }
 
-        self.schedule_timer(self.delta, TimerEvent::FallbackTransition);
+        self.schedule_timer(self.context.delta, TimerEvent::FallbackTransition);
 
         if let Some(batch_vote) = self.fast.on_deadline() {
-            tracing::debug!(slot = ?self.slot, votes = %batch_vote.shape(), "deadline reached, batch vote cast");
+            tracing::debug!(slot = ?self.context.slot, votes = %batch_vote.shape(), "deadline reached, batch vote cast");
             self.broadcast(batch_vote);
         }
 
@@ -464,7 +403,7 @@ impl SlotConsensus for Chorus {
                         if self.transition_waits.is_power_of_two() {
                             let (admitted, waiting_on_header) = self.fast.vote_admission_state();
                             tracing::debug!(
-                                slot = ?self.slot,
+                                slot = ?self.context.slot,
                                 waits = self.transition_waits,
                                 ?admitted,
                                 ?waiting_on_header,
@@ -472,22 +411,22 @@ impl SlotConsensus for Chorus {
                             );
                         }
                         // wait for more votes and chunks to arrive
-                        self.schedule_timer(self.delta, TimerEvent::FallbackTransition);
+                        self.schedule_timer(self.context.delta, TimerEvent::FallbackTransition);
                     }
 
                     FallbackTransitionOutcome::FallbackVote(fallback_vote) => {
-                        tracing::debug!(slot = ?self.slot, "no fast block by D+delta, fallback vote cast");
+                        tracing::debug!(slot = ?self.context.slot, "no fast block by D+delta, fallback vote cast");
                         self.broadcast(fallback_vote);
-                        self.schedule_timer(self.delta, TimerEvent::FallbackDecision);
+                        self.schedule_timer(self.context.delta, TimerEvent::FallbackDecision);
                     }
 
                     FallbackTransitionOutcome::AlreadyVoted => {
                         tracing::debug!(
-                            slot = ?self.slot,
+                            slot = ?self.context.slot,
                             commit_voters = self.fast.commit_voter_count(),
                             "D+delta: fast commit vote already cast, awaiting commit qc"
                         );
-                        self.schedule_timer(self.delta, TimerEvent::FallbackDecision);
+                        self.schedule_timer(self.context.delta, TimerEvent::FallbackDecision);
                     }
                 }
             }
@@ -500,7 +439,7 @@ impl SlotConsensus for Chorus {
                     if self.fallback_waits.is_power_of_two() {
                         let (voters, uncertified) = self.fast.fallback_wait_state();
                         tracing::debug!(
-                            slot = ?self.slot,
+                            slot = ?self.context.slot,
                             waits = self.fallback_waits,
                             enter_fallback_voters = ?voters,
                             ?uncertified,
@@ -508,7 +447,7 @@ impl SlotConsensus for Chorus {
                         );
                     }
                     // todo: maybe rebroadcast fallback vote?
-                    self.schedule_timer(self.delta, TimerEvent::FallbackDecision);
+                    self.schedule_timer(self.context.delta, TimerEvent::FallbackDecision);
                 }
                 Some((cert, block)) => {
                     // we formed the fallback certificate locally; disseminate
@@ -533,8 +472,8 @@ impl Chorus {
     // speculatively commit a newly completed fast block, cast our
     // commit vote, and disseminate the block for peers to adopt
     fn commit_fast_block(&mut self, fast_block: FastBlock) {
-        tracing::debug!(slot = ?self.slot, "fast block formed, commit vote cast");
-        let commit_vote = fast_block.commit_vote(self.slot, &self.key);
+        tracing::debug!(slot = ?self.context.slot, "fast block formed, commit vote cast");
+        let commit_vote = fast_block.commit_vote(&self.context);
         self.push(SlotOutput::CommitOptimistic(fast_block.clone()));
         self.broadcast(commit_vote);
         self.broadcast(fast_block);
@@ -544,7 +483,7 @@ impl Chorus {
     // repeats of the certificate.
     fn finalize_fast(&mut self, qc: FastCommitQc) {
         let certificate = Outbound::broadcast(qc.clone().into());
-        let certificate = certificate.repeat_until(RepeatUntil::CapAdvanced(self.slot));
+        let certificate = certificate.repeat_until(RepeatUntil::CapAdvanced(self.context.slot));
         self.send(certificate);
         self.finalize(SlotFinalization::Fast { qc });
     }
@@ -558,7 +497,7 @@ impl Chorus {
             return;
         };
         for (j, cert) in block.certified_entries().into_indexed_iter() {
-            let Some((pid, holders)) = cert.decoded_holders(&self.validator_data) else {
+            let Some((pid, holders)) = cert.decoded_holders(self.context.validators()) else {
                 continue;
             };
             self.command_da(ChorusDACommand::AddDecodedHolders { j, pid, holders });
@@ -594,7 +533,7 @@ impl Chorus {
 
     // A message of the slot without a rule is repeated until the slot commits.
     fn send(&mut self, outbound: Outbound<ChorusMessage, SlotRecipients>) {
-        let outbound = outbound.repeat_until(RepeatUntil::Commit(self.slot));
+        let outbound = outbound.repeat_until(RepeatUntil::Commit(self.context.slot));
         self.push(SlotOutput::Send(outbound));
     }
 
@@ -748,25 +687,15 @@ mod tests {
 
     use super::{
         super::{
-            super::test_utils::dummy_index,
-            types::{HeaderAuth, NodeId, Slot, TimestampDelta, ValidatorData},
+            super::test_utils::{chorus_context, dummy_index},
+            types::{NodeId, Slot, ValidatorData},
         },
         *,
     };
 
     #[test]
     fn deadline_releases_chunks() {
-        let config = ChorusConfig {
-            delta: TimestampDelta::from_millis(100),
-        };
-        let context = ChorusContext {
-            self_index: dummy_index(NodeId::dummy(0)),
-            key: Arc::new(NodeId::dummy(0).keypair()),
-            validator_data: Arc::new(ValidatorData::dummy(4)),
-            header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            occupancy: Arc::new(Lanes::new(2, |_| true)),
-        };
-        let mut chorus = Chorus::new(Slot(1), &config, &context);
+        let mut chorus = Chorus::new(chorus_context(0, Slot(1), 2));
 
         chorus.handle_deadline();
 
@@ -783,17 +712,7 @@ mod tests {
 
     #[test]
     fn a_message_from_a_non_validator_is_dropped() {
-        let config = ChorusConfig {
-            delta: TimestampDelta::from_millis(100),
-        };
-        let context = ChorusContext {
-            self_index: dummy_index(NodeId::dummy(0)),
-            key: Arc::new(NodeId::dummy(0).keypair()),
-            validator_data: Arc::new(ValidatorData::dummy(4)),
-            header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            occupancy: Arc::new(Lanes::new(1, |_| true)),
-        };
-        let mut voter = Chorus::new(Slot(1), &config, &context);
+        let mut voter = Chorus::new(chorus_context(0, Slot(1), 1));
         voter.handle_deadline();
         let batch_vote = std::iter::from_fn(|| voter.poll())
             .find_map(|output| match output {
@@ -805,7 +724,7 @@ mod tests {
             })
             .expect("the deadline casts a batch vote");
 
-        let mut chorus = Chorus::new(Slot(1), &config, &context);
+        let mut chorus = Chorus::new(chorus_context(0, Slot(1), 1));
         let stranger = NodeId::dummy(99);
         chorus.handle_message(stranger, batch_vote);
         let outputs: Vec<_> = std::iter::from_fn(|| chorus.poll()).collect();
@@ -815,17 +734,7 @@ mod tests {
     // the instance of dummy validator `id` among 4, where validator 0
     // proposes at the only lane
     fn instance(id: u64) -> Chorus {
-        let config = ChorusConfig {
-            delta: TimestampDelta::from_millis(100),
-        };
-        let context = ChorusContext {
-            self_index: dummy_index(NodeId::dummy(id)),
-            key: Arc::new(NodeId::dummy(id).keypair()),
-            validator_data: Arc::new(ValidatorData::dummy(4)),
-            header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            occupancy: Arc::new(Lanes::new(1, |_| true)),
-        };
-        Chorus::new(Slot(1), &config, &context)
+        Chorus::new(chorus_context(id, Slot(1), 1))
     }
 
     // the batch vote that the instance casts at its deadline
@@ -884,17 +793,7 @@ mod tests {
             spec::ProposalHeader as _,
         };
 
-        let config = ChorusConfig {
-            delta: TimestampDelta::from_millis(100),
-        };
-        let context = ChorusContext {
-            self_index: dummy_index(NodeId::dummy(1)),
-            key: Arc::new(NodeId::dummy(1).keypair()),
-            validator_data: Arc::new(ValidatorData::dummy(4)),
-            header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            occupancy: Arc::new(Lanes::new(1, |_| true)),
-        };
-        let mut chorus = Chorus::new(Slot(1), &config, &context);
+        let mut chorus = Chorus::new(chorus_context(1, Slot(1), 1));
 
         // a commit qc on an undecoded proposal, signed by validators 0, 2, 3
         let header = ProposalHeader {
@@ -957,20 +856,7 @@ mod tests {
     // settles D+delta arms D+2delta, once
     #[test]
     fn a_delayed_transition_arms_the_decision_timer_once() {
-        let config = ChorusConfig {
-            delta: TimestampDelta::from_millis(100),
-        };
-        let validator_data = Arc::new(ValidatorData::dummy(4));
-        let header_auth = Arc::new(HeaderAuth::new(|_| false));
-        let occupied = Lanes::new(1, |_| true);
-        let context = ChorusContext {
-            self_index: dummy_index(NodeId::dummy(0)),
-            key: Arc::new(NodeId::dummy(0).keypair()),
-            validator_data: validator_data.clone(),
-            header_auth: header_auth.clone(),
-            occupancy: Arc::new(occupied.clone()),
-        };
-        let mut chorus = Chorus::new(Slot(1), &config, &context);
+        let mut chorus = Chorus::new(chorus_context(0, Slot(1), 1));
 
         chorus.handle_deadline();
         assert_eq!(
@@ -990,13 +876,7 @@ mod tests {
         // finds the commit vote already cast
         for id in 1..4 {
             let voter = NodeId::dummy(id);
-            let mut fast = FastPath::new(
-                Slot(1),
-                occupied.size(),
-                Arc::new(voter.keypair()),
-                validator_data.clone(),
-                header_auth.clone(),
-            );
+            let mut fast = FastPath::new(Arc::new(chorus_context(id, Slot(1), 1)));
             let vote = fast.on_deadline().expect("the first deadline casts a vote");
             chorus.handle_message(voter, ChorusMessage::BatchVote(vote));
         }
