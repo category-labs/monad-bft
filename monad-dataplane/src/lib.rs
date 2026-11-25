@@ -28,16 +28,18 @@ use std::{
 
 use addrlist::Addrlist;
 use bytes::Bytes;
+use egress::PacedMessage;
 use futures::channel::oneshot;
-use monad_types::UdpPriority;
+use monad_types::EgressPriority;
 use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
-use tcp::{TcpConfig, TcpControl, TcpRateLimit};
+use tcp::{tx::TcpEgressMsg, TcpConfig, TcpControl, TcpRateLimit};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, warn};
 
 pub(crate) mod addrlist;
 pub(crate) mod ban_expiry;
 pub(crate) mod buffer_ext;
+mod egress;
 mod metrics;
 pub mod pacing;
 pub mod tcp;
@@ -100,12 +102,12 @@ pub const DEFAULT_UDP_MAX_QUEUED_BYTES: usize = 100 * 1024 * 1024;
 pub const DEFAULT_UDP_TX_WORKERS: usize = 1;
 pub const MAX_UDP_TX_WORKERS: usize = 64;
 
-/// Configuration for the UDP pacing queue.
+/// Configuration for the shared UDP/TCP pacing queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UdpPacingConfig {
-    /// Uniform per-destination bandwidth cap.
+    /// Uniform per-destination-IP bandwidth cap shared across ports and protocols.
     pub peer_bandwidth_mbps: u64,
-    /// Payload byte budget independently applied to each pacing traffic class.
+    /// Queue byte budget applied independently to each pacing traffic class.
     pub max_queued_bytes: usize,
 }
 
@@ -261,7 +263,7 @@ impl DataplaneBuilder {
         validate_sockets(tcp_sockets.iter(), "tcp");
 
         let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(TCP_EGRESS_CHANNEL_SIZE);
-        let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
+        let (pacing_tx, pacing_rx) = mpsc::channel(PACING_CHANNEL_SIZE);
         let metrics = DataplaneMetrics::new();
 
         let mut udp_socket_configs = Vec::new();
@@ -302,6 +304,7 @@ impl DataplaneBuilder {
                 let tcp_control_map = tcp_control_map.clone();
                 let addrlist = addrlist.clone();
                 let metrics = metrics.clone();
+                let pacing_tx = pacing_tx.clone();
                 move || {
                     RuntimeBuilder::<IoUringDriver>::new()
                         .enable_timer()
@@ -320,22 +323,27 @@ impl DataplaneBuilder {
                                 addrlist.clone(),
                                 tcp_socket_configs,
                                 tcp_egress_rx,
+                                pacing_tx,
                                 tcp_bound_addrs_tx,
                                 metrics.clone(),
                             );
-                            udp::spawn_tasks(
+                            let dispatch_tx = udp::spawn_tasks(
                                 udp_socket_configs,
-                                udp_egress_rx,
                                 udp::UdpTaskConfig {
-                                    up_bandwidth_mbps,
-                                    pacing: udp_pacing_config,
                                     buffer_size: udp_buffer_size,
                                     use_multishot: udp_multishot,
                                     workers: udp_tx_workers,
                                 },
                                 udp_bound_addrs_tx,
-                                metrics,
+                                metrics.clone(),
                             );
+                            spawn(egress::task(
+                                dispatch_tx,
+                                pacing_rx,
+                                up_bandwidth_mbps,
+                                udp_pacing_config,
+                                metrics,
+                            ));
 
                             ready_clone.store(true, Ordering::Release);
 
@@ -371,7 +379,7 @@ impl DataplaneBuilder {
                 writer: UdpSocketWriter {
                     socket_id: id,
                     socket_addr,
-                    egress_tx: udp_egress_tx.clone(),
+                    egress_tx: pacing_tx.clone(),
                     msgs_dropped: Arc::new(AtomicUsize::new(0)),
                     metrics: metrics.clone(),
                 },
@@ -450,7 +458,7 @@ impl UdpSocketReader {
 pub struct UdpSocketWriter {
     socket_id: UdpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<UdpMsg>,
+    egress_tx: mpsc::Sender<PacedMessage>,
     msgs_dropped: Arc<AtomicUsize>,
     metrics: DataplaneMetrics,
 }
@@ -481,7 +489,7 @@ impl UdpSocketHandle {
         self.writer.write_broadcast(msg)
     }
 
-    pub fn write_broadcast_with_priority(&self, msg: BroadcastMsg, priority: UdpPriority) {
+    pub fn write_broadcast_with_priority(&self, msg: BroadcastMsg, priority: EgressPriority) {
         self.writer.write_broadcast_with_priority(msg, priority)
     }
 
@@ -489,7 +497,7 @@ impl UdpSocketHandle {
         self.writer.write_unicast(msg)
     }
 
-    pub fn write_unicast_with_priority(&self, msg: UnicastMsg, priority: UdpPriority) {
+    pub fn write_unicast_with_priority(&self, msg: UnicastMsg, priority: EgressPriority) {
         self.writer.write_unicast_with_priority(msg, priority)
     }
 
@@ -509,13 +517,16 @@ impl UdpSocketHandle {
 impl UdpSocketWriter {
     pub fn write(&self, dst: SocketAddr, payload: Bytes, stride: u16) {
         let msg_length = payload.len();
-        let result = self.egress_tx.try_send(UdpMsg {
-            socket_id: self.socket_id,
-            dst,
-            payload,
-            stride,
-            priority: UdpPriority::Regular,
-        });
+        let result = self.egress_tx.try_send(
+            UdpMsg {
+                socket_id: self.socket_id,
+                dst,
+                payload,
+                stride,
+                priority: EgressPriority::Regular,
+            }
+            .into(),
+        );
 
         match result {
             Ok(()) => {}
@@ -537,15 +548,15 @@ impl UdpSocketWriter {
     }
 
     pub fn write_broadcast(&self, msg: BroadcastMsg) {
-        self.write_broadcast_with_priority(msg, UdpPriority::Regular);
+        self.write_broadcast_with_priority(msg, EgressPriority::Regular);
     }
 
-    pub fn write_broadcast_with_priority(&self, msg: BroadcastMsg, priority: UdpPriority) {
+    pub fn write_broadcast_with_priority(&self, msg: BroadcastMsg, priority: EgressPriority) {
         let msg_len = msg.payload.len();
         let mut pending_count = msg.msg_count();
 
         for udp_msg in msg.into_iter_with_priority(self.socket_id, priority) {
-            match self.egress_tx.try_send(udp_msg) {
+            match self.egress_tx.try_send(udp_msg.into()) {
                 Ok(()) => pending_count -= 1,
                 Err(TrySendError::Full(_)) => break,
                 Err(TrySendError::Closed(_)) => {
@@ -573,14 +584,14 @@ impl UdpSocketWriter {
     }
 
     pub fn write_unicast(&self, msg: UnicastMsg) {
-        self.write_unicast_with_priority(msg, UdpPriority::Regular);
+        self.write_unicast_with_priority(msg, EgressPriority::Regular);
     }
 
-    pub fn write_unicast_with_priority(&self, msg: UnicastMsg, priority: UdpPriority) {
+    pub fn write_unicast_with_priority(&self, msg: UnicastMsg, priority: EgressPriority) {
         let mut pending_count = msg.msg_count();
 
         for udp_msg in msg.into_iter_with_priority(self.socket_id, priority) {
-            match self.egress_tx.try_send(udp_msg) {
+            match self.egress_tx.try_send(udp_msg.into()) {
                 Ok(()) => pending_count -= 1,
                 Err(TrySendError::Full(_)) => break,
                 Err(TrySendError::Closed(_)) => {
@@ -638,14 +649,19 @@ impl TcpSocketReader {
 pub struct TcpSocketWriter {
     socket_id: TcpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
+    egress_tx: mpsc::Sender<(TcpSocketId, SocketAddr, TcpEgressMsg)>,
     msgs_dropped: Arc<AtomicUsize>,
     metrics: DataplaneMetrics,
 }
 
 impl TcpSocketWriter {
-    pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
+    /// Enqueues a TCP message with the caller's egress priority.
+    pub fn write(&self, addr: SocketAddr, msg: TcpMsg, priority: EgressPriority) {
         let msg_length = msg.msg.len();
+        let msg = TcpEgressMsg {
+            message: msg,
+            priority,
+        };
 
         match self.egress_tx.try_send((self.socket_id, addr, msg)) {
             Ok(()) => {}
@@ -682,8 +698,8 @@ impl TcpSocketHandle {
         self.reader.recv().await
     }
 
-    pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
-        self.writer.write(addr, msg)
+    pub fn write(&self, addr: SocketAddr, msg: TcpMsg, priority: EgressPriority) {
+        self.writer.write(addr, msg, priority)
     }
 
     pub fn writer(&self) -> &TcpSocketWriter {
@@ -791,7 +807,7 @@ impl BroadcastMsg {
     fn into_iter_with_priority(
         self,
         socket_id: UdpSocketId,
-        priority: UdpPriority,
+        priority: EgressPriority,
     ) -> impl Iterator<Item = UdpMsg> {
         let Self {
             targets,
@@ -822,7 +838,7 @@ impl UnicastMsg {
     fn into_iter_with_priority(
         self,
         socket_id: UdpSocketId,
-        priority: UdpPriority,
+        priority: EgressPriority,
     ) -> impl Iterator<Item = UdpMsg> {
         let Self { msgs, stride } = self;
         msgs.into_iter().map(move |(dst, payload)| UdpMsg {
@@ -858,13 +874,13 @@ pub(crate) struct UdpMsg {
     pub(crate) dst: SocketAddr,
     pub(crate) payload: Bytes,
     pub(crate) stride: u16,
-    pub(crate) priority: UdpPriority,
+    pub(crate) priority: EgressPriority,
 }
 
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
 const TCP_EGRESS_CHANNEL_SIZE: usize = 256;
 const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
-const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
+const PACING_CHANNEL_SIZE: usize = 12_800;
 
 impl Dataplane {
     /// Returns the live dataplane metrics for Prometheus or OTel registration.
