@@ -39,6 +39,7 @@ monad-leanudp = { path = "./monad-leanudp" }
 monad-ledger = { path = "./monad-ledger" }
 monad-mcp-chorus = { path = "./monad-mcp-chorus" }
 monad-merkle = { path = "./monad-merkle" }
+monad-message-rate-limit = { path = "./monad-message-rate-limit" }
 monad-metrics = { path = "./monad-metrics" }
 monad-mock-swarm = { path = "./monad-mock-swarm" }
 monad-multi-sig = { path = "./monad-multi-sig" }
