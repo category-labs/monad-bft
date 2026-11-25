@@ -26,10 +26,10 @@ use std::{
 };
 
 use alloy_consensus::Header;
-use alloy_primitives::keccak256;
+use alloy_primitives::{keccak256, map::HashMap};
 use alloy_rlp::Decodable;
 use auto_impl::auto_impl;
-use futures::{channel::oneshot, FutureExt};
+use futures::{channel::oneshot, FutureExt, StreamExt, TryStreamExt};
 use monad_eth_types::{
     BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash, EthStorageKey,
     EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
@@ -94,6 +94,7 @@ struct AsyncRequest {
 
 const MAX_QUEUE_BEFORE_POLL: usize = 100;
 const MAX_POLL_COMPLETIONS: usize = usize::MAX;
+const MAX_CONCURRENT_STORAGE_READS: usize = 64;
 const META_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 fn get_latest_voted_block_key(triedb_handle: &TriedbHandle) -> Option<ProposedBlockKey> {
@@ -434,6 +435,42 @@ impl From<BlockKey> for Version {
     }
 }
 
+fn decode_page_slot(leaf: &[u8], slot: EthStorageKey) -> Result<EthStorageSlot, String> {
+    decode_storage_page_slot(leaf, compute_slot_offset(slot))
+        .ok_or_else(|| String::from("Decoding storage page error"))
+}
+
+fn group_pages(
+    reads: &[(EthAddress, EthStorageKey)],
+) -> HashMap<(EthAddress, EthStorageKey), Vec<usize>> {
+    let mut pages: HashMap<_, Vec<usize>> =
+        HashMap::with_capacity_and_hasher(reads.len(), Default::default());
+    for (position, &(addr, slot)) in reads.iter().enumerate() {
+        pages
+            .entry((addr, compute_page_key(slot)))
+            .or_default()
+            .push(position);
+    }
+    pages
+}
+
+async fn scatter_reads(
+    len: usize,
+    results: impl futures::Stream<Item = Result<Vec<(usize, EthStorageSlot)>, String>>,
+) -> Result<Vec<EthStorageSlot>, String> {
+    results
+        .try_fold(
+            vec![EthStorageSlot::default(); len],
+            |mut values, slots| async move {
+                for (position, value) in slots {
+                    values[position] = value;
+                }
+                Ok(values)
+            },
+        )
+        .await
+}
+
 #[auto_impl(Arc)]
 pub trait Triedb: Debug {
     fn get_latest_finalized_block_key(&self) -> FinalizedBlockKey;
@@ -467,6 +504,11 @@ pub trait Triedb: Debug {
         addr: EthAddress,
         at: EthStorageKey,
     ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send;
+    fn get_storage_values(
+        &self,
+        key: BlockKey,
+        reads: &[(EthAddress, EthStorageKey)],
+    ) -> impl std::future::Future<Output = Result<Vec<EthStorageSlot>, String>> + Send;
     fn get_code(
         &self,
         key: BlockKey,
@@ -986,15 +1028,9 @@ impl Triedb for TriedbEnv {
             // page geometry (the >> 7 shift and the in-page offset) and the page
             // decode all live in C++ so the format has one source of truth.
             let page_key = compute_page_key(at);
-            let offset = compute_slot_offset(at);
-            self.handle_async_request(
-                block_key,
-                KeyInput::Storage(&addr, &page_key),
-                move |data| {
-                    decode_storage_page_slot(&data, offset)
-                        .ok_or_else(|| String::from("Decoding storage page error"))
-                },
-            )
+            self.handle_async_request(block_key, KeyInput::Storage(&addr, &page_key), |data| {
+                decode_page_slot(&data, at)
+            })
             .await
             .map(Option::unwrap_or_default)
         } else {
@@ -1004,6 +1040,46 @@ impl Triedb for TriedbEnv {
             })
             .await
             .map(Option::unwrap_or_default)
+        }
+    }
+
+    #[tracing::instrument(level = "debug", skip(reads), fields(reads = reads.len()))]
+    async fn get_storage_values(
+        &self,
+        block_key: BlockKey,
+        reads: &[(EthAddress, EthStorageKey)],
+    ) -> Result<Vec<EthStorageSlot>, String> {
+        if let [(addr, slot)] = *reads {
+            return Ok(vec![self.get_storage_at(block_key, addr, slot).await?]);
+        }
+        if self.serving_db_is_page_encoded(*block_key.seq_num()) {
+            let results = futures::stream::iter(group_pages(reads))
+                .map(|((addr, page_key), positions)| async move {
+                    let slots = self
+                        .handle_async_request(
+                            block_key,
+                            KeyInput::Storage(&addr, &page_key),
+                            |leaf| {
+                                positions
+                                    .iter()
+                                    .map(|&position| {
+                                        decode_page_slot(&leaf, reads[position].1)
+                                            .map(|value| (position, value))
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()
+                            },
+                        )
+                        .await?;
+                    Ok(slots.unwrap_or_default())
+                })
+                .buffer_unordered(MAX_CONCURRENT_STORAGE_READS);
+            scatter_reads(reads.len(), results).await
+        } else {
+            futures::stream::iter(reads.iter().copied())
+                .map(|(addr, slot)| self.get_storage_at(block_key, addr, slot))
+                .buffered(MAX_CONCURRENT_STORAGE_READS)
+                .try_collect()
+                .await
         }
     }
 
@@ -1273,4 +1349,90 @@ fn process_call_frame_chunks(chunks: BTreeMap<u8, Vec<u8>>) -> Result<Vec<u8>, S
 
     // concatenate chunks in order
     Ok(chunks.into_values().flatten().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_eth_types::{EthAddress, EthStorageKey, EthStorageSlot};
+    use monad_triedb::compute_page_key;
+
+    use super::{group_pages, scatter_reads};
+
+    fn slot(n: u64) -> EthStorageKey {
+        let mut key = [0u8; 32];
+        key[24..].copy_from_slice(&n.to_be_bytes());
+        key
+    }
+
+    fn value(n: u8) -> EthStorageSlot {
+        [n; 32]
+    }
+
+    fn sorted_groups(
+        reads: &[(EthAddress, EthStorageKey)],
+    ) -> Vec<((EthAddress, EthStorageKey), Vec<usize>)> {
+        let mut groups: Vec<_> = group_pages(reads).into_iter().collect();
+        groups.sort();
+        groups
+    }
+
+    #[test]
+    fn groups_by_address_and_page() {
+        let (a, b) = ([1u8; 20], [2u8; 20]);
+        assert_eq!(
+            sorted_groups(&[
+                (a, slot(0)),
+                (a, slot(127)),
+                (a, slot(128)),
+                (b, slot(0)),
+                (a, slot(127)),
+            ]),
+            vec![
+                ((a, compute_page_key(slot(0))), vec![0, 1, 4]),
+                ((a, compute_page_key(slot(128))), vec![2]),
+                ((b, compute_page_key(slot(0))), vec![3]),
+            ]
+        );
+        assert_eq!(
+            sorted_groups(&[
+                (b, slot(300)),
+                (a, slot(1)),
+                (b, slot(301)),
+                (a, slot(200)),
+                (a, slot(2)),
+            ]),
+            vec![
+                ((a, compute_page_key(slot(1))), vec![1, 4]),
+                ((a, compute_page_key(slot(200))), vec![3]),
+                ((b, compute_page_key(slot(300))), vec![0, 2]),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn scatter_places_values_by_position() {
+        let chunks = vec![
+            Ok(vec![(3, value(3)), (0, value(1))]),
+            Ok(vec![]),
+            Ok(vec![(1, value(2))]),
+        ];
+        let values = scatter_reads(4, futures::stream::iter(chunks))
+            .await
+            .unwrap();
+        assert_eq!(
+            values,
+            vec![value(1), value(2), EthStorageSlot::default(), value(3)]
+        );
+    }
+
+    #[tokio::test]
+    async fn scatter_propagates_error() {
+        let chunks = vec![
+            Ok(vec![(0, value(1))]),
+            Err(String::from("read failed")),
+            Ok(vec![(1, value(2))]),
+        ];
+        let result = scatter_reads(2, futures::stream::iter(chunks)).await;
+        assert_eq!(result, Err(String::from("read failed")));
+    }
 }

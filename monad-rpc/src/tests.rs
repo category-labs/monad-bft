@@ -55,6 +55,7 @@ pub async fn init_server(
         metrics: None,
         rpc_comparator: None,
         feehistory_limiter: std::sync::Arc::new(tokio::sync::Semaphore::new(100)),
+        eth_get_storage_values_limiter: std::sync::Arc::new(tokio::sync::Semaphore::new(100)),
     };
 
     test::init_service(
