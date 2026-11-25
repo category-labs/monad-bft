@@ -511,7 +511,7 @@ mod tests {
         App,
     };
     use monad_rpc::{
-        domain::DomainRpc,
+        domain::{auth::UNAUTHORIZED_ERROR_CODE, DomainRpc},
         handlers::resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         txpool::EthTxPoolBridgeClient,
         types::jsonrpc::ErrorCode,
@@ -552,7 +552,7 @@ mod tests {
         );
         assert_eq!(
             l1_method_error_code(Some(DomainRpc::new(app_state()))).await,
-            ErrorCode::MethodNotFound as i32
+            UNAUTHORIZED_ERROR_CODE
         );
     }
 }
