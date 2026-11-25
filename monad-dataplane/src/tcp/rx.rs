@@ -20,12 +20,13 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
+use governor::clock::Clock;
 use monoio::{
     buf::IoBufMut,
     io::{AsyncReadRent, AsyncReadRentExt},
     net::{TcpListener, TcpStream},
     spawn,
-    time::timeout,
+    time::{sleep, timeout},
 };
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
@@ -34,12 +35,12 @@ use super::{
     conn::{ConnectionRegistration, ConnectionRegistry, LimitError, Limits, Permit},
     message_timeout, task_connection,
     tx::{drop_queued_messages, BoundedQueueReceiver},
-    ConnectionContext, ConnectionIdle, IoGuard, RecvTcpMsg, TcpConnectionGuard, TcpMsgHdr,
-    TcpReadHalf, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
+    ConnectionContext, ConnectionIdle, IoGuard, RateLimiter, RecvTcpMsg, TcpConnectionGuard,
+    TcpMsgHdr, TcpReadHalf, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
 };
 use crate::metrics::{ActiveConnectionGuard, DataplaneMetrics};
 
-// Finish the remaining header within this deadline after its first byte arrives.
+// Finish reading the header within this deadline once the frame is admitted.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) async fn task(
@@ -135,14 +136,17 @@ pub(crate) async fn read_messages(
     // RX is idle only while waiting for the first byte of the next message.
     // Hold the returned guard until this message is queued for the consumer,
     // including any wait for queue space.
-    while let Some((message, _reading)) =
-        read_message(conn_id, addr, message_id, read_half, &context.metrics, idle).await
+    while let Some((message, _reading)) = read_message(
+        conn_id,
+        addr,
+        message_id,
+        read_half,
+        &context.metrics,
+        idle,
+        &rate_limiter,
+    )
+    .await
     {
-        if rate_limiter.check().is_err() {
-            context.metrics.tcp_connections_rate_limited.inc();
-            warn!(conn_id, ?addr, "rate limit exceeded");
-            break;
-        }
         if let Err(err) = context
             .tcp_ingress_tx
             .send(RecvTcpMsg {
@@ -171,6 +175,7 @@ async fn read_message<'a>(
     read_half: &mut TcpReadHalf,
     metrics: &DataplaneMetrics,
     idle: &'a ConnectionIdle,
+    rate_limiter: &RateLimiter,
 ) -> Option<(Bytes, IoGuard<'a>)> {
     let start_time = if enabled!(Level::DEBUG) {
         Some(Instant::now())
@@ -206,6 +211,15 @@ async fn read_message<'a>(
         }
     };
     let reading = idle.reading();
+    let mut quota_wait = rate_limiter.check().err();
+    if quota_wait.is_some() {
+        metrics.tcp_receive_rate_limit_waits.inc();
+    }
+    while let Some(not_until) = quota_wait {
+        sleep(not_until.wait_time_from(rate_limiter.clock().now())).await;
+        quota_wait = rate_limiter.check().err();
+    }
+
     let header = match timeout(
         HEADER_TIMEOUT,
         read_half.read_exact(header_bytes.slice_mut(header_len..header_size)),

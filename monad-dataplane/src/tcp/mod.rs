@@ -300,8 +300,9 @@ pub(crate) async fn task_connection(
     // 2. if either side closes or fails, close the whole connection.
     // 3. if a header or body read or a frame write exceeds 10 seconds, close
     //    the whole connection regardless of activity on the other side. the header
-    //    deadline starts after its first byte arrives; the body deadline starts
-    //    after the header is complete. progress does not reset these deadlines.
+    //    deadline starts once the receiver has quota for the new frame. the body
+    //    deadline starts after the header is complete. progress does not reset
+    //    these deadlines.
     select! {
         biased;
         _ = connection.connection.disconnected() => Ok(()),

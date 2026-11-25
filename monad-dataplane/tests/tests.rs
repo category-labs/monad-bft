@@ -347,6 +347,7 @@ fn tcp_rapid() {
     let num_msgs = 512;
 
     let mut rx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_rps_burst(10_000, 2_000)
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
         .build();
     let mut tx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
@@ -437,6 +438,7 @@ fn tcp_exceed_queue_limits() {
     let num_msgs = 100 * QUEUED_MESSAGE_LIMIT;
 
     let mut rx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_rps_burst(10_000, 2_000)
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
         .build();
     let mut tx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
@@ -891,7 +893,7 @@ async fn test_tcp_limits_are_applied(
 
 #[rstest]
 #[monoio::test(timer_enabled = true)]
-async fn test_tcp_rps_limits() {
+async fn tcp_receive_rate_limit_delays_frames_on_the_same_connection() {
     once_setup();
 
     let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -910,8 +912,9 @@ async fn test_tcp_rps_limits() {
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
         .build();
 
-    let num_messages = 2;
+    let num_messages = 4;
     let tx1_socket = tx1.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+    let started = Instant::now();
     for i in 0..num_messages {
         let payload = format!("message {}", i).into_bytes();
         tx1_socket.write(
@@ -924,19 +927,22 @@ async fn test_tcp_rps_limits() {
     }
 
     let mut rx_tcp_socket = rx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
-    for i in 0..2 {
-        let recv_msg = rx_tcp_socket.recv().await;
-        let expected = format!("message {}", i).into_bytes();
-        assert_eq!(recv_msg.payload, expected);
-    }
+    monoio::time::timeout(Duration::from_secs(2), async {
+        let mut peer_addr = None;
+        for i in 0..num_messages {
+            let recv_msg = rx_tcp_socket.recv().await;
+            let expected = format!("message {}", i).into_bytes();
+            assert_eq!(recv_msg.payload, expected);
+            assert_eq!(
+                *peer_addr.get_or_insert(recv_msg.src_addr),
+                recv_msg.src_addr
+            );
+        }
+    })
+    .await
+    .expect("all frames should arrive on the original connection");
 
-    let result = async {
-        monoio::time::timeout(Duration::from_millis(50), rx_tcp_socket.recv())
-            .await
-            .ok()
-    }
-    .await;
-    assert!(result.is_none());
+    assert!(started.elapsed() >= Duration::from_millis(190));
 }
 
 #[rstest]

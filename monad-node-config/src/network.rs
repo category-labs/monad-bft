@@ -99,11 +99,11 @@ fn default_tcp_per_ip_connections_limit() -> usize {
 }
 
 fn default_tcp_rate_limit_rps() -> u32 {
-    1000
+    40
 }
 
 fn default_tcp_rate_limit_burst() -> u32 {
-    200
+    80
 }
 
 fn default_signature_verifications_per_second() -> u32 {
