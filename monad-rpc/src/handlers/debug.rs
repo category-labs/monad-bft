@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
 
 use crate::{
-    data::DataProvider,
+    data::{ChainStateError, DataProvider},
+    txpool::EthTxPoolBridgeClient,
     types::{
         eth_json::{
             BlockTagOrHash, BlockTags, EthAddress, EthHash, FixedData, MonadU256, Quantity,
@@ -70,8 +71,11 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
 
     let transactions = transactions
         .into_transactions()
-        .map(|tx| tx.into_inner())
-        .collect::<Vec<_>>();
+        .map(|tx| {
+            tx.try_into_canonical()
+                .map_err(|e| JsonRpcError::internal_error(e.into()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     let mut txs_heuristic_response_size = 0usize;
 
@@ -167,23 +171,26 @@ pub struct MonadDebugGetRawTransactionParams {
     tx_hash: EthHash,
 }
 
-#[rpc(method = "debug_getRawTransaction")]
+#[rpc(method = "debug_getRawTransaction", ignore = "txpool_bridge_client")]
 #[allow(non_snake_case)]
 /// Returns an array of EIP-2718 binary-encoded transactions.
 pub async fn monad_debug_getRawTransaction<T: Triedb>(
     data_provider: &DataProvider<T>,
+    txpool_bridge_client: Option<&EthTxPoolBridgeClient>,
     params: MonadDebugGetRawTransactionParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_debug_getRawTransaction: {params:?}");
 
-    let Ok(tx) = data_provider
-        .get_transaction(&FixedBytes(params.tx_hash.0))
-        .await
-    else {
-        return Err(JsonRpcError::internal_error("block data not found".into()));
+    let hash = FixedBytes(params.tx_hash.0);
+    let tx = match data_provider.get_transaction(&hash).await {
+        Ok(tx) => tx.inner,
+        Err(ChainStateError::ResourceNotFound) => txpool_bridge_client
+            .and_then(|client| client.get_pending_native_transaction(&hash))
+            .ok_or_else(|| JsonRpcError::internal_error("block data not found".into()))?,
+        Err(_) => return Err(JsonRpcError::internal_error("block data not found".into())),
     };
 
-    let tx: &TxEnvelope = tx.inner.inner();
+    let tx: &TxEnvelope = tx.inner();
 
     let mut res = Vec::new();
     tx.encode_2718(&mut res);
@@ -1403,6 +1410,7 @@ mod tests {
         mock_triedb.set_receipts(
             SeqNum(1),
             vec![ReceiptWithLogIndex {
+                calls_executed: None,
                 receipt: ReceiptEnvelope::Eip1559(receipt),
                 starting_log_index: 0,
             }],

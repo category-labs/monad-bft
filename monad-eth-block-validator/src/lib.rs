@@ -605,7 +605,7 @@ where
                         .saturating_add(compute_txn_max_gas_cost(eth_txn, block_base_fee));
                 })
                 .or_insert(TxnFee {
-                    first_txn_value: eth_txn.value(),
+                    first_txn_value: eth_txn.max_value_outflow(),
                     first_txn_gas: compute_txn_max_gas_cost(eth_txn, block_base_fee),
                     max_gas_cost: Balance::ZERO,
                     is_delegated: false,

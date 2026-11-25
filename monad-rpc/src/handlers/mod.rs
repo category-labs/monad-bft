@@ -307,9 +307,13 @@ async fn debug_getRawTransaction(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_debug_getRawTransaction(data_provider, params)
-        .await
-        .map(serialize_result)?
+    monad_debug_getRawTransaction(
+        data_provider,
+        app_state.txpool_bridge_client.as_ref(),
+        params,
+    )
+    .await
+    .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -575,9 +579,13 @@ async fn eth_getTransactionByHash(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getTransactionByHash(data_provider, params)
-        .await
-        .map(serialize_result)?
+    monad_eth_getTransactionByHash(
+        data_provider,
+        app_state.txpool_bridge_client.as_ref(),
+        params,
+    )
+    .await
+    .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]

@@ -23,6 +23,7 @@ pub(super) fn convert(
     call_request: CallRequest,
 ) -> Result<alloy_consensus::TxEnvelope, JsonRpcError> {
     let CallRequest {
+        calls: _,
         from: _,
         to,
         gas,

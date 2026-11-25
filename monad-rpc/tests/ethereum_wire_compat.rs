@@ -155,6 +155,7 @@ fn rpc_transactions(
         block_timestamp: mined.then_some(1_788_359_400),
     };
     let current = rpc::Transaction {
+        native_execution: Default::default(),
         inner: Recovered::new_unchecked(tx.into(), original.inner.signer()),
         block_hash: original.block_hash,
         block_number: original.block_number,

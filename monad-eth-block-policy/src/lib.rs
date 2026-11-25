@@ -59,7 +59,7 @@ pub enum ReserveBalanceCheck {
 }
 
 pub fn compute_txn_max_value(txn: &TxEnvelope, base_fee: u64) -> U256 {
-    let txn_value = txn.value();
+    let txn_value = txn.max_value_outflow();
     let gas_cost = compute_txn_max_gas_cost(txn, base_fee);
     txn_value.saturating_add(gas_cost)
 }

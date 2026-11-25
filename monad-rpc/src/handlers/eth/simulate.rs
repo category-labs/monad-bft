@@ -106,7 +106,8 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .simulation
         .block_state_calls
         .iter()
-        .map(|bsc| bsc.calls.len())
+        .flat_map(|bsc| &bsc.calls)
+        .map(|call| call.calls.as_ref().map_or(1, Vec::len))
         .sum::<usize>();
     if total_simulated_calls > max_simulated_calls {
         return Err(JsonRpcError::with_message(

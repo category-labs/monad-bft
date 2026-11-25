@@ -132,6 +132,7 @@ fn receipt_database_and_archive_formats_preserve_extensions_and_log_index() {
         let raw = receipt.encoded_2718();
         let network = alloy_rlp::encode(&receipt);
         let value = ReceiptWithLogIndex {
+            calls_executed: None,
             receipt,
             starting_log_index: 257,
         };
@@ -191,4 +192,24 @@ fn block_body_requires_wrapped_typed_transactions_and_preserves_mixed_blocks() {
             assert!(alloy_rlp::decode_exact::<EthBlockBody>(body).is_err());
         }
     }
+}
+
+#[test]
+fn native_execution_metadata_does_not_change_canonical_receipt() {
+    let receipt = ReceiptEnvelope::from_typed(TxType::Monad, Receipt::default().with_bloom());
+    let raw = receipt.encoded_2718();
+    let value = ReceiptWithLogIndex {
+        receipt,
+        starting_log_index: 0,
+        calls_executed: Some(2),
+    };
+    let archive: ReceiptWithLogIndex = alloy_rlp::decode_exact(alloy_rlp::encode(&value)).unwrap();
+    let db: ReceiptWithLogIndex = alloy_rlp::decode_exact(record(&raw, &[0x80, 0x02])).unwrap();
+    assert_eq!(archive, value);
+    assert_eq!(db, value);
+    assert_eq!(db.receipt.encoded_2718(), raw);
+    assert!(alloy_rlp::decode_exact::<ReceiptWithLogIndex>(&record(&raw, &[0x80, 0x80])).is_err());
+    assert!(
+        alloy_rlp::decode_exact::<ReceiptWithLogIndex>(&record(&raw, &[0x80, 0x02, 0x01])).is_err()
+    );
 }

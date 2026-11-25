@@ -157,13 +157,6 @@ fn validate_and_decode_tx(
         decode_error_fn()
     })?;
 
-    if tx.is_monad() && chain_id != monad_transaction::MONAD_DEVNET_CHAIN_ID {
-        return Err(JsonRpcError::with_message(
-            ErrorCode::InvalidParams,
-            "Native transactions are enabled only on devnet",
-        ));
-    }
-
     // drop pre EIP-155 transactions if disallowed by the rpc (for user protection purposes)
     if !allow_unprotected_txs && tx.chain_id().is_none() {
         return Err(JsonRpcError::with_message(
@@ -365,20 +358,29 @@ pub struct MonadEthGetTransactionByHashParams {
     tx_hash: EthHash,
 }
 
-#[rpc(method = "eth_getTransactionByHash")]
+#[rpc(method = "eth_getTransactionByHash", ignore = "txpool_bridge_client")]
 #[allow(non_snake_case)]
 /// Returns the information about a transaction requested by transaction hash.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn monad_eth_getTransactionByHash<T: Triedb>(
     data_provider: &DataProvider<T>,
+    txpool_bridge_client: Option<&EthTxPoolBridgeClient>,
     params: MonadEthGetTransactionByHashParams,
 ) -> JsonRpcResult<Option<MonadTransaction>> {
     trace!("monad_eth_getTransactionByHash: {params:?}");
 
-    data_provider
+    let transaction = data_provider
         .get_transaction(&FixedBytes(params.tx_hash.0))
         .await
-        .map_present_and_no_err(MonadTransaction)
+        .map_present_and_no_err(MonadTransaction)?;
+    Ok(transaction.or_else(|| {
+        let inner =
+            txpool_bridge_client?.get_pending_native_transaction(&FixedBytes(params.tx_hash.0))?;
+        Some(MonadTransaction(monad_transaction::rpc::Transaction {
+            inner,
+            ..Default::default()
+        }))
+    }))
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]

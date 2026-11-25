@@ -67,10 +67,8 @@ pub fn static_validate_transaction(
         return Err(StaticValidationError::UnsupportedTransactionType);
     }
 
-    if tx.is_monad() {
-        if chain_id != monad_transaction::MONAD_DEVNET_CHAIN_ID
-            || !execution_chain_params.prague_enabled
-        {
+    if let Some(native) = tx.as_monad() {
+        if native.tx().validate_calls().is_err() || !execution_chain_params.prague_enabled {
             return Err(StaticValidationError::UnsupportedTransactionType);
         }
         if tx.nonce() == u64::MAX {
@@ -205,9 +203,9 @@ impl EthShanghaiForkValidation {
     ) -> Result<(), StaticValidationError> {
         // max init_code is (2 * max_code_size)
         let max_init_code_size: usize = 2 * execution_chain_params.max_code_size;
-        if tx.kind().is_create() && tx.input().len() > max_init_code_size {
+        if tx.is_create() && tx.first_call_input().len() > max_init_code_size {
             return Err(StaticValidationError::InitCodeLimitExceeded {
-                tx_input_len: tx.input().len(),
+                tx_input_len: tx.first_call_input().len(),
                 max_init_code_size,
             });
         }
@@ -265,52 +263,62 @@ impl EthPragueForkValidation {
     }
 }
 
-fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
-    // base stipend
-    let mut intrinsic_gas = 21000;
+fn data_gas(tx: &TxEnvelope, zero_cost: u64, nonzero_cost: u64) -> u64 {
+    tx.call_inputs()
+        .flat_map(|input| input.iter())
+        .fold(0u64, |gas, byte| {
+            gas.saturating_add(if *byte == 0 { zero_cost } else { nonzero_cost })
+        })
+}
 
-    // YP, Eqn. 60, first summation
-    // 4 gas for each zero byte and 16 gas for each non zero byte
-    let zero_data_len = tx.input().iter().filter(|v| **v == 0).count() as u64;
-    let non_zero_data_len = tx.input().len() as u64 - zero_data_len;
-    intrinsic_gas += zero_data_len * 4;
-    // EIP-2028: Transaction data gas cost reduction (was originally 64 for non zero byte)
-    intrinsic_gas += non_zero_data_len * 16;
-
-    if tx.kind().is_create() {
-        // adds 32000 to intrinsic gas if transaction is contract creation
-        intrinsic_gas += 32000;
-        // EIP-3860: Limit and meter initcode
-        // Init code stipend for bytecode analysis
-        intrinsic_gas += (tx.input().len() as u64).div_ceil(32) * 2;
+fn batch_access_list_data_gas(tx: &TxEnvelope) -> u64 {
+    if tx.native_calls().is_none() {
+        return 0;
     }
+    tx.access_list()
+        .into_iter()
+        .flat_map(|list| &list.0)
+        .fold(0u64, |gas, item| {
+            gas.saturating_add(40 * 20)
+                .saturating_add((item.storage_keys.len() as u64).saturating_mul(40 * 32))
+        })
+}
 
-    // EIP-2930
-    let access_list = tx
-        .access_list()
-        .map(|list| list.0.as_slice())
-        .unwrap_or(&[]);
-    let accessed_slots: usize = access_list.iter().map(|item| item.storage_keys.len()).sum();
-    // each address in access list costs 2400 gas
-    intrinsic_gas += access_list.len() as u64 * 2400;
-    // each storage key in access list costs 1900 gas
-    intrinsic_gas += accessed_slots as u64 * 1900;
-
+fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
+    let mut gas = 21_000u64.saturating_add(data_gas(tx, 4, 16));
+    if tx.is_create() {
+        gas = gas.saturating_add(32_000).saturating_add(
+            (tx.first_call_input().len() as u64)
+                .div_ceil(32)
+                .saturating_mul(2),
+        );
+    }
+    for item in tx.access_list().into_iter().flat_map(|list| &list.0) {
+        gas = gas
+            .saturating_add(2400)
+            .saturating_add((item.storage_keys.len() as u64).saturating_mul(1900));
+    }
+    if let Some(calls) = tx.native_calls() {
+        gas = gas.saturating_add(
+            (calls.len().saturating_sub(1) as u64)
+                .saturating_mul(monad_transaction::MONAD_CALL_ENTRY_GAS),
+        );
+        gas = gas.saturating_add(batch_access_list_data_gas(tx));
+    }
     if tx.is_eip7702() {
         if let Some(auth_list) = tx.authorization_list() {
-            intrinsic_gas = intrinsic_gas.saturating_add(
+            gas = gas.saturating_add(
                 EIP_7702_PER_EMPTY_ACCOUNT_COST.saturating_mul(auth_list.len() as u64),
             );
         }
     }
-    intrinsic_gas
+    gas
 }
 
 fn compute_floor_data_gas(tx: &TxEnvelope) -> u64 {
-    // EIP-7623
-    let zero_data_len = tx.input().iter().filter(|v| **v == 0).count() as u64;
-    let non_zero_data_len = tx.input().len() as u64 - zero_data_len;
-    21_000 + (zero_data_len * 10 + non_zero_data_len * 40)
+    21_000u64
+        .saturating_add(data_gas(tx, 10, 40))
+        .saturating_add(batch_access_list_data_gas(tx))
 }
 
 #[cfg(test)]
@@ -318,7 +326,7 @@ mod test {
     use std::str::FromStr;
 
     use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
-    use alloy_primitives::{Address, Bytes, FixedBytes, Signature, TxKind, B256};
+    use alloy_primitives::{Address, Bytes, FixedBytes, Signature, TxKind, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::{
@@ -360,6 +368,51 @@ mod test {
         }
     }
 
+    #[test]
+    fn batch_intrinsic_and_floor_count_every_signed_input() {
+        use alloy_eips::eip2930::{AccessList, AccessListItem};
+        use monad_transaction::MonadCall;
+        let native = monad_transaction::TxMonad {
+            to: TxKind::Create,
+            input: Bytes::new(),
+            value: U256::ZERO,
+            calls: Some(vec![
+                MonadCall {
+                    input: Bytes::from_static(&[0, 1, 0]),
+                    ..Default::default()
+                },
+                MonadCall {
+                    to: TxKind::Call(Address::ZERO),
+                    value: U256::ONE,
+                    input: Bytes::from_static(&[2, 0]),
+                },
+            ]),
+            access_list: Some(AccessList(vec![AccessListItem {
+                address: Address::ZERO,
+                storage_keys: vec![B256::ZERO],
+            }])),
+            gas_limit: 80_426,
+            ..native_tx()
+        };
+        let tx: TxEnvelope = native
+            .clone()
+            .into_signed(sign_tx(&native.signature_hash()))
+            .into();
+        assert_eq!(compute_intrinsic_gas(&tx), 80_426);
+        assert_eq!(compute_floor_data_gas(&tx), 23_190);
+        assert_eq!(validate_native(native.clone(), 20143), Ok(()));
+        assert!(matches!(
+            validate_native(
+                monad_transaction::TxMonad {
+                    gas_limit: 80_425,
+                    ..native
+                },
+                20143
+            ),
+            Err(StaticValidationError::GasLimitUnderIntrinsicGas { .. })
+        ));
+    }
+
     fn validate_native(
         tx: monad_transaction::TxMonad,
         chain: u64,
@@ -374,15 +427,12 @@ mod test {
     }
 
     #[test]
-    fn native_activation_is_limited_to_devnet() {
+    fn native_activation_uses_current_monad_rules() {
         assert_eq!(validate_native(native_tx(), 20143), Ok(()));
         for chain in [143, 10143, 1, 31337] {
             let mut tx = native_tx();
             tx.chain_id = chain;
-            assert_eq!(
-                validate_native(tx, chain),
-                Err(StaticValidationError::UnsupportedTransactionType)
-            );
+            assert_eq!(validate_native(tx, chain), Ok(()));
         }
         let mut tx = native_tx();
         tx.chain_id = u64::MAX;

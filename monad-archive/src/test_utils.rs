@@ -60,6 +60,7 @@ pub fn mock_rx(receipt_len: usize, cumulative_gas: u64) -> ReceiptWithLogIndex {
         Bloom::repeat_byte(b'a'),
     ));
     ReceiptWithLogIndex {
+        calls_executed: None,
         receipt,
         starting_log_index: 0,
     }

@@ -561,6 +561,7 @@ mod tests {
                 let tx_recovered = Recovered::new_unchecked(tx_envelope, signer.address());
 
                 let tx = monad_transaction::rpc::Transaction {
+                    native_execution: Default::default(),
                     inner: tx_recovered,
                     block_hash: Some(block_hash),
                     block_number: Some(height),

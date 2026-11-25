@@ -136,7 +136,7 @@ fn ethereum_raw_submission_policy_and_errors_match_master() {
 }
 
 #[test]
-fn native_chain_rejection_preserves_uint64_id_and_activation_error() {
+fn native_chain_rejection_preserves_uint64_id_on_every_network() {
     let chain_id = u64::MAX;
     let tx = monad_transaction::TxMonad {
         chain_id,
@@ -158,8 +158,8 @@ fn native_chain_rejection_preserves_uint64_id_and_activation_error() {
         assert_eq!(
             validate_and_decode_tx(&raw, 143, false, decode_error).unwrap_err(),
             JsonRpcError::with_message(
-                ErrorCode::InvalidParams,
-                "Native transactions are enabled only on devnet"
+                ErrorCode::TransactionRejected,
+                format!("Invalid chain ID: expected 143, got {chain_id}")
             )
         );
     }

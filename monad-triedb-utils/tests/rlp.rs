@@ -56,6 +56,7 @@ fn test_rlp_encode_decode_eip1559_tx() {
 fn test_rlp_encode_decode_legacy_receipt() {
     let receipt = ReceiptEnvelope::Legacy(make_receipt(50));
     let receipt_with_index = ReceiptWithLogIndex {
+        calls_executed: None,
         receipt,
         starting_log_index: 5,
     };
@@ -71,6 +72,7 @@ fn test_rlp_encode_decode_legacy_receipt() {
 fn test_rlp_encode_decode_eip1559_receipt() {
     let receipt = ReceiptEnvelope::Eip1559(make_receipt(50));
     let receipt_with_index = ReceiptWithLogIndex {
+        calls_executed: None,
         receipt,
         starting_log_index: 5,
     };
