@@ -36,6 +36,8 @@ use super::{
     framing::{AuthPacketFramer, LeanUdpFramer},
     metrics::{
         init_direct_udp_executor_metrics, init_socket_executor_metrics,
+        COUNTER_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BUFFER_FAILURES,
+        COUNTER_RAPTORCAST_AUTH_DIRECT_UDP_BUFFER_FAILURES,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_READ,
@@ -77,6 +79,7 @@ where
     metrics: ExecutorMetrics,
     bytes_written_metric: &'static MetricDef,
     bytes_read_metric: &'static MetricDef,
+    buffer_failures_metric: &'static MetricDef,
 }
 
 impl<AP> AuthenticatedSocketHandle<AP>
@@ -91,6 +94,7 @@ where
             metrics: init_socket_executor_metrics(),
             bytes_written_metric: GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
             bytes_read_metric: GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
+            buffer_failures_metric: COUNTER_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BUFFER_FAILURES,
         }
     }
 
@@ -98,6 +102,7 @@ where
         self.metrics = init_direct_udp_executor_metrics();
         self.bytes_written_metric = GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_WRITTEN;
         self.bytes_read_metric = GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_READ;
+        self.buffer_failures_metric = COUNTER_RAPTORCAST_AUTH_DIRECT_UDP_BUFFER_FAILURES;
         self
     }
 
@@ -254,7 +259,10 @@ where
                 let len = plaintext.len();
                 self.auth_protocol
                     .buffer_message(public_key, plaintext)
-                    .map_err(|err| warn!(?public_key, error=?err, "failed to buffer message"))?;
+                    .map_err(|err| {
+                        self.metrics.gauge(self.buffer_failures_metric).inc();
+                        debug!(?public_key, error=?err, "failed to buffer message");
+                    })?;
                 self.metrics
                     .gauge(self.bytes_written_metric)
                     .add(len as u64);

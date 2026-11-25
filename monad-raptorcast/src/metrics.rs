@@ -40,6 +40,10 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.direct_udp.forward_sent",
         help: "Direct UDP forwards sent",
     }
+    pub COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FAILED {
+        name: "monad.raptorcast.direct_udp.forward_failed",
+        help: "Direct UDP forwards that could not be written or buffered",
+    }
     pub COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK {
         name: "monad.raptorcast.direct_udp.forward_fallback",
         help: "Direct UDP forwards that fell back to regular path",
@@ -82,6 +86,7 @@ pub(crate) fn init_router_executor_metrics() -> ExecutorMetrics {
         GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
         GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT,
+        COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FAILED,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE,
     ])

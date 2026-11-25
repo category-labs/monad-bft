@@ -75,7 +75,8 @@ use util::{
 use crate::{
     auth::NopScore,
     metrics::{
-        init_router_executor_metrics, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK,
+        init_router_executor_metrics, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FAILED,
+        COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT,
         GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS, GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED,
         GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
@@ -747,7 +748,10 @@ where
                 .gauge(COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT)
                 .inc();
         } else {
-            warn!(
+            self.metrics
+                .gauge(COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FAILED)
+                .inc();
+            debug!(
                 ?target,
                 "failed to write or buffer direct udp point-to-point message"
             );
