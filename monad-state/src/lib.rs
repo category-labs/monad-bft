@@ -269,7 +269,16 @@ where
                 (locked.epoch, (vset, vmap))
             })
             .collect::<HashMap<_, _>>();
+        // only epoch_starts is used by get_epoch
+        let epoch_manager = EpochManager::new(SeqNum(0), Round(0), &self.get_epoch_starts());
         let epoch_to_validators = |epoch, round| {
+            if epoch
+                != epoch_manager
+                    .get_epoch(round)
+                    .ok_or(validation::Error::InvalidEpoch)?
+            {
+                return Err(validation::Error::InvalidEpoch);
+            }
             let (vset, vmap) = validators
                 .get(&epoch)
                 .ok_or(validation::Error::ValidatorSetDataUnavailable)?;
@@ -1681,7 +1690,10 @@ mod test {
     use monad_crypto::{certificate_signature::CertificateSignaturePubKey, signing_domain};
     use monad_eth_types::EthExecutionProtocol;
     use monad_secp::SecpSignature;
-    use monad_testutil::validators::create_keys_w_validators;
+    use monad_testutil::{
+        signing::get_certificate_key,
+        validators::{complete_keys_w_validators, create_keys_w_validators},
+    };
     use monad_types::{BlockId, Hash, NodeId, Round, Stake, MAX_FORWARDED_TXS_PER_MESSAGE};
     use monad_validator::{
         signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
@@ -1709,7 +1721,7 @@ mod test {
         let vote = Vote {
             id: BlockId(Hash([0x06_u8; 32])),
             epoch: Epoch(3),
-            round: Round(4030),
+            round: Round(4049),
         };
 
         let encoded_vote = alloy_rlp::encode(vote);
@@ -1875,6 +1887,111 @@ mod test {
                 &election
             ),
             Err(ForkpointValidationError::InvalidQC)
+        );
+    }
+
+    // Two epochs with distinct cert keys: E1 starts at round 1, E2 at round 101.
+    // The high QC is signed with the keys of `signer_epoch` and declares `claimed_epoch`.
+    fn validate_two_epoch_qc(
+        signer_epoch: Epoch,
+        claimed_epoch: Epoch,
+        round: Round,
+    ) -> Result<(), ForkpointValidationError> {
+        let (keys, cert_keys_1, _valset, valmap_1) = create_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(4, ValidatorSetFactory::default());
+        let cert_keys_2 = (0..4)
+            .map(|i| get_certificate_key::<SignatureCollectionType>(1000 + i))
+            .collect::<Vec<_>>();
+        let (_valset, valmap_2) = complete_keys_w_validators::<
+            SignatureType,
+            SignatureCollectionType,
+            _,
+        >(&keys, &cert_keys_2, ValidatorSetFactory::default());
+
+        let (cert_keys, valmap) = if signer_epoch == Epoch(1) {
+            (&cert_keys_1, &valmap_1)
+        } else {
+            (&cert_keys_2, &valmap_2)
+        };
+
+        let vote = Vote {
+            id: BlockId(Hash([0x06_u8; 32])),
+            epoch: claimed_epoch,
+            round,
+        };
+        let encoded_vote = alloy_rlp::encode(vote);
+        let sigs = keys
+            .iter()
+            .zip(cert_keys.iter())
+            .map(|(key, cert_key)| {
+                (
+                    NodeId::new(key.pubkey()),
+                    cert_key.sign::<signing_domain::Vote>(encoded_vote.as_ref()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let sigcol = SignatureCollectionType::new::<signing_domain::Vote>(
+            sigs,
+            valmap,
+            encoded_vote.as_ref(),
+        )
+        .unwrap();
+        let qc = QuorumCertificate::new(vote, sigcol);
+
+        let forkpoint: Forkpoint<SignatureType, SignatureCollectionType, ExecutionProtocolType> =
+            Checkpoint {
+                root: qc.get_block_id(),
+                high_certificate: RoundCertificate::Qc(qc),
+                validator_sets: vec![
+                    LockedEpoch {
+                        epoch: Epoch(1),
+                        round: Round(1),
+                    },
+                    LockedEpoch {
+                        epoch: Epoch(2),
+                        round: Round(101),
+                    },
+                ]
+                .into(),
+            }
+            .into();
+
+        let locked_validator_sets = [(Epoch(1), &cert_keys_1), (Epoch(2), &cert_keys_2)]
+            .into_iter()
+            .map(|(epoch, cert_keys)| ValidatorSetDataWithEpoch {
+                epoch,
+                validators: ValidatorSetData::<SignatureCollectionType>::new(
+                    keys.iter()
+                        .zip(cert_keys.iter())
+                        .map(|(key, cert_key)| (key.pubkey(), Stake::from(7), cert_key.pubkey()))
+                        .collect(),
+                ),
+            })
+            .collect::<Vec<_>>();
+
+        forkpoint.validate(
+            &ValidatorSetFactory::default(),
+            &locked_validator_sets,
+            &WeightedRoundRobin::default(),
+        )
+    }
+
+    #[test]
+    fn test_forkpoint_validate_qc_epoch_round_mismatch() {
+        // round 150 belongs to epoch 2, but the QC declares epoch 1 and is signed by epoch 1
+        assert_eq!(
+            validate_two_epoch_qc(Epoch(1), Epoch(1), Round(150)),
+            Err(ForkpointValidationError::InvalidQC)
+        );
+
+        // controls: the declared epoch matches the round
+        assert_eq!(validate_two_epoch_qc(Epoch(1), Epoch(1), Round(50)), Ok(()));
+        assert_eq!(
+            validate_two_epoch_qc(Epoch(2), Epoch(2), Round(150)),
+            Ok(())
         );
     }
 
