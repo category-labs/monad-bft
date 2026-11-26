@@ -1014,7 +1014,7 @@ mod tests {
     use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_ethcall::{
         overrides::{StateOverrideObject, StateOverrideSet},
-        EthCallResult, MonadTracer,
+        EthCallResult, MonadTracer, PreStateTracerConfig,
     };
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
@@ -1062,13 +1062,16 @@ mod tests {
                     Tracer::PreStateTracer,
                     false,
                     TracerDescriptor::PreStateTracer,
-                    MonadTracer::PreStateTracer,
+                    MonadTracer::PreStateTracer(PreStateTracerConfig::default()),
                 ),
                 (
                     Tracer::PreStateTracer,
                     true,
                     TracerDescriptor::StateDiffTracer,
-                    MonadTracer::StateDiffTracer,
+                    MonadTracer::PreStateTracer(PreStateTracerConfig {
+                        diff_mode: true,
+                        ..Default::default()
+                    }),
                 ),
             ] {
                 let descriptor = TracerDescriptor::new(
