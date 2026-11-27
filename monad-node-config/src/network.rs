@@ -26,7 +26,10 @@ pub struct NodeNetworkConfig {
     pub bind_address_tcp_port: Option<u16>,
     pub authenticated_bind_address_port: u16,
     pub direct_udp_bind_address_port: Option<u16>,
-    pub encrypted_tcp_bind_address_port: Option<u16>,
+
+    /// Advertise WireAuth support and use it for sends to peers that advertise it.
+    #[serde(default)]
+    pub enable_encrypted_tcp: bool,
 
     pub max_rtt_ms: u64,
 
@@ -146,5 +149,12 @@ mod tests {
         let config = parse("max_mbps = 2000\npeer_max_mbps = 500\nudp_tx_workers = 8");
         assert_eq!((config.max_mbps, config.peer_max_mbps), (2_000, 500));
         assert_eq!(config.udp_tx_workers, 8);
+    }
+
+    #[test]
+    fn encrypted_tcp_advertisement_is_opt_in() {
+        assert!(!parse("max_mbps = 2000").enable_encrypted_tcp);
+        let config = parse("max_mbps = 2000\nenable_encrypted_tcp = true");
+        assert!(config.enable_encrypted_tcp);
     }
 }

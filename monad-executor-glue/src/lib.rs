@@ -315,9 +315,6 @@ pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
         skip_serializing_if = "Option::is_none"
     )]
     pub direct_udp_port: Option<NonZeroU16>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub encrypted_tcp_port: Option<NonZeroU16>,
 }
 
 fn capabilities_are_empty(capabilities: &u64) -> bool {
@@ -400,7 +397,6 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
         let direct_udp_port = self.direct_udp_port.map_or(0, NonZeroU16::get);
         let tcp_port = self.tcp_port().get();
         let udp_port = self.udp_port().map_or(0, NonZeroU16::get);
-        let encrypted_tcp_port = self.encrypted_tcp_port.map_or(0, NonZeroU16::get);
         let enc = [
             &self.pubkey as &dyn Encodable,
             &address as &dyn Encodable,
@@ -410,19 +406,13 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
             &direct_udp_port as &dyn Encodable,
             &tcp_port as &dyn Encodable,
             &udp_port as &dyn Encodable,
-            &encrypted_tcp_port as &dyn Encodable,
             &self.capabilities as &dyn Encodable,
             &self.record_revision as &dyn Encodable,
         ];
-        // Preserve the legacy WAL format when optional fields are absent.
-        let omitted_fields = [
-            self.record_revision,
-            self.capabilities,
-            u64::from(encrypted_tcp_port),
-        ]
-        .into_iter()
-        .take_while(|value| *value == 0)
-        .count();
+        let omitted_fields = [self.record_revision, self.capabilities]
+            .into_iter()
+            .take_while(|value| *value == 0)
+            .count();
         encode_list::<_, dyn Encodable>(&enc[..enc.len() - omitted_fields], out);
     }
 }
@@ -463,18 +453,6 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             (tcp_port, udp_port)
         };
 
-        let encrypted_tcp_port = if payload.is_empty() {
-            None
-        } else {
-            let port = decode_optional_non_zero_u16(&mut payload)?;
-            if port.is_none() && payload.is_empty() {
-                return Err(alloy_rlp::Error::Custom(
-                    "empty trailing encrypted tcp port",
-                ));
-            }
-            port
-        };
-
         let capabilities = if payload.is_empty() {
             0
         } else {
@@ -508,7 +486,6 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             record_revision,
             auth_port,
             direct_udp_port,
-            encrypted_tcp_port,
         })
     }
 }
@@ -2511,10 +2488,11 @@ mod tests {
     use monad_wal::wal::WALLog;
 
     use crate::{
-        BlockSyncEvent, MempoolEvent, MonadEvent, PeerEntry, PeerEntryAddress, StateSyncEvent,
-        StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
-        StateSyncUpsertV1, StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_1_2,
-        STATESYNC_VERSION_1_3, STATESYNC_VERSION_MIN,
+        BlockSyncEvent, ConfigEvent, KnownPeersUpdate, MempoolEvent, MonadEvent, PeerEntry,
+        PeerEntryAddress, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
+        StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, StateSyncVersion,
+        SELF_STATESYNC_VERSION, STATESYNC_VERSION_1_2, STATESYNC_VERSION_1_3,
+        STATESYNC_VERSION_MIN,
     };
 
     type TestSignature = NopSignature;
@@ -2752,7 +2730,6 @@ tcp_port = 8003"#,
             record_revision: 0,
             auth_port: NonZeroU16::new(8000).unwrap(),
             direct_udp_port: None,
-            encrypted_tcp_port: None,
         };
         let encoded = alloy_rlp::encode(&entry);
         let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
@@ -2777,7 +2754,6 @@ tcp_port = 8003"#,
             record_revision: 1,
             auth_port: NonZeroU16::new(9000).unwrap(),
             direct_udp_port: Some(NonZeroU16::new(9001).unwrap()),
-            encrypted_tcp_port: None,
         };
 
         let encoded = alloy_rlp::encode(&entry);
@@ -2801,7 +2777,6 @@ tcp_port = 8003"#,
             record_revision: 0,
             auth_port: NonZeroU16::new(auth_port).unwrap(),
             direct_udp_port: None,
-            encrypted_tcp_port: None,
         };
 
         let encoded = alloy_rlp::encode(&entry);
@@ -2814,16 +2789,9 @@ tcp_port = 8003"#,
         let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[4u8; 32]).unwrap();
         let address: Ipv4Addr = "127.0.0.1".parse().unwrap();
         let signature = NopSignature { pubkey, id: 77 };
-        for (encrypted_tcp_port, capabilities, record_revision) in [
-            (None, 0, 0),
-            (None, 0, u64::MAX),
-            (NonZeroU16::new(9004), 0, 0),
-            (NonZeroU16::new(9004), 0, u64::MAX),
-            (None, u64::MAX, 0),
-            (None, u64::MAX, u64::MAX),
-            (NonZeroU16::new(9004), u64::MAX, 0),
-            (NonZeroU16::new(9004), u64::MAX, u64::MAX),
-        ] {
+        for (capabilities, record_revision) in
+            [(0, 0), (0, u64::MAX), (u64::MAX, 0), (u64::MAX, u64::MAX)]
+        {
             let entry = PeerEntry {
                 pubkey,
                 address: PeerEntryAddress::new(
@@ -2837,7 +2805,6 @@ tcp_port = 8003"#,
                 record_revision,
                 auth_port: NonZeroU16::new(9003).unwrap(),
                 direct_udp_port: None,
-                encrypted_tcp_port,
             };
 
             let encoded = alloy_rlp::encode(&entry);
@@ -2845,6 +2812,38 @@ tcp_port = 8003"#,
             assert_eq!(entry, decoded);
             assert_eq!(alloy_rlp::encode(decoded), encoded);
         }
+    }
+
+    #[test]
+    fn peer_entry_rlp_capabilities_and_revision_follow_udp_port() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[4u8; 32]).unwrap();
+        let signature = NopSignature { pubkey, id: 77 };
+        let address = "127.0.0.1".to_string();
+        let record_seq_num = 12u64;
+        let auth_port = 9003u16;
+        let tcp_port = 8003u16;
+        let capabilities = 2u64;
+        let record_revision = 3u64;
+        let fields: [&dyn Encodable; 10] = [
+            &pubkey,
+            &address,
+            &signature,
+            &record_seq_num,
+            &auth_port,
+            &0u16,
+            &tcp_port,
+            &0u16,
+            &capabilities,
+            &record_revision,
+        ];
+        let mut encoded = Vec::new();
+        encode_list::<_, dyn Encodable>(&fields, &mut encoded);
+
+        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(decoded.capabilities, capabilities);
+        assert_eq!(decoded.record_revision, record_revision);
+
+        assert_eq!(alloy_rlp::encode(decoded), encoded);
     }
 
     #[test]
@@ -2869,7 +2868,6 @@ tcp_port = 8003"#,
         assert_eq!(decoded.udp_port().map(NonZeroU16::get), Some(8006));
         assert_eq!(decoded.auth_port.get(), auth_port);
         assert_eq!(decoded.direct_udp_port, None);
-        assert_eq!(decoded.encrypted_tcp_port, None);
     }
 
     #[test]
@@ -2957,16 +2955,11 @@ tcp_port = 8003"#,
         let auth_port = 9003u16;
         let direct_udp_port = 9004u16;
         let tcp_port = 8003u16;
-        let extra_port = 9006u16;
-        for (encrypted_tcp_port, capabilities, record_revision, field_count) in [
-            (0u16, 0u64, 0u64, 9),
-            (0, 0, 0, 10),
-            (9005, 0, 0, 10),
-            (9005, 1, 0, 11),
-            (9005, 0, 0, 11),
-            (9005, 1, 1, 12),
-        ] {
-            let enc: [&dyn Encodable; 12] = [
+        let extra_field = 9006u16;
+        for (capabilities, record_revision, field_count) in
+            [(0u64, 0u64, 9), (0, 0, 10), (1, 0, 10), (1, 1, 11)]
+        {
+            let enc: [&dyn Encodable; 11] = [
                 &pubkey,
                 &"127.0.0.1".to_string(),
                 &signature,
@@ -2975,10 +2968,9 @@ tcp_port = 8003"#,
                 &direct_udp_port,
                 &tcp_port,
                 &0u16,
-                &encrypted_tcp_port,
                 &capabilities,
                 &record_revision,
-                &extra_port,
+                &extra_field,
             ];
             let mut encoded = Vec::new();
             encode_list::<_, dyn Encodable>(&enc[..field_count], &mut encoded);
@@ -3017,6 +3009,19 @@ tcp_port = 8003"#,
             TestExecutionProtocol,
         >::MempoolEvent(MempoolEvent::ForwardTxs(LimitedVec::default()));
         assert!(!mempool_event.is_wal_logged());
+
+        let peers_update = MonadEvent::<
+            TestSignature,
+            TestSignatureCollection,
+            TestExecutionProtocol,
+        >::ConfigEvent(ConfigEvent::KnownPeersUpdate(
+            KnownPeersUpdate {
+                known_peers: Vec::new(),
+                dedicated_full_nodes: Vec::new(),
+                prioritized_full_nodes: Vec::new(),
+            },
+        ));
+        assert!(!peers_update.is_wal_logged());
 
         let timestamp_event = MonadEvent::<
             TestSignature,

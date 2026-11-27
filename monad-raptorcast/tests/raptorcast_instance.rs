@@ -398,8 +398,7 @@ fn socket_addr_v4(addr: SocketAddr) -> SocketAddrV4 {
 }
 
 fn test_name_record(keypair: &KeyPair, addr: SocketAddrV4) -> MonadNameRecord<SignatureType> {
-    let name_record =
-        NameRecord::new_with_ports(*addr.ip(), addr.port(), None, addr.port(), None, None, 1);
+    let name_record = NameRecord::new(*addr.ip(), addr.port(), None, addr.port(), 0, 1);
     MonadNameRecord::new(name_record, keypair)
 }
 
