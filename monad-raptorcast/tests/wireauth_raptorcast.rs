@@ -28,13 +28,23 @@ use itertools::Itertools;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
+use monad_dataplane::{DataplaneBuilder, TcpMsg, TcpProtocol, TcpSocketId};
 use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_peer_discovery::{
     driver::PeerDiscoveryDriver, message::Ping, mock::NopDiscovery, MonadNameRecord, NameRecord,
     PeerDiscoveryEvent,
 };
-use monad_raptorcast::{create_dataplane_for_tests, DataplaneHandles, RaptorCastEvent};
+use monad_raptorcast::{
+    auth::{
+        metrics::TCP_METRICS,
+        tcp_socket::{wireauth_config, SharedTcpSocket},
+        WireAuthProtocol,
+    },
+    create_dataplane_for_tests,
+    message::OutboundRouterMessage,
+    new_wireauth_raptorcast_for_tests, DataplaneHandles, RaptorCastEvent,
+};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Round, Serializable, Stake};
 use rstest::rstest;
@@ -284,7 +294,14 @@ fn spawn_wireauth_validator(
         >::new(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
-            dataplane.tcp_socket,
+            (
+                dataplane.tcp_socket,
+                monad_raptorcast::auth::WireAuthProtocol::new(
+                    &monad_raptorcast::auth::metrics::TCP_METRICS,
+                    monad_raptorcast::auth::tcp_socket::wireauth_config(),
+                    keypair.clone(),
+                ),
+            ),
             authenticated,
             direct_udp,
             dataplane.control,
@@ -912,4 +929,65 @@ async fn test_send_with_record_uses_name_record_address() {
     tokio::task::LocalSet::new()
         .run_until(run_send_with_record_uses_name_record_address())
         .await;
+}
+
+#[tokio::test]
+async fn rejected_wireauth_frame_keeps_signed_tcp_connection_open() {
+    let receiver_key = Arc::new(keypair(1));
+    let receiver_pubkey = receiver_key.pubkey();
+    let receiver_dp = create_dataplane_for_tests(false);
+    let receiver_addr = SocketAddr::V4(receiver_dp.tcp_addr);
+    let mut receiver = new_wireauth_raptorcast_for_tests::<
+        SecpSignature,
+        MockMessage,
+        MockMessage,
+        MockEvent<monad_secp::PubKey>,
+    >(receiver_dp, HashMap::new(), receiver_key, Epoch(0));
+
+    let sender_key = Arc::new(keypair(2));
+    let sender_id = NodeId::new(sender_key.pubkey());
+    let mut sender_dp = DataplaneBuilder::new(1000)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, "127.0.0.1:0".parse().unwrap())])
+        .build();
+    let tcp = sender_dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+    tcp.write(
+        receiver_addr,
+        TcpMsg {
+            protocol: TcpProtocol::WireAuth,
+            msg: Bytes::from_static(b"invalid WireAuth packet"),
+            completion: None,
+        },
+    );
+    let auth = WireAuthProtocol::new(&TCP_METRICS, wireauth_config(), sender_key.clone());
+    let mut sender = SharedTcpSocket::<SecpSignature, _>::new(tcp, auth, sender_key);
+
+    // The first message confirms that the receiver has processed the rejected frame.
+    // The second exercises the connection after that rejection.
+    for id in [1, 2] {
+        let payload = OutboundRouterMessage::<MockMessage, SecpSignature>::AppMessage(
+            MockMessage::new(id, 4),
+        )
+        .try_serialize()
+        .unwrap();
+        sender
+            .write(
+                receiver_addr,
+                &receiver_pubkey,
+                TcpProtocol::Signature,
+                payload,
+                None,
+            )
+            .unwrap();
+        let message = tokio::time::timeout(MESSAGE_TIMEOUT, receiver.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.0, (sender_id, id));
+    }
+    let (_, established, _) = sender_dp
+        .metrics()
+        .iter_with_descriptions()
+        .find(|(name, _, _)| *name == "monad.dataplane.tcp.total_outbound_connections_established")
+        .unwrap();
+    assert_eq!(established, 1);
 }
