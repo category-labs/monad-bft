@@ -287,15 +287,6 @@ where
         self.known_addresses.get(id).copied()
     }
 
-    fn get_tcp_addr_by_id(
-        &self,
-        id: &NodeId<CertificateSignaturePubKey<ST>>,
-    ) -> Option<SocketAddrV4> {
-        self.name_records
-            .get(id)
-            .map(|record| record.name_record.tcp_socket())
-    }
-
     fn get_ip_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<Ipv4Addr> {
         self.name_records
             .get(id)
