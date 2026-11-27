@@ -28,12 +28,12 @@ the filter operates using two global handshake rate limits plus transport and pe
 |-----------|--------|
 | cookie invalid and handshakes >= `handshake_cookie_unverified_rate_limit` | send cookie reply |
 | cookie valid and handshakes >= `handshake_cookie_verified_rate_limit` | drop request |
-| cookie valid and last verified request from the same ip is within `ip_rate_limit_window` | drop request |
+| cookie valid and the same ip has exhausted its handshake token bucket | drop request |
 | transport sessions >= `total_transport_sessions` | drop request |
 | new handshake initiation and pending accepted sessions >= `max_pending_accepted_sessions` | drop request |
 | otherwise | accept request |
 
-defaults: `total_transport_sessions`=40,000, `max_pending_accepted_sessions`=20,000, `max_pending_initiated_sessions`=1,000, `max_established_peers_per_ip`=8, `session_timeout`=10s (plus jitter), `handshake_cookie_unverified_rate_limit`=500/sec, `handshake_cookie_verified_rate_limit`=1,000/sec, `ip_rate_limit_window`=10s, `ip_history_capacity`=1,000,000, `connect_rate_limit`=300/sec
+defaults: `total_transport_sessions`=40,000, `max_pending_accepted_sessions`=20,000, `max_pending_initiated_sessions`=1,000, `max_established_peers_per_ip`=8, `session_timeout`=10s (plus jitter), `handshake_cookie_unverified_rate_limit`=500/sec, `handshake_cookie_verified_rate_limit`=1,000/sec, `ip_rate_limit_window`=10s, `ip_rate_limit_burst`=4, `ip_history_capacity`=1,000,000, `connect_rate_limit`=300/sec
 
 the `total_transport_sessions` limit only counts established transport sessions. the filter drops new handshakes at this threshold, and promotion checks it again so already-pending handshakes cannot exceed it. accepted and initiated pending handshakes have separate admission budgets, so an incoming flood cannot consume the slots reserved for outgoing connections. Responses may complete existing pending sessions even when either budget is full, subject to the other filters. the per-IP cap counts distinct authenticated public keys when a handshake becomes established. Rekeys and opposite-direction sessions for the same key share one allowance; it is released only after the last established session for that key and IP is removed.
 
@@ -186,7 +186,8 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `connect_rate_limit` | u64 | 300 | max outbound connect attempts per second (dos protection) |
 | `connect_rate_reset_interval` | Duration | 1s | window for outbound connect rate limiting |
 | `cookie_refresh_duration` | Duration | 120s | cookie validity period (responder rotates cookie key) |
-| `ip_rate_limit_window` | Duration | 10s | time window for counting verified handshake requests per ip |
+| `ip_rate_limit_window` | Duration | 10s | time to replenish one cookie-valid handshake token per ip; zero disables the limit |
+| `ip_rate_limit_burst` | NonZeroU32 | 4 | maximum cookie-valid handshake tokens per ip, initially available in full |
 | `ip_history_capacity` | usize | 1000000 | lru cache size for tracking recent verified handshake requests per ip |
 | `total_transport_sessions` | usize | 40000 | maximum established transport sessions; also drop handshakes at this threshold |
 | `max_pending_accepted_sessions` | usize | 20000 | max accepted handshakes waiting for the first authenticated packet |
