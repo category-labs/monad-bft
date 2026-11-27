@@ -43,7 +43,7 @@ use super::{
 };
 use crate::{
     metrics::{ActiveConnectionGuard, DataplaneMetrics},
-    TcpSocketId,
+    TcpIngressEvent, TcpSocketId,
 };
 
 // These are per-peer limits.
@@ -266,6 +266,7 @@ async fn task_connect(
         metrics.tcp_egress_messages_dropped_banned.add(dropped);
         return;
     }
+    let mut connected = false;
     let result = select! {
         biased;
         _ = connection.connection.disconnected() => Ok(()),
@@ -277,6 +278,7 @@ async fn task_connect(
                     metrics.tcp_outbound_connection_errors.inc();
                     Error::other(format!("error connecting to remote host: {err}"))
                 })?;
+            connected = true;
             let _active_connection = ActiveConnectionGuard::new(
                 &metrics.tcp_outbound_connections_established,
                 &metrics.tcp_current_outbound_connections,
@@ -296,6 +298,13 @@ async fn task_connect(
         }
     }
     drop_queued_messages(&mut msg_receiver, metrics);
+    if connected {
+        drop((connection, msg_receiver));
+        let _ = context
+            .tcp_ingress_tx
+            .try_send(TcpIngressEvent::Closed(addr));
+        drop(registration);
+    }
 }
 
 pub(super) fn drop_queued_messages(

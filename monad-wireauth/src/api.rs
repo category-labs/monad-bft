@@ -925,6 +925,11 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>, M> API<C, K, M> {
         self.state.terminate_by_public_key(public_key);
     }
 
+    /// Removes the established transports for a closed socket. Pending handshakes keep their timers.
+    pub fn disconnect_transports_by_socket(&mut self, addr: SocketAddr) {
+        self.state.terminate_transports_by_socket(addr);
+    }
+
     /// Checks if there is a session for the given socket.
     pub fn is_connected_socket(&self, socket_addr: &SocketAddr) -> bool {
         self.state.has_transport_by_socket(socket_addr)
