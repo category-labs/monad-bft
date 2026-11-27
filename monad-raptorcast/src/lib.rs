@@ -435,6 +435,7 @@ where
                 self.tcp_writer.write(
                     address,
                     TcpMsg {
+                        protocol: monad_dataplane::TcpProtocol::Signature,
                         msg: signed_message.freeze(),
                         completion,
                     },
@@ -1463,7 +1464,9 @@ where
             let Poll::Ready(msg) = recv_fut.poll_unpin(cx) else {
                 break;
             };
-            let RecvTcpMsg { payload, src_addr } = msg;
+            let RecvTcpMsg {
+                payload, src_addr, ..
+            } = msg;
             // check message length to prevent panic during message slicing
             if payload.len() < SIGNATURE_SIZE {
                 warn!(
