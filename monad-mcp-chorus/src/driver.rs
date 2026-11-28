@@ -18,7 +18,7 @@ use std::collections::{HashMap, VecDeque};
 use super::{
     conductor::Conductor,
     slot::SlotConsensus,
-    types::{Slot, Timestamp, TimestampDelta, Validated},
+    types::{NodeId, Slot, Timestamp, TimestampDelta, Validated},
 };
 
 // A driver translates consensus effects into concrete node effects
@@ -58,10 +58,21 @@ pub enum CadenceEvent<Timer, Alarm, SMessage, CMessage> {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct WakeId(u64);
 
+impl WakeId {
+    pub(crate) const FIRST: Self = Self(0);
+
+    pub(crate) fn post_increment(&mut self) -> Self {
+        let id = *self;
+        self.0 = self.0.wrapping_add(1);
+        id
+    }
+}
+
 pub enum NodeEvent<M> {
     Wake(Timestamp, WakeId),
     WakeAfter(TimestampDelta, WakeId),
     Broadcast(M),
+    Unicast { to: NodeId, message: M },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -103,7 +114,7 @@ where
             inbox: VecDeque::new(),
             outbox: VecDeque::new(),
             wakes: HashMap::new(),
-            next_wake: WakeId(0),
+            next_wake: WakeId::FIRST,
         }
     }
 }
@@ -114,9 +125,7 @@ where
     C: Conductor,
 {
     fn fresh_wake(&mut self) -> WakeId {
-        let id = self.next_wake;
-        self.next_wake.0 += 1;
-        id
+        self.next_wake.post_increment()
     }
 }
 

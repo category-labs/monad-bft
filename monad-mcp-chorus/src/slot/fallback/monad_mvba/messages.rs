@@ -31,7 +31,7 @@ use super::{
 use crate::spec::vote::{KeyPair as _, Signature as _};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, derive_more::From)]
-pub(crate) enum Message<V: Votable, C: ValidateCert> {
+pub enum MvbaMessage<V: Votable, C: ValidateCert> {
     #[from]
     PrePrepare(PrePrepareMsg<V, C>),
     #[from]
@@ -71,7 +71,7 @@ pub(crate) type PrepareVoteMsg<V> = VoteMsg<PrepareVote<V>>;
 
 /// `⟨Commit, slot, v, entries(x)⟩`
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct FallbackCommitVote<V: Votable>(pub V::Entries);
+pub struct FallbackCommitVote<V: Votable>(pub(crate) V::Entries);
 
 impl<V: Votable> FromEntries<V> for FallbackCommitVote<V> {
     fn from_entries(entries: V::Entries) -> Self {

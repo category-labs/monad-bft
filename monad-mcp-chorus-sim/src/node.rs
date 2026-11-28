@@ -107,6 +107,13 @@ where
                     net.broadcast(ctx, from, message)
                 });
             }
+            NodeEvent::Unicast { to, message } => {
+                let from = self.id;
+                let net = self.net.expect("node not wired");
+                ctx.schedule(net, now, StepLabel::source("unicast"), move |net, ctx| {
+                    net.send(ctx, from, to, message)
+                });
+            }
         }
     }
 }
