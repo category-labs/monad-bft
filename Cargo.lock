@@ -6126,6 +6126,7 @@ dependencies = [
  "auto_impl",
  "awc",
  "bytes",
+ "bytestring",
  "clap",
  "criterion",
  "dashmap",
