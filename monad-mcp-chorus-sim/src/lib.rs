@@ -13,10 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod da;
 mod mvba;
 mod node;
 mod swarm;
 
+pub use da::{
+    DaDisseminator, DaWire, DisseminationPlan, SimDA, Upstream, disseminator_id, meta_of, root_of,
+};
+pub use monad_sim_swarm::Network;
 pub use mvba::{Decision, Message, MonadMvba, MvbaSwarm, MvbaSwarmBuilder, at_millis};
 pub use node::SimNode;
-pub use swarm::{CadenceSwarm, CadenceSwarmBuilder, FinalizationLog};
+pub use swarm::{CadenceSwarm, CadenceSwarmBuilder, FinalizationLog, SlotLog};

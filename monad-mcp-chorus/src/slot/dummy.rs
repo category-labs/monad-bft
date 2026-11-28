@@ -64,6 +64,8 @@ impl SlotConsensus for DummySlotConsensus {
     type Timer = ();
     type OptimisticCommitData = ();
     type FinalizationData = ();
+    type DAEvent = ();
+    type DACommand = ();
 
     fn new(slot: Slot, config: &Self::Config, key: &Arc<KeyPair>) -> Self {
         Self {

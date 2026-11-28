@@ -21,7 +21,7 @@ use chorus::{
     CadenceDriverMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
-    types::{DAHandle, NodeId, SlotDeadline, Stake, TimestampDelta, ValidatorData},
+    types::{NodeId, SlotDeadline, Stake, TimestampDelta, ValidatorData},
 };
 use helper::expect_finalized_at;
 use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
@@ -48,20 +48,26 @@ fn conductor() -> Conductor {
     MonadConductor::genesis(config, ()).unwrap()
 }
 
-fn add_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: u64, val_data: &Arc<ValidatorData>) {
-    let node_id = NodeId::dummy(id);
-    let context = ChorusContext {
+fn chorus_context(node_id: NodeId, val_data: &Arc<ValidatorData>) -> ChorusContext {
+    ChorusContext {
         node_id,
         key: Arc::new(node_id.keypair()),
         validator_data: val_data.clone(),
-        da_handle: Arc::new(DAHandle),
-    };
-    let config = ChorusConfig {
+    }
+}
+
+fn chorus_config() -> ChorusConfig {
+    ChorusConfig {
         delta: DELTA,
         num_proposals: 1,
-    };
+    }
+}
 
-    builder.add_node::<Chorus, _>(node_id, conductor(), config, context);
+fn add_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: u64, val_data: &Arc<ValidatorData>) {
+    let node_id = NodeId::dummy(id);
+    let context = chorus_context(node_id, val_data);
+
+    builder.add_node::<Chorus, _>(node_id, conductor(), chorus_config(), context);
 }
 
 fn gen_validator_data(n: u64) -> ValidatorData {

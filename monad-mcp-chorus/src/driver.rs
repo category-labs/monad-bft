@@ -60,9 +60,9 @@ pub enum CadenceEvent<Timer, Alarm, SMessage, CMessage> {
 pub struct WakeId(u64);
 
 impl WakeId {
-    pub(crate) const FIRST: Self = Self(0);
+    pub const FIRST: Self = Self(0);
 
-    pub(crate) fn post_increment(&mut self) -> Self {
+    pub fn post_increment(&mut self) -> Self {
         let id = *self;
         self.0 = self.0.wrapping_add(1);
         id
@@ -74,6 +74,21 @@ pub enum NodeEvent<M> {
     WakeAfter(TimestampDelta, WakeId),
     Broadcast(M),
     Unicast { to: NodeId, message: M },
+}
+
+impl<M> NodeEvent<M> {
+    /// Re-tag the payload of a send, e.g. into a node-level wire type
+    pub fn map_message<M2>(self, f: impl FnOnce(M) -> M2) -> NodeEvent<M2> {
+        match self {
+            NodeEvent::Wake(at, id) => NodeEvent::Wake(at, id),
+            NodeEvent::WakeAfter(delta, id) => NodeEvent::WakeAfter(delta, id),
+            NodeEvent::Broadcast(message) => NodeEvent::Broadcast(f(message)),
+            NodeEvent::Unicast { to, message } => NodeEvent::Unicast {
+                to,
+                message: f(message),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
