@@ -134,6 +134,8 @@ impl Generator for ERC4337_7702BundledGenerator {
                 erc20_balances: accts[0].erc20_balances.clone(),
                 key: accts[0].key.clone(),
                 addr: accts[0].addr,
+                last_chain_nonce: accts[0].last_chain_nonce,
+                chain_nonce_stale_rounds: 0,
             };
             info!(
                 "Initialized bundler account from first sender: {} (balance: {})",

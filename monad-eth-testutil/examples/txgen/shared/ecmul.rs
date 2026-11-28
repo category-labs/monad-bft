@@ -71,7 +71,7 @@ impl ECMul {
         max_fee_per_gas: u128,
         chain_id: u64,
     ) -> TxEnvelope {
-        let input = Bytes::from_hex(BYTECODE).unwrap();
+        let input = Bytes::from_hex(BYTECODE.trim()).unwrap();
         let tx = TxEip1559 {
             chain_id,
             nonce,
