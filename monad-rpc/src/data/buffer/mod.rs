@@ -259,13 +259,16 @@ mod tests {
     use monad_types::BlockId;
 
     use super::*;
-    use crate::types::{
-        eth_json::{BlockTags, MonadNotification},
-        serialize::JsonSerialized,
+    use crate::{
+        data::source::{BlockPointer, HistoricalDataSource},
+        types::{
+            eth_json::{BlockTagOrHash, BlockTags, FixedData, MonadNotification},
+            serialize::JsonSerialized,
+        },
     };
 
-    #[test]
-    fn test_many_proposed_blocks() {
+    #[tokio::test]
+    async fn test_many_proposed_blocks() {
         // Buffer receives many proposed blocks in a row and should handle it correctly.
         // Make sure that the ring buffer is correctly updated and the cached values are correctly updated and removed.
         let capacity = 3;
@@ -285,10 +288,13 @@ mod tests {
             // Check that the latest proposed height is correct.
             assert_eq!(view.get_latest_proposed_block_num(), height);
             assert_eq!(
-                view.resolve_block_height_from_tag(&BlockTags::Latest),
+                view.try_resolve(BlockTagOrHash::BlockTags(BlockTags::Latest))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .block_number(),
                 height
             );
-
             // Verify the ring buffer length
             let expected_ring_len = if i < capacity { i + 1 } else { capacity };
             assert_eq!(
@@ -375,8 +381,34 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_duplicate_height_different_hash() {
+    #[tokio::test]
+    async fn test_finalized_resolution_waits_for_event() {
+        let buffer = BlockBuffer::new(5);
+        let view = buffer.create_view();
+
+        assert_eq!(
+            view.try_resolve(BlockTagOrHash::BlockTags(BlockTags::Finalized))
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn test_finalized_pointer_requires_finalized_height() {
+        let mut buffer = BlockBuffer::new(5);
+        let view = buffer.create_view();
+        buffer.insert(create_test_block_event(1, B256::from([1u8; 32]), &[0]));
+
+        assert!(view
+            .get_block(BlockPointer::Finalized(1))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_height_different_hash() {
         // Test inserting two proposed blocks with the same height but different hashes.
 
         let capacity = 5;
@@ -390,6 +422,11 @@ mod tests {
         let block_hash_a = B256::from([1u8; 32]);
         let event_a = create_test_block_event(height, block_hash_a, &[0]);
         buffer.insert(event_a);
+        let pointer_a = view
+            .try_resolve(BlockTagOrHash::Hash(FixedData(block_hash_a.0)))
+            .await
+            .unwrap()
+            .unwrap();
 
         // Capture block A's tx hash before it gets replaced
         let tx_hash_a = match &buffer.block_by_height.get(&height).unwrap().transactions {
@@ -422,6 +459,13 @@ mod tests {
         let block_hash_b = B256::from([2u8; 32]);
         let event_b = create_test_block_event(height, block_hash_b, &[0]);
         buffer.insert(event_b);
+
+        assert!(view.get_block(pointer_a).await.unwrap().is_none());
+        assert!(view
+            .try_resolve(BlockTagOrHash::Hash(FixedData(block_hash_a.0)))
+            .await
+            .unwrap()
+            .is_none());
 
         // Capture block B's tx hash
         let tx_hash_b = match &buffer.block_by_height.get(&height).unwrap().transactions {
