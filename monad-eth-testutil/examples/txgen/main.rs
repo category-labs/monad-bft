@@ -35,22 +35,30 @@ pub mod workers;
 
 #[tokio::main]
 async fn main() {
+    if let Err(e) = main_inner().await {
+        eprintln!("Fatal error: {e:?}");
+    }
+}
+
+async fn main_inner() -> Result<()> {
     let cli_config = cli::CliConfig::parse();
     let config = if let Some(config_file) = &cli_config.config_file {
-        let mut config = Config::from_file(config_file).expect("Failed to load configuration");
+        let mut config = Config::from_file(config_file)?;
         // CLi args override config file
         // Note: Workload groups and traffic gens are not overridden by CLI args, only top level config is
         cli::patch_config_with_cli_args(&mut config, cli_config);
         config
     } else {
-        cli_config.into()
+        cli::config_from_cli(cli_config)?
     };
 
     if let Err(e) = setup_logging(config.trace_log_file, config.debug_log_file) {
         error!("Error setting up logging: {e:?}");
     }
 
-    let rpc_urls = config.rpc_urls().expect("Invalid RPC URLs");
+    config.validate_startup()?;
+
+    let rpc_urls = config.rpc_urls()?;
     let clients = rpc_urls
         .into_iter()
         .map(|url| ClientBuilder::default().http(url))
@@ -77,9 +85,7 @@ async fn main() {
         }
     }
 
-    if let Err(e) = run::run(clients, config).await {
-        error!("Fatal error: {e:?}");
-    }
+    run::run(clients, config).await
 }
 
 fn setup_logging(trace_log_file: bool, debug_log_file: bool) -> Result<()> {

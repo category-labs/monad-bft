@@ -337,6 +337,107 @@ impl Config {
             .parse()
             .wrap_err_with(|| format!("Failed to parse WS URL: {}", self.ws_url))
     }
+
+    pub fn min_native_amount_u256(&self) -> Result<U256> {
+        parse_wei_amount("min_native_amount", &self.min_native_amount)
+    }
+
+    pub fn seed_native_amount_u256(&self) -> Result<U256> {
+        parse_wei_amount("seed_native_amount", &self.seed_native_amount)
+    }
+
+    pub fn validate_startup(&self) -> Result<()> {
+        let mut errors = Vec::new();
+
+        if let Err(e) = self.rpc_urls() {
+            errors.push(format!("rpc_urls: {e}"));
+        }
+
+        if let Err(e) = self.ws_url() {
+            errors.push(format!("ws_url: {e}"));
+        }
+
+        if self.root_private_keys.is_empty() {
+            errors.push("root_private_keys must not be empty".to_string());
+        }
+
+        for (idx, key) in self.root_private_keys.iter().enumerate() {
+            if let Err(e) = alloy_primitives::B256::from_str(key) {
+                errors.push(format!("root_private_keys[{idx}] is invalid: {e}"));
+            }
+        }
+
+        if let Err(e) = self.min_native_amount_u256() {
+            errors.push(format!("min_native_amount: {e}"));
+        }
+
+        if let Err(e) = self.seed_native_amount_u256() {
+            errors.push(format!("seed_native_amount: {e}"));
+        }
+
+        if !self.refresh_delay_secs.is_finite() || self.refresh_delay_secs < 0.0 {
+            errors.push(format!(
+                "refresh_delay_secs must be finite and >= 0, got {}",
+                self.refresh_delay_secs
+            ));
+        }
+
+        if self.workload_groups.is_empty() {
+            errors.push("at least one workload group must be configured".to_string());
+        }
+
+        for (wg_idx, workload_group) in self.workload_groups.iter().enumerate() {
+            if !workload_group.runtime_minutes.is_finite() || workload_group.runtime_minutes < 0.0 {
+                errors.push(format!(
+                    "workload_groups[{wg_idx}].runtime_minutes must be finite and >= 0, got {}",
+                    workload_group.runtime_minutes
+                ));
+            }
+
+            for (tg_idx, traffic_gen) in workload_group.traffic_gens.iter().enumerate() {
+                if traffic_gen.tps == 0 {
+                    errors.push(format!(
+                        "workload_groups[{wg_idx}].traffic_gens[{tg_idx}].tps must be > 0"
+                    ));
+                }
+
+                if traffic_gen.senders() == 0 {
+                    errors.push(format!(
+                        "workload_groups[{wg_idx}].traffic_gens[{tg_idx}].senders must be > 0"
+                    ));
+                }
+
+                if traffic_gen.sender_group_size() == 0 {
+                    errors.push(format!(
+                        "workload_groups[{wg_idx}].traffic_gens[{tg_idx}].sender_group_size must be > 0"
+                    ));
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            bail!(
+                "Startup configuration validation failed:\n- {}",
+                errors.join("\n- ")
+            );
+        }
+    }
+}
+
+fn parse_wei_amount(field_name: &str, value: &str) -> Result<U256> {
+    let normalized = value.replace('_', "");
+    if normalized.is_empty() {
+        bail!("{field_name} must not be empty");
+    }
+
+    if !normalized.chars().all(|c| c.is_ascii_digit()) {
+        bail!("{field_name} must be a base-10 integer, got `{value}`");
+    }
+
+    U256::from_str_radix(&normalized, 10)
+        .wrap_err_with(|| format!("{field_name} is out of range for U256"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -885,5 +986,49 @@ mod tests {
         }
 
         assert_eq!(toml_config, config);
+    }
+
+    #[test]
+    fn parse_wei_amount_accepts_underscores() {
+        let mut config = Config {
+            workload_groups: vec![WorkloadGroup {
+                traffic_gens: vec![TrafficGen::default()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            config.min_native_amount_u256().unwrap(),
+            U256::from(100_000_000_000_000_000_000_u128)
+        );
+        assert_eq!(
+            config.seed_native_amount_u256().unwrap(),
+            U256::from(1_000_000_000_000_000_000_000_u128)
+        );
+
+        config.min_native_amount = "abc123".to_string();
+        assert!(config.min_native_amount_u256().is_err());
+    }
+
+    #[test]
+    fn validate_startup_rejects_zero_tps_and_group_size() {
+        let mut config = Config {
+            workload_groups: vec![WorkloadGroup {
+                traffic_gens: vec![TrafficGen {
+                    tps: 0,
+                    sender_group_size: Some(0),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        config.root_private_keys = vec!["invalid-key".to_string()];
+
+        let err = config.validate_startup().unwrap_err().to_string();
+        assert!(err.contains("tps must be > 0"));
+        assert!(err.contains("sender_group_size must be > 0"));
+        assert!(err.contains("root_private_keys[0] is invalid"));
     }
 }

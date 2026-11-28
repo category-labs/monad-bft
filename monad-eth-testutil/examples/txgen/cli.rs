@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use clap::{Parser, Subcommand};
+use eyre::bail;
 use url::Url;
 
 use crate::prelude::*;
@@ -286,7 +287,7 @@ impl From<CliGenMode> for GenMode {
 }
 
 pub fn patch_config_with_cli_args(config: &mut Config, value: CliConfig) {
-    if config.workload_groups.is_empty() {
+    if config.workload_groups.is_empty() && value.gen_mode.is_some() {
         config.workload_groups = vec![value.clone().into()];
     }
 
@@ -356,16 +357,18 @@ pub fn patch_config_with_cli_args(config: &mut Config, value: CliConfig) {
     }
 }
 
-impl From<CliConfig> for Config {
-    fn from(value: CliConfig) -> Self {
-        let mut config = Config {
-            workload_groups: vec![value.clone().into()],
-            ..Default::default()
-        };
-
-        patch_config_with_cli_args(&mut config, value);
-        config
+pub fn config_from_cli(value: CliConfig) -> Result<Config> {
+    if value.gen_mode.is_none() {
+        bail!("Missing traffic generator mode. Provide a subcommand such as `few-to-many` or use `--config-file`.");
     }
+
+    let mut config = Config {
+        workload_groups: vec![value.clone().into()],
+        ..Default::default()
+    };
+
+    patch_config_with_cli_args(&mut config, value);
+    Ok(config)
 }
 
 impl From<CliConfig> for WorkloadGroup {
@@ -389,8 +392,9 @@ impl From<CliConfig> for WorkloadGroup {
 
 impl From<CliConfig> for TrafficGen {
     fn from(value: CliConfig) -> Self {
+        let gen_mode = value.gen_mode.map(Into::into).unwrap_or(GenMode::NullGen);
         let mut traffic_gen = TrafficGen {
-            gen_mode: value.gen_mode.unwrap().into(),
+            gen_mode,
             ..Default::default()
         };
 
@@ -419,5 +423,29 @@ impl From<CliConfig> for TrafficGen {
             traffic_gen.tx_per_sender = Some(tx_per_sender);
         }
         traffic_gen
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_from_cli_requires_gen_mode() {
+        let cli = CliConfig::try_parse_from(["txgen"]).unwrap();
+        assert!(config_from_cli(cli).is_err());
+    }
+
+    #[test]
+    fn patch_does_not_create_workload_group_without_gen_mode() {
+        let mut config = Config {
+            workload_groups: vec![],
+            ..Default::default()
+        };
+        let cli = CliConfig::try_parse_from(["txgen", "--config-file", "config.toml"]).unwrap();
+
+        patch_config_with_cli_args(&mut config, cli);
+
+        assert!(config.workload_groups.is_empty());
     }
 }
