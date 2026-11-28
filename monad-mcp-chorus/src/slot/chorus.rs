@@ -18,7 +18,10 @@ use std::{collections::VecDeque, sync::Arc};
 
 use super::{
     SlotConsensus, SlotOutput,
-    fallback::{FallbackPath, Metablock},
+    fallback::{
+        FallbackCommitQc, MVBAOutput, Metablock, Mvba as _,
+        monad_mvba::{self, MonadMvba, MvbaContext},
+    },
     fast::{
         BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, FallbackVoteMsg, FastBlock,
         FastCommitQc, FastCommitVoteMsg, FastPath,
@@ -27,6 +30,11 @@ use super::{
         DAHandle, KeyPair, NodeId, ProposalIndex, ProposalMeta, Slot, TimestampDelta, ValidatorData,
     },
 };
+
+/// The fallback path's agreement protocol, at the instantiation Chorus runs it
+type FallbackState = MonadMvba<Metablock, EnterFallbackCert>;
+type FallbackMessage = monad_mvba::MvbaMessage<Metablock, EnterFallbackCert>;
+type FallbackTimer = monad_mvba::TimerEvent<Metablock>;
 
 // emitted from the DA layer upon validating a proposal
 // chunk. possibly only emitted after a significant fraction of
@@ -61,17 +69,20 @@ pub enum Message {
     // disseminate on entering fallback path
     #[from]
     EnterFallbackCert(EnterFallbackCert),
-    // messages for the fallback path (todo)
-    // ProposeBlock(Metablock),
-    // FallbackCommitQc(...)
+
+    // the fallback path's own protocol, dispatched into the MVBA
+    #[from]
+    Fallback(FallbackMessage),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TimerEvent {
     // emitted on D_s + Delta
     FallbackTransitionTimeout,
     // emitted on D_s + 2*Delta
     FallbackDecisionDelayElapsed,
+    // armed by the MVBA, fed straight back to it
+    Fallback(FallbackTimer),
 }
 
 /// Static per-slot configuration.
@@ -83,6 +94,7 @@ pub struct ChorusConfig {
 
 /// Shared resources needed to spawn a slot instance.
 pub struct ChorusContext {
+    pub node_id: NodeId,
     pub key: Arc<KeyPair>,
     pub validator_data: Arc<ValidatorData>,
     pub da_handle: Arc<DAHandle>,
@@ -92,27 +104,24 @@ pub struct ChorusContext {
 pub enum SlotFinalization {
     #[from]
     Fast(FastCommitQc),
-    // Fallback(FallbackCommitQc),
+    #[from]
+    Fallback(FallbackCommitQc<Metablock>),
 }
 
-#[derive(Clone)]
-struct FallbackMsgBuffer;
-
 /// The single-slot MCP consensus algorithm from the paper.
-#[derive(Clone)]
 pub struct Chorus {
     slot: Slot,
     key: Arc<KeyPair>,
 
     fast: FastPath,
-    fallback: Option<FallbackPath>,
+    /// memory is unbounded until this validator proposes into it: the MVBA
+    /// buffers what arrives without entering views or garbage-collecting. I
+    /// have a proposal to conditionally start fallback without self propose
+    fallback: FallbackState,
     outputs: VecDeque<SlotOutput<Chorus>>,
 
     // capital Delta from the paper
     delta: TimestampDelta,
-
-    // buffer messages for the fallback path until we enter it.
-    buffer: FallbackMsgBuffer,
 
     // Decided but slot not yet closed, ignore all subsequent messages
     // and timer events.
@@ -133,6 +142,7 @@ impl SlotConsensus for Chorus {
             num_proposals,
         } = config;
         let ChorusContext {
+            node_id,
             key,
             validator_data,
             da_handle,
@@ -146,13 +156,21 @@ impl SlotConsensus for Chorus {
             da_handle.clone(),
         );
 
+        let fallback = FallbackState::new(MvbaContext {
+            slot,
+            num_proposals: *num_proposals,
+            delta: *delta,
+            node_id: *node_id,
+            key: key.clone(),
+            validator_data: validator_data.clone(),
+        });
+
         Self {
             slot,
             delta: *delta,
             key: key.clone(),
             fast,
-            fallback: None,
-            buffer: FallbackMsgBuffer,
+            fallback,
             outputs: Default::default(),
             decided: false,
         }
@@ -215,6 +233,11 @@ impl SlotConsensus for Chorus {
                     self.enter_fallback(cert, block);
                 }
             }
+
+            Message::Fallback(message) => {
+                self.fallback.handle_message(author, message);
+                self.drain_fallback();
+            }
         }
     }
 
@@ -259,6 +282,10 @@ impl SlotConsensus for Chorus {
                     self.enter_fallback(cert, block);
                 }
             },
+            TimerEvent::Fallback(event) => {
+                self.fallback.handle_timer(event);
+                self.drain_fallback();
+            }
         }
     }
 }
@@ -268,30 +295,54 @@ impl Chorus {
     fn broadcast(&mut self, msg: impl Into<Message>) {
         self.push(SlotOutput::Broadcast(msg.into()));
     }
+
     fn schedule_timer(&mut self, delta: TimestampDelta, event: TimerEvent) {
         self.push(SlotOutput::ScheduleTimer(delta, event));
     }
+
     fn finalize(&mut self, cert: impl Into<SlotFinalization>) {
+        // TODO: introduce fast path handling of fallback commit
         if self.decided {
             // idempotent
             return;
         }
 
         self.decided = true;
+        self.fallback.abandon();
         self.push(SlotOutput::Finalize(cert.into()));
     }
+
+    /// `propose` is idempotent, so a second certificate changes nothing
     fn enter_fallback(&mut self, cert: EnterFallbackCert, block: Metablock) {
-        if self.fallback.is_some() {
-            // already in the fallback path.
-            return;
-        }
-        // the MVBA arms its own view timer and emits it as an
-        // MVBAOutput::ScheduleTimer; once messages are routed into the MVBA
-        // (see fallback/mod.rs), this layer only converts those outputs to
-        // SlotOutput::ScheduleTimer and feeds the events back -- it schedules
-        // nothing on the fallback's behalf.
-        self.fallback = Some(self.fast.spawn_fallback(cert, block));
+        self.fallback.propose(block, Some(cert));
+        self.drain_fallback();
     }
+
+    /// The MVBA arms its own timers and asks for its own sends; this layer only
+    /// converts them, and finalizes once a commit certificate is complete
+    fn drain_fallback(&mut self) {
+        // drained first: finalize -> abandon clears the MVBA's output queue,
+        // which holds the decide-broadcast certificate
+        while let Some(output) = self.fallback.poll() {
+            match output {
+                MVBAOutput::Broadcast(message) => self.broadcast(message),
+                MVBAOutput::Unicast { to, message } => self.push(SlotOutput::Unicast {
+                    to,
+                    message: message.into(),
+                }),
+                MVBAOutput::ScheduleTimer {
+                    duration,
+                    timer_event,
+                } => self.schedule_timer(duration, TimerEvent::Fallback(timer_event)),
+            }
+        }
+
+        if let Some(qc) = self.fallback.decision_proof() {
+            let qc = qc.clone();
+            self.finalize(qc);
+        }
+    }
+
     fn push(&mut self, out: SlotOutput<Chorus>) {
         self.outputs.push_back(out);
     }

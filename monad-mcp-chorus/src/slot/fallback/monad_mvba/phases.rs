@@ -64,11 +64,11 @@ pub(crate) struct Preparing<V: Votable> {
     entries: V::Entries,
 }
 
-/// Prepare certificate formed, commit vote sent
+/// Prepare certificate formed, commit vote sent. The certificate itself is the
+/// instance's lock, held in `high_prep_qc`
 #[derive(Clone)]
 pub(crate) struct Committing<V: Votable> {
     entries: V::Entries,
-    prepare_qc: PrepareQc<V>,
 }
 
 /// Decided, with the certificate that proves it and the block it settled
@@ -137,14 +137,6 @@ impl<V: Votable> Phase<V> {
         }
     }
 
-    pub(crate) fn prepare_qc(&self) -> Option<&PrepareQc<V>> {
-        match self {
-            Phase::Committing(p) => Some(&p.prepare_qc),
-            Phase::Poisoned => unreachable!("{POISON_OBSERVED}"),
-            _ => None,
-        }
-    }
-
     /// For assertion messages
     pub(crate) fn name(&self) -> &'static str {
         match self {
@@ -197,7 +189,6 @@ impl<V: Votable> Preparing<V> {
 
         Committing {
             entries: self.entries,
-            prepare_qc,
         }
     }
 }

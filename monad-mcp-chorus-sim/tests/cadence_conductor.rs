@@ -138,6 +138,7 @@ fn full_window_rolls_over_with_chorus() {
             num_proposals: 1,
         };
         let context = ChorusContext {
+            node_id: id,
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
             da_handle: Arc::new(DAHandle),
